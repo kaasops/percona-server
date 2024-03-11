@@ -108,8 +108,9 @@
 #include "sql/query_result.h"
 #include "sql/rpl_source.h"
 #include "sql/set_var.h"
-#include "sql/sp.h"        // sp_cache_routine
-#include "sql/sp_head.h"   // sp_head
+#include "sql/sp.h"       // sp_cache_routine
+#include "sql/sp_head.h"  // sp_head
+#include "sql/sp_rcontext.h"
 #include "sql/sql_base.h"  // close_thread_tables
 #include "sql/sql_bitmap.h"
 #include "sql/sql_check_constraint.h"
@@ -2917,6 +2918,14 @@ class List_process_list : public Do_THD_Impl {
         return;
       }
 
+      DBUG_EXECUTE_IF(
+          "enable_debug_sync_after_reading_sp_sctx",
+          if (inspect_thd->sp_runtime_ctx != nullptr &&
+              (strcmp(inspect_thd->sp_runtime_ctx->sp->m_name.str, "proc") ==
+               0)) {
+            DEBUG_SYNC(m_client_thd, "after_reading_security_context");
+          });
+
       thd_info = new (m_client_thd->mem_root) thread_info;
 
       /* ID */
@@ -3198,6 +3207,14 @@ class Fill_process_list : public Do_THD_Impl {
            strcmp(inspect_sctx_user.str, user))) || is_utility_user) {
         return;
       }
+
+      DBUG_EXECUTE_IF(
+          "enable_debug_sync_after_reading_sp_sctx",
+          if (inspect_thd->sp_runtime_ctx != nullptr &&
+              (strcmp(inspect_thd->sp_runtime_ctx->sp->m_name.str, "proc") ==
+               0)) {
+            DEBUG_SYNC(m_client_thd, "after_reading_security_context");
+          });
 
       DBUG_EXECUTE_IF(
           "test_fill_proc_with_x_root",
