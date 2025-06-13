@@ -296,10 +296,13 @@ TEST_F(TableCacheSingleCacheTest, CacheAddAndRemove) {
 
   // There should be no unused TABLE objects for the same table in the
   // cache. OTOH it should contain info about table share of table_1.
+  my_hash_value_type hash_value =
+      my_calc_hash(&table_def_cache, (const uchar *)share_1.table_cache_key.str,
+                   share_1.table_cache_key.length);
   TABLE *table_2;
   TABLE_SHARE *share_2;
   table_2 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, false, &share_2);
   EXPECT_TRUE(table_2 == nullptr);
   EXPECT_TRUE(share_2 == &share_1);
@@ -314,7 +317,7 @@ TEST_F(TableCacheSingleCacheTest, CacheAddAndRemove) {
   // this.
   table_cache->release_table(thd, table_1);
   table_2 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, false, &share_2);
   EXPECT_TRUE(table_2 == table_1);
   EXPECT_TRUE(share_2 == &share_1);
@@ -325,7 +328,7 @@ TEST_F(TableCacheSingleCacheTest, CacheAddAndRemove) {
   EXPECT_EQ(0U, table_cache->cached_tables());
 
   table_2 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, false, &share_2);
   EXPECT_TRUE(table_2 == nullptr);
   EXPECT_TRUE(share_2 == nullptr);
@@ -344,7 +347,7 @@ TEST_F(TableCacheSingleCacheTest, CacheAddAndRemove) {
   EXPECT_EQ(0U, table_cache->cached_tables());
 
   table_2 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, false, &share_2);
   EXPECT_TRUE(table_2 == nullptr);
   EXPECT_TRUE(share_2 == nullptr);
@@ -436,8 +439,11 @@ TEST_F(TableCacheSingleCacheTest, CacheGetAndRelease) {
   TABLE_SHARE *share_2;
 
   // There should be no TABLE in cache, nor information about share.
+  my_hash_value_type hash_value_1 =
+      my_calc_hash(&table_def_cache, (const uchar *)share_1.table_cache_key.str,
+                   share_1.table_cache_key.length);
   table_1 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, false, &share_2);
   EXPECT_TRUE(table_1 == nullptr);
   EXPECT_TRUE(share_2 == nullptr);
@@ -448,15 +454,18 @@ TEST_F(TableCacheSingleCacheTest, CacheGetAndRelease) {
   // There should be no unused TABLE in cache, but there should be
   // information about the share.
   table_2 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, false, &share_2);
   EXPECT_TRUE(table_2 == nullptr);
   EXPECT_TRUE(share_2 == &share_1);
 
   // There should be even no information about the share for which
   // TABLE was not added to cache.
+  my_hash_value_type hash_value_0 =
+      my_calc_hash(&table_def_cache, (const uchar *)share_0.table_cache_key.str,
+                   share_0.table_cache_key.length);
   table_2 =
-      table_cache->get_table(thd, share_0.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_0, share_0.table_cache_key.str,
                              share_0.table_cache_key.length, false, &share_2);
   EXPECT_TRUE(table_2 == nullptr);
   EXPECT_TRUE(share_2 == nullptr);
@@ -467,7 +476,7 @@ TEST_F(TableCacheSingleCacheTest, CacheGetAndRelease) {
   // Still there should be no unused TABLE in cache, but there should
   // be information about the share.
   table_3 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, false, &share_2);
   EXPECT_TRUE(table_3 == nullptr);
   EXPECT_TRUE(share_2 == &share_1);
@@ -477,14 +486,14 @@ TEST_F(TableCacheSingleCacheTest, CacheGetAndRelease) {
   // After releasing one of TABLE objects it should be possible to get
   // unused TABLE from cache.
   table_3 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, false, &share_2);
   EXPECT_TRUE(table_3 == table_1);
   EXPECT_TRUE(share_2 == &share_1);
 
   // But only once!
   table_3 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, false, &share_2);
   EXPECT_TRUE(table_3 == nullptr);
   EXPECT_TRUE(share_2 == &share_1);
@@ -496,23 +505,23 @@ TEST_F(TableCacheSingleCacheTest, CacheGetAndRelease) {
   table_cache->release_table(thd, table_2);
 
   table_3 =
-      table_cache->get_table(thd, share_0.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_0, share_0.table_cache_key.str,
                              share_0.table_cache_key.length, false, &share_2);
   EXPECT_TRUE(table_3 == nullptr);
   EXPECT_TRUE(share_2 == nullptr);
 
   table_3 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, false, &share_2);
   EXPECT_TRUE(table_3 != nullptr);
   EXPECT_TRUE(share_2 == &share_1);
   table_3 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, false, &share_2);
   EXPECT_TRUE(table_3 != nullptr);
   EXPECT_TRUE(share_2 == &share_1);
   table_3 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, false, &share_2);
   EXPECT_TRUE(table_3 == nullptr);
   EXPECT_TRUE(share_2 == &share_1);
@@ -538,16 +547,20 @@ TEST_F(TableCacheSingleCacheTest, CacheGetAndReleaseWithTriggers) {
   Mock_share share_1("share_1"), share_0("share_0");
   TABLE_SHARE *share_2;
 
+  my_hash_value_type hash_value_1 =
+      my_calc_hash(&table_def_cache, (const uchar *)share_1.table_cache_key.str,
+                   share_1.table_cache_key.length);
+
   // There should be no TABLE in cache, nor information about share.
   table_1 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, false, &share_2);
   EXPECT_TRUE(table_1 == nullptr);
   EXPECT_TRUE(share_2 == nullptr);
 
   // There should be no TABLE in cache for update either.
   table_1 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, true, &share_2);
   EXPECT_TRUE(table_1 == nullptr);
   EXPECT_TRUE(share_2 == nullptr);
@@ -564,7 +577,7 @@ TEST_F(TableCacheSingleCacheTest, CacheGetAndReleaseWithTriggers) {
   // There should be no unused TABLE in cache, but there should be
   // information about the share.
   table_2 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, false, &share_2);
   EXPECT_TRUE(table_2 == nullptr);
   EXPECT_TRUE(share_2 == &share_1);
@@ -572,7 +585,7 @@ TEST_F(TableCacheSingleCacheTest, CacheGetAndReleaseWithTriggers) {
   // There should be no unused TABLE for update either (but again we
   // should be able to get information about the share).
   table_2 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, true, &share_2);
   EXPECT_TRUE(table_2 == nullptr);
   EXPECT_TRUE(share_2 == &share_1);
@@ -587,7 +600,7 @@ TEST_F(TableCacheSingleCacheTest, CacheGetAndReleaseWithTriggers) {
   // unused TABLE from cache for update, even though table triggers
   // are not fully loaded.
   table_2 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, true, &share_2);
   EXPECT_TRUE(table_2 == table_1);
   EXPECT_TRUE(share_2 == &share_1);
@@ -612,7 +625,7 @@ TEST_F(TableCacheSingleCacheTest, CacheGetAndReleaseWithTriggers) {
   // to the cache it should be possible to get unused TABLE from
   // cache ready for update.
   table_2 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, true, &share_2);
   EXPECT_TRUE(table_2 == table_1);
   EXPECT_TRUE(share_2 == &share_1);
@@ -623,7 +636,7 @@ TEST_F(TableCacheSingleCacheTest, CacheGetAndReleaseWithTriggers) {
   // After releasing the TABLE object again, it should be possible to get
   // the same unused TABLE from cache even for read-only load.
   table_2 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, false, &share_2);
   EXPECT_TRUE(table_2 == table_1);
   EXPECT_TRUE(share_2 == &share_1);
@@ -643,13 +656,13 @@ TEST_F(TableCacheSingleCacheTest, CacheGetAndReleaseWithTriggers) {
   // There should be no unused TABLE for either read-only or update.
   // But we should be able to get information about the share.
   table_3 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, false, &share_2);
   EXPECT_TRUE(table_3 == nullptr);
   EXPECT_TRUE(share_2 == &share_1);
 
   table_3 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, true, &share_2);
   EXPECT_TRUE(table_3 == nullptr);
   EXPECT_TRUE(share_2 == &share_1);
@@ -659,7 +672,7 @@ TEST_F(TableCacheSingleCacheTest, CacheGetAndReleaseWithTriggers) {
   table_cache->release_table(thd, table_2);
 
   table_3 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, false, &share_2);
   EXPECT_TRUE(table_3 == table_2);
   EXPECT_TRUE(share_2 == &share_1);
@@ -667,7 +680,7 @@ TEST_F(TableCacheSingleCacheTest, CacheGetAndReleaseWithTriggers) {
 
   table_cache->release_table(thd, table_2);
   table_3 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, true, &share_2);
   EXPECT_TRUE(table_3 == table_2);
   EXPECT_TRUE(share_2 == &share_1);
@@ -688,7 +701,7 @@ TEST_F(TableCacheSingleCacheTest, CacheGetAndReleaseWithTriggers) {
   // First, let us check that requests for TABLEs for read-only statements
   // prefer objects without fully-loaded triggers.
   table_3 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, false, &share_2);
   EXPECT_TRUE(table_3 == table_2);
   EXPECT_TRUE(share_2 == &share_1);
@@ -697,7 +710,7 @@ TEST_F(TableCacheSingleCacheTest, CacheGetAndReleaseWithTriggers) {
   // However, if such object not available TABLE with fully-loaded triggers
   // will do as well.
   table_3 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, false, &share_2);
   EXPECT_TRUE(table_3 == table_1);
   EXPECT_TRUE(share_2 == &share_1);
@@ -709,14 +722,14 @@ TEST_F(TableCacheSingleCacheTest, CacheGetAndReleaseWithTriggers) {
   table_cache->release_table(thd, table_2);
 
   table_3 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, false, &share_2);
   EXPECT_TRUE(table_3 == table_2);
   EXPECT_TRUE(share_2 == &share_1);
   EXPECT_FALSE(table_3->triggers->has_load_been_finalized());
 
   table_3 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, false, &share_2);
   EXPECT_TRUE(table_3 == table_1);
   EXPECT_TRUE(share_2 == &share_1);
@@ -728,7 +741,7 @@ TEST_F(TableCacheSingleCacheTest, CacheGetAndReleaseWithTriggers) {
   table_cache->release_table(thd, table_2);
 
   table_3 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, true, &share_2);
   EXPECT_TRUE(table_3 == table_1);
   EXPECT_TRUE(share_2 == &share_1);
@@ -737,7 +750,7 @@ TEST_F(TableCacheSingleCacheTest, CacheGetAndReleaseWithTriggers) {
   // However, if there are no such unused TABLE objects, TABLE without
   // fully-loaded triggers will do.
   table_3 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, true, &share_2);
   EXPECT_TRUE(table_3 == table_2);
   EXPECT_TRUE(share_2 == &share_1);
@@ -749,14 +762,14 @@ TEST_F(TableCacheSingleCacheTest, CacheGetAndReleaseWithTriggers) {
   table_cache->release_table(thd, table_1);
 
   table_3 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, true, &share_2);
   EXPECT_TRUE(table_3 == table_1);
   EXPECT_TRUE(share_2 == &share_1);
   EXPECT_TRUE(table_3->triggers->has_load_been_finalized());
 
   table_3 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, true, &share_2);
   EXPECT_TRUE(table_3 == table_2);
   EXPECT_TRUE(share_2 == &share_1);
@@ -781,14 +794,14 @@ TEST_F(TableCacheSingleCacheTest, CacheGetAndReleaseWithTriggers) {
 
   // Both unused TABLEs can be used for updating statements.
   table_3 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, true, &share_2);
   EXPECT_TRUE(table_3 == table_1 || table_3 == table_2);
   EXPECT_TRUE(share_2 == &share_1);
   EXPECT_TRUE(table_3->triggers->has_load_been_finalized());
 
   table_4 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, true, &share_2);
   EXPECT_TRUE(table_4 == table_1 || table_4 == table_2);
   EXPECT_TRUE(table_4 != table_3);
@@ -803,14 +816,14 @@ TEST_F(TableCacheSingleCacheTest, CacheGetAndReleaseWithTriggers) {
 
   // Also both unused TABLEs can be used for read-only statements.
   table_3 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, true, &share_2);
   EXPECT_TRUE(table_3 == table_1 || table_3 == table_2);
   EXPECT_TRUE(share_2 == &share_1);
   EXPECT_TRUE(table_3->triggers->has_load_been_finalized());
 
   table_4 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, true, &share_2);
   EXPECT_TRUE(table_4 == table_1 || table_4 == table_2);
   EXPECT_TRUE(table_4 != table_3);
@@ -910,15 +923,24 @@ TEST_F(TableCacheSingleCacheTest, CacheOverflowWithTriggers) {
   // Let us check that it is exactly LRU TABLE with triggers (table_1) that
   // got expelled. Acquire two TABLE objects with triggers which should have
   // remained.
+
+   // There should be no TABLE in cache, nor information about share.
+  my_hash_value_type hash_value_1 =
+      my_calc_hash(&table_def_cache, (const uchar *)share_1.table_cache_key.str,
+                   share_1.table_cache_key.length);
+
+  my_hash_value_type hash_value_2 =
+      my_calc_hash(&table_def_cache, (const uchar *)share_2.table_cache_key.str,
+                   share_2.table_cache_key.length);
   table_6 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, true, &share_3);
   EXPECT_TRUE(table_6 == table_2);
   EXPECT_TRUE(share_3 == &share_1);
   EXPECT_TRUE(table_6->triggers->has_load_been_finalized());
 
   table_6 =
-      table_cache->get_table(thd, share_2.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_2, share_2.table_cache_key.str,
                              share_2.table_cache_key.length, true, &share_3);
   EXPECT_TRUE(table_6 == table_4);
   EXPECT_TRUE(share_3 == &share_2);
@@ -931,7 +953,7 @@ TEST_F(TableCacheSingleCacheTest, CacheOverflowWithTriggers) {
 
   // Acquire remaining TABLE object for share_1 and load triggers for it.
   table_6 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, true, &share_3);
   EXPECT_TRUE(table_6 == table_3);
   EXPECT_TRUE(share_3 == &share_1);
@@ -960,14 +982,14 @@ TEST_F(TableCacheSingleCacheTest, CacheOverflowWithTriggers) {
   // Two remaining TABLE objects (table_2 and table_3) should be still
   // reachable.
   table_6 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, true, &share_3);
   EXPECT_TRUE(table_6 == table_2 || table_6 == table_3);
   EXPECT_TRUE(share_3 == &share_1);
   EXPECT_TRUE(table_6->triggers->has_load_been_finalized());
 
   table_7 =
-      table_cache->get_table(thd, share_1.table_cache_key.str,
+      table_cache->get_table(thd, hash_value_1, share_1.table_cache_key.str,
                              share_1.table_cache_key.length, true, &share_3);
   EXPECT_TRUE(table_7 == table_2 || table_7 == table_3);
   EXPECT_TRUE(table_7 != table_6);
@@ -1291,8 +1313,12 @@ TEST_F(TableCacheDoubleCacheTest, ManagerLoadedTriggersTables) {
   TABLE *table_6;
   TABLE_SHARE *share_3;
   table_cache_1->lock();
+  my_hash_value_type hash_value_1 =
+    my_calc_hash(&table_def_cache, (const uchar *)share_1.table_cache_key.str,
+      share_1.table_cache_key.length);
+
   table_6 =
-      table_cache_1->get_table(thd_1, share_1.table_cache_key.str,
+      table_cache_1->get_table(thd_1, hash_value_1, share_1.table_cache_key.str,
                                share_1.table_cache_key.length, true, &share_3);
   table_cache_1->unlock();
 
@@ -1309,8 +1335,11 @@ TEST_F(TableCacheDoubleCacheTest, ManagerLoadedTriggersTables) {
   // Attempt to get TABLE instance with loaded triggers for another share
   // from the second cache. This is expected not to fully succeed.
   table_cache_2->lock();
+  my_hash_value_type hash_value_2 =
+    my_calc_hash(&table_def_cache, (const uchar *)share_2.table_cache_key.str,
+      share_2.table_cache_key.length);
   table_6 =
-      table_cache_2->get_table(thd_2, share_2.table_cache_key.str,
+      table_cache_2->get_table(thd_2, hash_value_2, share_2.table_cache_key.str,
                                share_2.table_cache_key.length, true, &share_3);
   table_cache_2->unlock();
 
