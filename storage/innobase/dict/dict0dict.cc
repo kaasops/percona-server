@@ -4394,7 +4394,7 @@ void dict_table_set_corrupt_by_space(space_id_t space_id,
   ut_a(space_id != 0);
   ut_a(space_id < dict_sys_t::s_log_space_id);
 
-  if (need_mutex) mutex_enter(&(dict_sys->mutex));
+  if (need_mutex) rw_lock_s_lock(&dict_sys->lock, UT_LOCATION_HERE);
 
   dict_table_t *table = UT_LIST_GET_FIRST(dict_sys->table_LRU);
   bool found = false;
@@ -4408,7 +4408,7 @@ void dict_table_set_corrupt_by_space(space_id_t space_id,
     table = UT_LIST_GET_NEXT(table_LRU, table);
   }
 
-  if (need_mutex) mutex_exit(&(dict_sys->mutex));
+  if (need_mutex) rw_lock_s_unlock(&dict_sys->lock);
 
   if (!found) {
     ib::warn() << "Space to be marked as crashed was not found "
@@ -6188,7 +6188,7 @@ void dict_validate_no_purge_rollback_threads() {
 dberr_t dict_get_dictionary_id_by_key(table_id_t table_id, ulint column_pos,
                                       ulint *dict_id) {
   ut_ad(srv_is_upgrade_mode);
-  ut_ad(!mutex_own(&dict_sys->mutex));
+  ut_ad(!dict_sys_mutex_own());
 
   trx_t *const trx = trx_allocate_for_background();
   trx->op_info = "get zip dict id by composite key";
@@ -6220,7 +6220,7 @@ dberr_t dict_get_dictionary_info_by_id(ulint dict_id, char **name,
                                        ulint *name_len, char **data,
                                        ulint *data_len) {
   ut_ad(srv_is_upgrade_mode);
-  ut_ad(!mutex_own(&dict_sys->mutex));
+  ut_ad(!dict_sys_mutex_own());
 
   trx_t *const trx = trx_allocate_for_background();
   trx->op_info = "get zip dict name and data by id";
