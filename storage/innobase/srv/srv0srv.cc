@@ -3,6 +3,7 @@
 Copyright (c) 1995, 2025, Oracle and/or its affiliates.
 Copyright (c) 2008, 2009 Google Inc.
 Copyright (c) 2009, Percona Inc.
+Copyright (c) 2025, buildup-db.
 
 Portions of this file contain modifications contributed and copyrighted by
 Google, Inc. Those modifications are gratefully acknowledged and are described
@@ -1391,8 +1392,15 @@ static void srv_refresh_innodb_monitor_stats(void) {
 
   os_aio_refresh_stats();
 
-  btr_cur_n_sea_old = btr_cur_n_sea;
-  btr_cur_n_non_sea_old = btr_cur_n_non_sea;
+  uint64_t btr_cur_n_sea_sum = 0;
+  uint64_t btr_cur_n_non_sea_sum = 0;
+  for (size_t i = 0; i < BTR_CUR_COUNTER_SHARDING; i++) {
+    btr_cur_n_sea_sum += btr_cur_n_sea[i];
+    btr_cur_n_non_sea_sum += btr_cur_n_non_sea[i];
+  }
+
+  btr_cur_n_sea_old = btr_cur_n_sea_sum;
+  btr_cur_n_non_sea_old = btr_cur_n_non_sea_sum;
 
   log_refresh_stats(*log_sys);
 
@@ -1550,11 +1558,18 @@ bool srv_printf_innodb_monitor(FILE *file, bool nowait, ulint *trx_start_pos,
     rw_lock_s_unlock(&part.latch);
   }
 
+  uint64_t btr_cur_n_sea_sum = 0;
+  uint64_t btr_cur_n_non_sea_sum = 0;
+  for (size_t i = 0; i < BTR_CUR_COUNTER_SHARDING; i++) {
+    btr_cur_n_sea_sum += btr_cur_n_sea[i];
+    btr_cur_n_non_sea_sum += btr_cur_n_non_sea[i];
+  }
+
   fprintf(file, "%.2f hash searches/s, %.2f non-hash searches/s\n",
-          (btr_cur_n_sea - btr_cur_n_sea_old) / time_elapsed,
-          (btr_cur_n_non_sea - btr_cur_n_non_sea_old) / time_elapsed);
-  btr_cur_n_sea_old = btr_cur_n_sea;
-  btr_cur_n_non_sea_old = btr_cur_n_non_sea;
+          (btr_cur_n_sea_sum - btr_cur_n_sea_old) / time_elapsed,
+          (btr_cur_n_non_sea_sum - btr_cur_n_non_sea_old) / time_elapsed);
+  btr_cur_n_sea_old = btr_cur_n_sea_sum;
+  btr_cur_n_non_sea_old = btr_cur_n_non_sea_sum;
 
   if (!recv_recovery_on) {
     fputs(
@@ -1711,8 +1726,14 @@ void srv_export_innodb_status(void) {
   ut_ad(export_vars.innodb_data_pending_fsyncs <=
         std::numeric_limits<ulint>::max() - 1000);
 
-  export_vars.innodb_adaptive_hash_hash_searches = btr_cur_n_sea;
-  export_vars.innodb_adaptive_hash_non_hash_searches = btr_cur_n_non_sea;
+  /*
+    We don't use AHI at all
+    commented out for now, later it can be put back
+    need to calculate the values in the loop across array
+  */
+  // export_vars.innodb_adaptive_hash_hash_searches = btr_cur_n_sea;
+  // export_vars.innodb_adaptive_hash_non_hash_searches = btr_cur_n_non_sea;
+
   export_vars.innodb_background_log_sync = srv_log_writes_and_flush;
 
   export_vars.innodb_data_fsyncs = os_n_fsyncs;
