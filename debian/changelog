@@ -1,0 +1,42 @@
+percona-server (8.0.44-35~int01) unstable; urgency=medium
+
+  * PS-10232 [8.0]: Fix performance regression by limiting rows_in_buffer to query LIMIT
+  * 8.0.44-35 with 2 RP patches [RP002]
+
+ -- Alexey Bychko <abychko@gmail.com>  Mon, 08 Dec 2025 15:17:00 +0200
+
+percona-server (8.0.39-30RP8) unstable; urgency=medium
+
+  * [RP008] Eliminate trx_mutex use from purge worker threads
+
+ -- Alexey Bychko <abychko@gmail.com>  Wed, 22 Oct 2025 18:02:00 +0300
+
+percona-server (8.0.39-30RP4) unstable; urgency=medium
+
+  * [RP004] Optimize InnoDB rw_lock s-lock operation cost on high concurrency
+
+ -- Alexey Bychko <abychko@gmail.com>  Wed, 22 Oct 2025 15:35:51 +0300
+
+percona-server (8.0.39-30RP2) unstable; urgency=medium
+
+  * [RP002] Reverts fix for Bug#29508068 to save CPU data cache
+
+ -- Alexey Bychko <abychko@gmail.com>  Wed, 22 Oct 2025 13:29:48 +0300
+
+percona-server (8.0.39-30RP1) unstable; urgency=medium
+
+  * [RP001] Avoiding to use std::mt19937 for saving CPU data cache
+
+ -- Alexey Bychko <abychko@gmail.com>  Tue, 21 Oct 2025 17:40:02 +0300
+
+percona-server (8.0.39-30RP) unstable; urgency=medium
+
+  * Packaging for custom RP000 version 
+
+ -- Alexey Bychko <abychko@gmail.com>  Tue, 21 Oct 2025 10:18:17 +0300
+
+percona-server (8.0.12-1) unstable; urgency=low
+
+  * Packaging for 8.0
+
+ -- Evgeniy Patlan <evgeniy.patlan@percona.com>  Mon, 03 Sep 2018 12:50:32 +0300
