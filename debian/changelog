@@ -1,3 +1,9 @@
+percona-server (8.0.44-35~test01) unstable; urgency=medium
+
+  * changed mts_slave_worker_queue_len_max from constant to configurable parameter
+
+ -- Alexey Bychko <abychko@gmail.com>  Mon, 15 Dec 2025 10:20:00 +0200
+
 percona-server (8.0.44-35~int01) unstable; urgency=medium
 
   * PS-10232 [8.0]: Fix performance regression by limiting rows_in_buffer to query LIMIT

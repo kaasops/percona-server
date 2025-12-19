@@ -1193,7 +1193,7 @@ class Relay_log_info : public Rpl_info {
   mysql_mutex_t pending_jobs_lock;
   mysql_cond_t pending_jobs_cond;
   mysql_mutex_t exit_count_lock;  // mutex of worker exit count
-  ulong mts_slave_worker_queue_len_max;
+  ulong mts_replica_worker_queue_len_max;
   ulonglong mts_pending_jobs_size;      // actual mem usage by WQ:s
   ulonglong mts_pending_jobs_size_max;  // max of WQ:s size forcing C to wait
   bool mts_wq_oversize;  // C raises flag to wait some memory's released

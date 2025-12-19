@@ -196,7 +196,7 @@ const char *relay_log_basename = nullptr;
   of Relay_log_info::gaq (see @c slave_start_workers()).
   It can be set to any value in [1, ULONG_MAX - 1] range.
 */
-const ulong mts_slave_worker_queue_len_max = 16384;
+ulong mts_replica_worker_queue_len_max = 16 * 1024;
 
 /*
   Statistics go to the error log every # of seconds when
@@ -209,7 +209,7 @@ const long mts_online_stat_period = 60 * 2;
   Time unit in microsecs to sleep by MTS Coordinator to avoid extra thread
   signalling in the case of Worker queues are close to be filled up.
 */
-const ulong mts_coordinator_basic_nap = 5;
+ulong mts_coordinator_basic_nap = 5;
 
 /*
   MTS load-ballancing parameter.
@@ -6787,14 +6787,14 @@ static int slave_start_workers(Relay_log_info *rli, ulong n, bool *mts_inited) {
   if (!rli->gaq->inited) return 1;
 
   // length of WQ is actually constant though can be made configurable
-  rli->mts_slave_worker_queue_len_max = mts_slave_worker_queue_len_max;
+  rli->mts_replica_worker_queue_len_max = ::mts_replica_worker_queue_len_max;
   rli->mts_pending_jobs_size = 0;
   rli->mts_pending_jobs_size_max = ::opt_mts_pending_jobs_size_max;
   rli->mts_wq_underrun_w_id = MTS_WORKER_UNDEF;
   rli->mts_wq_excess_cnt = 0;
   rli->mts_wq_overrun_cnt = 0;
   rli->mts_wq_oversize = false;
-  rli->mts_coordinator_basic_nap = mts_coordinator_basic_nap;
+  rli->mts_coordinator_basic_nap = ::mts_coordinator_basic_nap;
   rli->mts_worker_underrun_level = mts_worker_underrun_level;
   rli->curr_group_seen_begin = rli->curr_group_seen_gtid = false;
   rli->curr_group_isolated = false;
@@ -6802,6 +6802,19 @@ static int slave_start_workers(Relay_log_info *rli, ulong n, bool *mts_inited) {
   rli->mts_last_online_stat = time(nullptr);
   rli->mts_group_status = Relay_log_info::MTS_NOT_IN_GROUP;
   clear_gtid_monitoring_info = true;
+
+#ifndef DBUG_OFF
+  sql_print_information("MTS_INIT_DEBUG: Worker queue parameters initialized. "
+                        "Queue length: global=%lu, rli->mts_replica_worker_queue_len_max=%lu. "
+                        "Coordinator nap: global=%lu, rli->mts_coordinator_basic_nap=%lu. "
+                        "Pending jobs size: global=%llu, rli->mts_pending_jobs_size_max=%llu",
+                        ::mts_replica_worker_queue_len_max,
+                        rli->mts_replica_worker_queue_len_max,
+                        ::mts_coordinator_basic_nap,
+                        rli->mts_coordinator_basic_nap,
+                        ::opt_mts_pending_jobs_size_max,
+                        rli->mts_pending_jobs_size_max);
+#endif
 
   if (init_hash_workers(rli))  // MTS: mapping_db_to_worker
   {

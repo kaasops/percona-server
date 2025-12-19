@@ -361,7 +361,7 @@ int Slave_worker::init_worker(Relay_log_info *rli, ulong i) {
   jobs.len = 0;
   jobs.overfill = false;  //  todo: move into Slave_jobs_queue constructor
   jobs.waited_overfill = 0;
-  jobs.capacity = c_rli->mts_slave_worker_queue_len_max;
+  jobs.capacity = c_rli->mts_replica_worker_queue_len_max;
   jobs.inited_queue = true;
   curr_group_seen_gtid = false;
 #ifndef NDEBUG

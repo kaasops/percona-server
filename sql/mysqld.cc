@@ -9826,6 +9826,14 @@ struct my_option my_long_options[] = {
      "user has access to in a comma delimited list.",
      &utility_user_schema_access, 0, 0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0,
      0},
+    {"replica-parallel-worker-queue-len-max", OPT_REPLICA_PARALLEL_WORKER_QUEUE_LEN_MAX,
+     "Maximum length of the worker queue for multithreaded replica.",
+     &mts_replica_worker_queue_len_max, &mts_replica_worker_queue_len_max,
+     0, GET_ULONG, REQUIRED_ARG, 16 * 1024, 1, 18446744073709547520ULL, 0, 1, 0}, // DEFAULT=16348
+    {"mts-coordinator-basic-nap", OPT_MTS_COORDINATOR_BASIC_NAP,
+     "Basic nap time for coordinator in milliseconds (MTS).",
+     &mts_coordinator_basic_nap, &mts_coordinator_basic_nap,
+     0, GET_ULONG, REQUIRED_ARG, 10, 1, 3600000, 0, 1, 0},
 
     {nullptr, 0, nullptr, nullptr, nullptr, nullptr, GET_NO_ARG, NO_ARG, 0, 0,
      0, nullptr, 0, nullptr}};

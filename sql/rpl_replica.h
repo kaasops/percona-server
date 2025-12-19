@@ -362,6 +362,11 @@ extern bool opt_log_replica_updates;
 extern char *opt_replica_skip_errors;
 extern ulonglong relay_log_space_limit;
 
+
+//
+extern ulong mts_replica_worker_queue_len_max;
+extern ulong mts_coordinator_basic_nap;
+
 extern const char *relay_log_index;
 extern const char *relay_log_basename;
 

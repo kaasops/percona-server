@@ -7108,6 +7108,28 @@ static Sys_var_ulong Sys_replica_parallel_workers(
     NOT_IN_BINLOG, ON_CHECK(nullptr),
     ON_UPDATE(replica_parallel_workers_update));
 
+static Sys_var_ulong Sys_mts_replica_worker_queue_len_max(
+    "replica_parallel_worker_queue_len_max",
+    "Maximum length of the worker queue for multithreaded replica.",
+    GLOBAL_VAR(mts_replica_worker_queue_len_max),
+    CMD_LINE(REQUIRED_ARG, OPT_REPLICA_PARALLEL_WORKER_QUEUE_LEN_MAX),
+    VALID_RANGE(1, 18446744073709547520ULL), // Or maybe uint32_t?
+    DEFAULT(16 * 1024),
+    BLOCK_SIZE(1));
+
+static Sys_var_deprecated_alias Sys_slave_parallel_worker_queue_len_max(
+    "slave_parallel_worker_queue_len_max",
+     Sys_mts_replica_worker_queue_len_max);
+
+static Sys_var_ulong Sys_mts_coordinator_basic_nap(
+    "mts_coordinator_basic_nap",
+    "Basic nap time for coordinator in milliseconds (MTS).",
+    GLOBAL_VAR(mts_coordinator_basic_nap),
+    CMD_LINE(REQUIRED_ARG, OPT_MTS_COORDINATOR_BASIC_NAP),
+    VALID_RANGE(1, 3600000),               // 1H max
+    DEFAULT(5),
+    BLOCK_SIZE(1));
+
 static Sys_var_deprecated_alias Sys_slave_parallel_workers(
     "slave_parallel_workers", Sys_replica_parallel_workers);
 
