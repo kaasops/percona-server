@@ -181,6 +181,9 @@ if ($fake_changes)
   --force-rmdir $MYSQL_TMP_DIR/load_generator_slave
 }
 
+# Remove expect file created during test
+exec rm -f $MYSQLTEST_VARDIR/tmp/mysqld.1.expect;
+
 # Reconnect client in case master had been killed
 if ($kill_db_after)
 {
