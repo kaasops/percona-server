@@ -71,6 +71,9 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include <sstream>
 #include <string_view>
 #include <unordered_map>
+#include <chrono>
+#include <iomanip>
+#include <cmath>
 
 #include "buf0checksum.h"
 #include "buf0dump.h"
@@ -1536,12 +1539,20 @@ static void buf_pool_free() {
 
 /** Creates the buffer pool.
 @param[in]  total_size    Size of the total pool in bytes.
-@param[in]  populate	  Virtual page preallocation
+@param[in]  populate    Virtual page preallocation
 @param[in]  n_instances   Number of buffer pool instances to create.
 @return DB_SUCCESS if success, DB_ERROR if not enough memory or error */
 dberr_t buf_pool_init(ulint total_size, bool populate, ulint n_instances) {
+
   ulint i;
   const ulint size = total_size / n_instances;
+
+/* Variables for timing measurement */
+  using clock = std::chrono::high_resolution_clock;
+  std::chrono::time_point<clock> start_time;
+  std::chrono::time_point<clock> end_time;
+  double elapsed_seconds;
+  double speed_gb_per_sec;
 
   ut_ad(n_instances > 0);
   ut_ad(n_instances <= MAX_BUFFER_POOLS);
@@ -1549,93 +1560,172 @@ dberr_t buf_pool_init(ulint total_size, bool populate, ulint n_instances) {
 
   NUMA_MEMPOLICY_INTERLEAVE_IN_SCOPE;
 
-  /* Usually buf_pool_should_madvise is protected by buf_pool_t::chunk_mutex-es,
-  but at this point in time there is no buf_pool_t instances yet, and no risk of
-  race condition with sys_var modifications or buffer pool resizing because we
-  have just started initializing the buffer pool.*/
+/* Usually buf_pool_should_madvise is protected by buf_pool_t::chunk_mutex-es,
+but at this point in time there is no buf_pool_t instances yet, and no risk of
+race condition with sys_var modifications or buffer pool resizing because we
+have just started initializing the buffer pool.*/
   buf_pool_should_madvise = innobase_should_madvise_buf_pool();
 
   buf_pool_resizing = false;
 
   buf_pool_ptr = (buf_pool_t *)ut::zalloc_withkey(
-      UT_NEW_THIS_FILE_PSI_KEY, n_instances * sizeof *buf_pool_ptr);
+    UT_NEW_THIS_FILE_PSI_KEY, n_instances * sizeof *buf_pool_ptr);
 
   buf_chunk_map_reg =
-      ut::new_withkey<buf_pool_chunk_map_t>(UT_NEW_THIS_FILE_PSI_KEY);
+    ut::new_withkey<buf_pool_chunk_map_t>(UT_NEW_THIS_FILE_PSI_KEY);
 
   std::vector<dberr_t> errs;
 
   errs.assign(n_instances, DB_SUCCESS);
 
+  ulint n_cores;
+
 #ifdef UNIV_LINUX
-  ulint n_cores = sysconf(_SC_NPROCESSORS_ONLN);
+  if (srv_buffer_pool_parallel_init_threads > 0) {
+    /* Start with the user-specified value. */
+    n_cores = srv_buffer_pool_parallel_init_threads;
+  } else {
+    /* Default: one thread per buffer pool instance. */
+    n_cores = n_instances;
+  }
 
-  /* Magic number 8 is from empirical testing on a
-  4 socket x 10 Cores x 2 HT host. 128G / 16 instances
-  takes about 4 secs, compared to 10 secs without this
-  optimisation.. */
+  /* Ensure at least one thread. */
+  if (n_cores == 0) {
+    n_cores = 1;
+  }
 
-  if (n_cores > 8) {
-    n_cores = 8;
+  /* Final cap: never create more init threads than buffer pool instances. */
+  if (n_cores > n_instances) {
+    ib::warn(ER_IB_MSG_BUFFER_POOL_INIT_THREADS_CAPPED,
+      (ulong) n_cores, (ulong) n_instances, (ulong) n_instances);
+
+    n_cores = n_instances;
   }
 #else
-  ulint n_cores = 4;
+  n_cores = 4;                                  // not Linux
 #endif /* UNIV_LINUX */
+
+char unit;
+double bp_size;
+
+if (total_size >= 1024 * 1024 * 1024) {
+    bp_size = static_cast<double>(total_size / (1024.0 * 1024 * 1024));
+    unit = 'G';
+  } else {
+    bp_size = static_cast<double>(total_size / (1024.0 * 1024));
+    unit = 'M';
+  }
+
+/* Log parallel initialization parameters */
+  ib::info(ER_IB_MSG_BUFFER_POOL_INSTANCE_INIT_PARAMS,
+    n_instances, n_cores, srv_buffer_pool_parallel_init_threads,
+    bp_size, unit);
 
   dberr_t err = DB_SUCCESS;
 
+/* Start timing the buffer pool initialization */
+  start_time = clock::now();
+
   for (i = 0; i < n_instances; /* no op */) {
-    ulint n = i + n_cores;
+  ulint n = i + n_cores;
 
-    if (n > n_instances) {
-      n = n_instances;
+  if (n > n_instances) {
+    n = n_instances;
     }
 
-    std::vector<IB_thread> threads;
+  std::vector<IB_thread> threads;
+/* Variables for per-thread timing */
+  std::vector<std::chrono::time_point<clock>> thread_start_times;
+  thread_start_times.reserve(n - i);
 
-    std::mutex m;
+  std::mutex m;
 
-    for (ulint id = i; id < n; ++id) {
-      threads.emplace_back(os_thread_create(buf_pool_create_thread_key, 0,
-                                            buf_pool_create, &buf_pool_ptr[id],
-                                            size, id, &m, std::ref(errs[id]), populate));
-      threads[id - i].start();
+  for (ulint id = i; id < n; ++id) {
+    thread_start_times.emplace_back(clock::now());
+    threads.emplace_back(os_thread_create(buf_pool_create_thread_key, 0,
+      buf_pool_create, &buf_pool_ptr[id],
+      size, id, &m, std::ref(errs[id]), populate));
+    threads[id - i].start();
     }
 
-    for (ulint id = i; id < n; ++id) {
-      threads[id - i].join();
+  for (ulint id = i; id < n; ++id) {
+    threads[id - i].join();
 
-      if (errs[id] != DB_SUCCESS) {
-        err = errs[id];
+/* Measure and log per-thread initialization time */
+    auto thread_end_time = clock::now();
+    double thread_elapsed_seconds =
+      std::chrono::duration_cast<std::chrono::duration<double>>
+      (thread_end_time - thread_start_times[id - i]).count();
+
+    int thread_minutes = static_cast<int>(thread_elapsed_seconds / 60);
+    double thread_seconds_remaining = fmod(thread_elapsed_seconds, 60.0);
+
+    ib::info(ER_IB_MSG_BUFFER_POOL_INSTANCE_INIT_COMPLETED, id,
+      thread_minutes, thread_seconds_remaining);
+
+    if (errs[id] != DB_SUCCESS) {
+      err = errs[id];
       }
     }
 
-    if (err != DB_SUCCESS) {
-      for (size_t id = 0; id < n; ++id) {
-        if (buf_pool_ptr[id].chunks != nullptr) {
-          buf_pool_free_instance(&buf_pool_ptr[id]);
+  if (err != DB_SUCCESS) {
+/* On error, measure time before cleanup */
+    end_time = clock::now();
+    elapsed_seconds = std::chrono::duration_cast<std::chrono::duration<double>>
+      (end_time - start_time).count();
+
+    int error_minutes = static_cast<int>(elapsed_seconds / 60);
+    double error_seconds_remaining = fmod(elapsed_seconds, 60.0);
+
+    ib::error(ER_IB_MSG_BUFFER_POOL_INIT_FAILED,
+      error_minutes, error_seconds_remaining);
+
+    for (size_t id = 0; id < n; ++id) {
+      if (buf_pool_ptr[id].chunks != nullptr) {
+        buf_pool_free_instance(&buf_pool_ptr[id]);
         }
       }
 
-      buf_pool_free();
+    buf_pool_free();
 
-      return (err);
+    return (err);
     }
 
-    /* Do the next block of instances */
-    i = n;
+/* Do the next block of instances */
+  i = n;
   }
 
-  buf_pool_set_sizes();
-  buf_LRU_old_ratio_update(100 * 3 / 8, false);
 
-  btr_search_sys_create(buf_pool_get_curr_size() / sizeof(void *) / 64);
+buf_pool_set_sizes();
+buf_LRU_old_ratio_update(100 * 3 / 8, false);
 
-  buf_stat_per_index = ut::new_withkey<buf_stat_per_index_t>(
-      ut::make_psi_memory_key(mem_key_buf_stat_per_index_t));
+btr_search_sys_create(buf_pool_get_curr_size() / sizeof(void *) / 64);
 
-  return (DB_SUCCESS);
-}
+buf_stat_per_index = ut::new_withkey<buf_stat_per_index_t>(
+  ut::make_psi_memory_key(mem_key_buf_stat_per_index_t));
+
+/* End timing for success case */
+end_time = clock::now();
+elapsed_seconds = std::chrono::duration_cast<std::chrono::duration<double>>(
+  end_time - start_time).count();
+
+if (elapsed_seconds > 0.000001) {                 // Avoiding zero-division
+  speed_gb_per_sec = (total_size / (1024.0 * 1024 * 1024)) / elapsed_seconds;
+  } else {
+  speed_gb_per_sec = 0.0;
+  }
+
+
+/* Convert elapsed_seconds to minutes and seconds */
+int minutes = static_cast<int>(elapsed_seconds / 60);
+double seconds_remaining = fmod(elapsed_seconds, 60.0);
+
+ib::info(ER_IB_MSG_BUFFER_POOL_INIT_COMPLETED,
+  minutes, seconds_remaining, speed_gb_per_sec);
+
+return (DB_SUCCESS);
+  }
+
 
 /** Reallocate a control block.
 @param[in]      buf_pool        buffer pool instance
