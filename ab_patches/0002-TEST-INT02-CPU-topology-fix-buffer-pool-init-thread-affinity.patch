@@ -1,0 +1,161 @@
+From e13c3cd262f5458be49d133d9b710debab96545b Mon Sep 17 00:00:00 2001
+From: Alexey Bychko <abychko@gmail.com>
+Date: Fri, 13 Feb 2026 18:12:47 +0200
+Subject: [PATCH 2/2] [TEST INT02] CPU topology: fix buffer pool init thread
+ affinity
+
+Replace the old buffer pool init thread affinity logic with a NUMA-aware strategy based on the shared CPU topology snapshot. Init threads are now distributed evenly across sockets and CPU cores on Linux, with a proportional fallback over logical CPUs when detailed topology is not available. A debug-only log message records the chosen socket, core, and cpu_id for each buffer pool instance.
+---
+ storage/innobase/buf/buf0buf.cc | 122 +++++++++++++++++++++++++++++---
+ 1 file changed, 112 insertions(+), 10 deletions(-)
+
+diff --git a/storage/innobase/buf/buf0buf.cc b/storage/innobase/buf/buf0buf.cc
+index 17b6ea5119c..578bcf8724b 100644
+--- a/storage/innobase/buf/buf0buf.cc
++++ b/storage/innobase/buf/buf0buf.cc
+@@ -79,6 +79,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
+ #include "buf0dump.h"
+ #include "dict0dict.h"
+ #include "log0recv.h"
++#include "os0cpu.h"
+ #include "os0thread-create.h"
+ #include "page0zip.h"
+ #include "srv0mon.h"
+@@ -1292,23 +1293,124 @@ static void buf_pool_create(buf_pool_t *buf_pool, ulint buf_pool_size,
+   buf_chunk_t *chunk;
+ 
+ #ifdef UNIV_LINUX
+-  cpu_set_t cpuset;
++  buf_pool->stat.reset();
++
++  /* Distribute buffer pool init threads evenly across NUMA sockets
++     and across CPU cores within each socket, using topology. */
+ 
++  os_cpu_topology_init(&os_cpu_topology);
++
++  cpu_set_t cpuset;
+   CPU_ZERO(&cpuset);
+ 
+-  const long n_cores = sysconf(_SC_NPROCESSORS_ONLN);
++  int target_socket = -1;
++  int target_core = -1;
++  int target_thread = -1;
+ 
+-  CPU_SET(instance_no % n_cores, &cpuset);
++  const ulint n_instances = srv_buf_pool_instances;
++  const ulint n_sockets = static_cast<ulint>(os_cpu_topology.sockets.size());
+ 
+-  buf_pool->stat.reset();
++  if (n_instances > 0 && n_sockets > 0 && instance_no < n_instances) {
++    /* 1) Evenly distribute instances across sockets. */
++    const ulint base_s = n_instances / n_sockets;
++    const ulint rem_s  = n_instances - base_s * n_sockets;
++
++    ulint socket_index = 0;
++    ulint offset_in_socket = 0;
++
++    {
++      ulint remaining = instance_no;
++      for (ulint s = 0; s < n_sockets; ++s) {
++        const ulint share = (s < rem_s) ? (base_s + 1) : base_s;
++        if (remaining < share) {
++          socket_index = s;
++          offset_in_socket = remaining;
++          break;
++        }
++        remaining -= share;
++      }
++    }
++
++    if (socket_index < n_sockets) {
++      const os_cpu_socket_t &socket = os_cpu_topology.sockets[socket_index];
++      const ulint n_cores_on_socket =
++        static_cast<ulint>(socket.cores.size());
++
++      if (n_cores_on_socket > 0) {
++        /* 2) Evenly distribute instances across cores within the socket. */
++
++        ulint share_s = (socket_index < rem_s) ? (base_s + 1) : base_s;
++        if (share_s == 0) {
++          share_s = 1;
++        }
++
++        ulint step = n_cores_on_socket / share_s;
++        if (step == 0) {
++          step = 1;
++        }
++
++        ulint core_index = offset_in_socket * step;
++        if (core_index >= n_cores_on_socket) {
++          core_index = n_cores_on_socket - 1;
++        }
++
++        const os_cpu_core_t &core = socket.cores[core_index];
++
++        if (!core.threads.empty()) {
++          target_thread = core.threads[0].cpu_id;
++          target_socket = socket.socket_id;
++          target_core = core.core_id;
++        }
++      }
++    }
++  }
++
++  /* Fallback: spread threads over logical CPUs using proportional ranges. */
++  if (target_thread < 0 && !os_cpu_topology.logical_ids.empty()) {
++    const ulint n_logical =
++      static_cast<ulint>(os_cpu_topology.logical_ids.size());
++
++    if (n_instances > 0 && instance_no < n_instances) {
++      const ulint base_l = n_logical / n_instances;
++      const ulint rem_l  = n_logical - base_l * n_instances;
++
++      ulint start = 0;
++      for (ulint i = 0; i < n_instances; ++i) {
++        const ulint share = (i < rem_l) ? (base_l + 1) : base_l;
++        if (i == instance_no) {
++          ulint idx = start;
++          if (idx >= n_logical) {
++            idx = n_logical - 1;
++          }
++          target_thread = os_cpu_topology.logical_ids[idx];
++
++          /* We do not know exact socket/core for this fallback. */
++          target_socket = -1;
++          target_core = -1;
++          break;
++        }
++        start += share;
++      }
++    }
++  }
++  
++  if (target_thread >= 0) {
++
++    ib::info(ER_IB_MSG_CPU_CORES_INFO)
++      << "Buffer pool init thread for instance " << instance_no
++      << " pinned to socket: " << target_socket
++      << ", core: " << target_core 
++      << ", thread: " << target_thread;
+ 
+-  if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) == -1) {
+-    ib::error(ER_IB_ERR_SCHED_SETAFFNINITY_FAILED)
+-        << "sched_setaffinity() failed!";
++    CPU_SET(target_thread, &cpuset);
++    if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) == -1) {
++      ib::warn(ER_IB_MSG_CPU_CORES_INFO)
++        << "buf_pool_create(): failed to set CPU affinity for instance "
++        << instance_no << " to thread: " << target_thread;
++    }
++    
+   }
+-  /* Linux might be able to set different setting for each thread
+-  worth to try to set high priority for this thread. */
+-  setpriority(PRIO_PROCESS, (pid_t)syscall(SYS_gettid), -20);
++
+ #endif /* UNIV_LINUX */
+ 
+   ut_ad(buf_pool_size % srv_buf_pool_chunk_unit == 0);
+-- 
+2.43.0
+
