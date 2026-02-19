@@ -1,3 +1,22 @@
+percona-server (8.0.44-35~int03) unstable; urgency=medium
+
+  * [INT03] guard against use-after-free in Item_cache::walk()
+  * [INT03] Do not force-flush worker position on every commit when GTID auto-positioning can recover it
+  * PS-10448 [8.0]: An insert prepared statement fails to write across partitions
+  * [INT03] Fix crash in buf_pool_register_chunk() during online buffer pool resize
+  * [INT03] Added march/mtune to CFLAGS/CXXFLAGS
+  * [INT03] hardware CRC32 implementation using Intel PCLMULQDQ
+  * [INT03] Add innodb_large_page_populate to control huge page pre-population
+  * [INT03] Buffer pool partial & lazy initialization groundwork
+  * [INT03] Reduce context switches in TTASEventMutex spin_and_try_lock()
+  * [INT03] Make ut_delay() deterministic
+  * [INT03] Buffer pool initialization speedup
+  * [INT03] CPU binding routines for server
+  * [INT03] CPU Topology moved from innodb to sql directory
+  * [INT03] reduce rw_lock_list contention during buffer pool init
+
+ -- Alexey Bychko <abychko@gmail.com>  Thu, 19 Feb 2026 22:20:00 +0200
+
 percona-server (8.0.44-35~int02) unstable; urgency=medium
 
   * [INT02] BP: detect the number of physical/logical CPUs
