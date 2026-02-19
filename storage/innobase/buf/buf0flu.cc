@@ -37,6 +37,8 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include <sys/types.h>
 #include <time.h>
 
+#include "sql/cpu_binding.h"
+
 #ifndef UNIV_HOTBACKUP
 #include "buf0buf.h"
 #include "buf0checksum.h"
@@ -87,6 +89,8 @@ static uint buf_flush_lsn_scan_factor = 3;
 
 /** Target oldest LSN for the requested flush_sync */
 static lsn_t buf_flush_sync_lsn = 0;
+
+extern char *opt_thread_affinity_bp_lru;
 
 #ifdef UNIV_DEBUG
 /** Get the lsn up to which data pages are to be synchronously flushed.
@@ -2879,6 +2883,8 @@ void buf_flush_page_cleaner_init() {
   /* Make sure page cleaner is active. */
   ut_a(buf_flush_page_cleaner_is_active());
 
+  cpu_binding_register_option(ThreadRole::BUFPOOL_LRU_T, opt_thread_affinity_bp_lru);
+
   for (size_t i = 0; i < srv_threads.m_lru_managers_n; ++i) {
     srv_threads.m_lru_managers[i] = os_thread_create(
         buf_lru_manager_thread_key, i, buf_lru_manager_thread, i);
@@ -3726,6 +3732,8 @@ free list refill. One thread is created for each buffer pool instace.
 @param[in]	arg	buffer pool instance number for this thread
 @return a dummy value */
 static void buf_lru_manager_thread(size_t buf_pool_instance) {
+  sql_print_information("buf_lru_manager_thread: start instance=%zu",
+                        buf_pool_instance);
 #ifdef UNIV_LINUX
   /* linux might be able to set different setting for each thread
   worth to try to set high priority for page cleaner threads */
@@ -3736,6 +3744,8 @@ static void buf_lru_manager_thread(size_t buf_pool_instance) {
 #endif /* UNIV_LINUX */
 
   ut_ad(buf_pool_instance < srv_buf_pool_instances);
+
+  cpu_binding_apply_for_role(ThreadRole::BUFPOOL_LRU_T, pthread_self(), srv_buf_pool_instances);
 
   buf_pool_t *const buf_pool = buf_pool_from_array(buf_pool_instance);
 
