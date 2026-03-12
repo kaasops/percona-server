@@ -23658,7 +23658,6 @@ static MYSQL_SYSVAR_ULONG(force_recovery, srv_force_recovery,
                           "Helps to save your data in case the disk image of "
                           "the database becomes corrupt.",
                           nullptr, nullptr, 0, 0, 6, 0);
-
 #ifdef UNIV_DEBUG
 static MYSQL_SYSVAR_ULONG(force_recovery_crash, srv_force_recovery_crash,
                           PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
@@ -24365,6 +24364,7 @@ static MYSQL_SYSVAR_BOOL(encrypt_online_alter_logs,
 static SYS_VAR *innobase_system_variables[] = {
 #ifdef UNIV_LINUX
     MYSQL_SYSVAR(buffer_pool_parallel_init_threads),
+    MYSQL_SYSVAR(large_page_populate),
 #endif
     MYSQL_SYSVAR(api_trx_level),
     MYSQL_SYSVAR(api_bk_commit_interval),
