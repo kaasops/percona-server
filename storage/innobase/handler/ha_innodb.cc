@@ -23652,6 +23652,10 @@ static MYSQL_SYSVAR_ULONG(buffer_pool_parallel_init_threads, srv_buffer_pool_par
                           PLUGIN_VAR_RQCMDARG,
                           "Maximum threads for parallel buffer pool initialization (0=auto)",
                           nullptr, nullptr, 0, 0, 128, 0);
+static MYSQL_SYSVAR_BOOL(large_page_populate, innodb_large_page_populate,
+                         PLUGIN_VAR_NOCMDARG,
+                         "Populate huge pages for InnoDB buffer pool at startup",
+                         nullptr, nullptr, false);
 #endif
 static MYSQL_SYSVAR_ULONG(force_recovery, srv_force_recovery,
                           PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
