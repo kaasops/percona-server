@@ -9622,6 +9622,16 @@ void Item_cache::print(const THD *thd, String *str,
 }
 
 bool Item_cache::walk(Item_processor processor, enum_walk walk, uchar *arg) {
+  // Sanity check: avoid walking clearly invalid example items.
+  if (example != nullptr) {
+    // If collation pointer is NULL or the item is not fixed, it is most
+    // likely destroyed or not properly initialized. Drop the pointer to
+    // prevent walking invalid memory.
+    if (example->collation.collation == nullptr || !example->fixed) {
+      example = nullptr;
+    }
+  }
+
   return ((walk & enum_walk::PREFIX) && (this->*processor)(arg)) ||
          (example && example->walk(processor, walk, arg)) ||
          ((walk & enum_walk::POSTFIX) && (this->*processor)(arg));
