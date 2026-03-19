@@ -34,6 +34,7 @@ SET(MYSYS_SOURCES
   buffered_error_log.cc
   charset.cc
   charset-def.cc
+  crc32_hw_intel.cc
   dbug.cc
   errors.cc
   lf_alloc-pin.cc
@@ -65,6 +66,7 @@ SET(MYSYS_SOURCES
   my_bitmap.cc
   my_chmod.cc
   my_chsize.cc
+  my_checksum.cc
   my_compare.cc
   my_compress.cc
   my_copy.cc
@@ -230,6 +232,9 @@ ENDIF()
 IF(SOLARIS AND MY_COMPILER_IS_GNU_OR_CLANG)
   ADD_COMPILE_FLAGS(my_md5.cc COMPILE_FLAGS "-Wno-deprecated-declarations")
 ENDIF()
+
+# Enable PCLMULQDQ + SSSE3 + SSE4.1 for Intel CRC32 implementation
+ADD_COMPILE_FLAGS(crc32_hw_intel.cc COMPILE_FLAGS "-mpclmul -mssse3 -msse4.1")
 
 # We are not interesting in profiling tests.
 DISABLE_MISSING_PROFILE_WARNING()

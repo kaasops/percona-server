@@ -12518,6 +12518,9 @@ ER_LOG_NAME_NOT_MATCHING_SEC_LOG_PATH
 ER_SSL_FIPS_MODE_ENABLED
   eng "A FIPS-approved version of the OpenSSL cryptographic library has been detected in the operating system with a properly configured FIPS module available for loading. Percona Server for MySQL will load this module and run in FIPS mode."
 
+ER_CRC32_IMPLEMENTATION
+  eng "BinLog/RelayLog CRC32 implementation: %s"
+
 #
 # End of Percona Server 8.0 server error log messages
 #
