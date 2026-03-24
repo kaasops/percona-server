@@ -728,8 +728,8 @@ IF(CMAKE_BUILD_TYPE_UPPER STREQUAL "DEBUG" OR WITH_DEBUG)
 ENDIF()
 
 OPTION(WITH_DEFAULT_COMPILER_OPTIONS
-  "Use flags from cmake/build_configurations/compiler_options.cmake"
-  ON)
+  "Use flags from cmake/build_configurations/compiler_options.cmake" ON)
+
 IF(BUILD_CONFIG)
   INCLUDE(
   ${CMAKE_SOURCE_DIR}/cmake/build_configurations/${BUILD_CONFIG}.cmake)
@@ -1389,6 +1389,23 @@ IF(UNIX AND MY_COMPILER_IS_GNU_OR_CLANG)
     STRING_APPEND(CMAKE_CXX_FLAGS_RELWITHDEBINFO " -g1")
   ENDIF()
 ENDIF()
+
+# Upgrade -g to -g3 -ggdb3 in all build-type-specific flags
+FOREACH(flag_var
+    CMAKE_C_FLAGS_DEBUG
+    CMAKE_CXX_FLAGS_DEBUG
+    CMAKE_C_FLAGS_RELWITHDEBINFO
+    CMAKE_CXX_FLAGS_RELWITHDEBINFO
+    CMAKE_C_FLAGS_RELEASE
+    CMAKE_CXX_FLAGS_RELEASE
+    CMAKE_C_FLAGS_MINSIZEREL
+    CMAKE_CXX_FLAGS_MINSIZEREL
+)
+  IF(DEFINED ${flag_var})
+    # Add spaces around to avoid touching substrings
+    STRING(REPLACE " -g " " -g3 -ggdb3 " ${flag_var} " ${${flag_var}} ")
+  ENDIF()
+ENDFOREACH()
 
 # Enable "-Og -fno-inline" for ordinary Debug builds.
 # Note that this may optimize away local stack variables.
