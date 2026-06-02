@@ -1996,13 +1996,22 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
         my_ok(thd);
       break;
     }
+
     case COM_RESET_CONNECTION: {
       thd->status_var.com_other++;
       global_aggregated_stats.get_shard(thd->thread_id()).com_other++;
+
+      if (opt_reset_connection_keep_sp_cache)
+        thd->m_skip_sp_cache_clear_on_cleanup = true;
+
+      auto reset_sp_cache_flag = create_scope_guard(
+          [thd]() { thd->m_skip_sp_cache_clear_on_cleanup = false; });
+
       thd->cleanup_connection();
       my_ok(thd);
       break;
     }
+
     case COM_CLONE: {
       thd->status_var.com_other++;
       global_aggregated_stats.get_shard(thd->thread_id()).com_other++;
@@ -2047,6 +2056,14 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
       thd->status_var.com_other++;
       global_aggregated_stats.get_shard(thd->thread_id()).com_other++;
 
+      // Defer SP cache clearing until auth result and new user are known.
+      // We will selectively clear below based on outcome.
+      if (opt_reset_connection_keep_sp_cache)
+        thd->m_skip_sp_cache_clear_on_cleanup = true;
+
+      auto reset_sp_cache_flag_cu = create_scope_guard(
+          [thd]() { thd->m_skip_sp_cache_clear_on_cleanup = false; });
+
       thd->cleanup_connection();
       USER_CONN *save_user_connect =
           const_cast<USER_CONN *>(thd->get_user_connect());
@@ -2071,6 +2088,12 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
         thd->set_user_connect(save_user_connect);
         thd->reset_db(save_db);
 
+        // Auth failed — SP cache must be cleared since connection is killed
+        if (opt_reset_connection_keep_sp_cache) {
+          sp_cache_clear(&thd->sp_proc_cache);
+          sp_cache_clear(&thd->sp_func_cache);
+        }
+
         my_error(ER_ACCESS_DENIED_CHANGE_USER_ERROR, MYF(0),
                  thd->security_context()->user().str,
                  thd->security_context()->host_or_ip().str,
@@ -2078,6 +2101,20 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
         thd->killed = THD::KILL_CONNECTION;
         error = true;
       } else {
+        // Auth succeeded — clear SP cache only if user identity changed
+        if (opt_reset_connection_keep_sp_cache) {
+          const LEX_CSTRING old_user = save_security_ctx.user();
+          const LEX_CSTRING new_user = thd->security_context()->user();
+          const bool user_changed =
+              old_user.str == nullptr || new_user.str == nullptr ||
+              my_strcasecmp(system_charset_info, old_user.str, new_user.str) !=
+                  0;
+          if (user_changed) {
+            sp_cache_clear(&thd->sp_proc_cache);
+            sp_cache_clear(&thd->sp_func_cache);
+          }
+        }
+
 #ifdef HAVE_PSI_THREAD_INTERFACE
         /* we've authenticated new user */
         PSI_THREAD_CALL(notify_session_change_user)(thd->get_psi());
@@ -2623,7 +2660,7 @@ done:
   else
     thd->mem_root->Clear();
 
-    /* SHOW PROFILE instrumentation, end */
+  /* SHOW PROFILE instrumentation, end */
 #if defined(ENABLED_PROFILING)
   thd->profiling->finish_current_query();
 #endif
@@ -4731,7 +4768,7 @@ int mysql_execute_command(THD *thd, bool first_level) {
         my_ok(thd);
       }
       break; /* break super switch */
-    }        /* end case group bracket */
+    } /* end case group bracket */
 
     case SQLCOM_ALTER_PROCEDURE:
     case SQLCOM_ALTER_FUNCTION: {
@@ -6488,11 +6525,10 @@ Table_ref *Query_block::add_table_to_list(
     // threads since this is expected by the mysql_upgrade utility.
     if (!(lex->sql_command == SQLCOM_CREATE_VIEW &&
           dd::get_dictionary()->is_system_view_name(
-              lex->query_tables->db, lex->query_tables->table_name))
-&& !(dd::get_dictionary()->is_system_view_name(
-              lex->query_tables->db, lex->query_tables->table_name)
- && DBUG_EVALUATE_IF("skip_dd_table_access_check", true, false))
-        ) {
+              lex->query_tables->db, lex->query_tables->table_name)) &&
+        !(dd::get_dictionary()->is_system_view_name(
+              lex->query_tables->db, lex->query_tables->table_name) &&
+          DBUG_EVALUATE_IF("skip_dd_table_access_check", true, false))) {
       my_error(ER_NO_SYSTEM_TABLE_ACCESS, MYF(0),
                ER_THD_NONCONST(thd, dictionary->table_type_error_code(
                                         ptr->db, ptr->table_name)),
