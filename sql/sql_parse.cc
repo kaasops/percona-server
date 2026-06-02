@@ -1996,13 +1996,22 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
         my_ok(thd);
       break;
     }
+
     case COM_RESET_CONNECTION: {
       thd->status_var.com_other++;
       global_aggregated_stats.get_shard(thd->thread_id()).com_other++;
+
+      if (opt_reset_connection_keep_sp_cache)
+        thd->m_skip_sp_cache_clear_on_cleanup = true;
+
+      auto reset_sp_cache_flag = create_scope_guard(
+          [thd]() { thd->m_skip_sp_cache_clear_on_cleanup = false; });
+
       thd->cleanup_connection();
       my_ok(thd);
       break;
     }
+
     case COM_CLONE: {
       thd->status_var.com_other++;
       global_aggregated_stats.get_shard(thd->thread_id()).com_other++;
@@ -2623,7 +2632,7 @@ done:
   else
     thd->mem_root->Clear();
 
-    /* SHOW PROFILE instrumentation, end */
+  /* SHOW PROFILE instrumentation, end */
 #if defined(ENABLED_PROFILING)
   thd->profiling->finish_current_query();
 #endif
@@ -4731,7 +4740,7 @@ int mysql_execute_command(THD *thd, bool first_level) {
         my_ok(thd);
       }
       break; /* break super switch */
-    }        /* end case group bracket */
+    } /* end case group bracket */
 
     case SQLCOM_ALTER_PROCEDURE:
     case SQLCOM_ALTER_FUNCTION: {
@@ -6488,11 +6497,10 @@ Table_ref *Query_block::add_table_to_list(
     // threads since this is expected by the mysql_upgrade utility.
     if (!(lex->sql_command == SQLCOM_CREATE_VIEW &&
           dd::get_dictionary()->is_system_view_name(
-              lex->query_tables->db, lex->query_tables->table_name))
-&& !(dd::get_dictionary()->is_system_view_name(
-              lex->query_tables->db, lex->query_tables->table_name)
- && DBUG_EVALUATE_IF("skip_dd_table_access_check", true, false))
-        ) {
+              lex->query_tables->db, lex->query_tables->table_name)) &&
+        !(dd::get_dictionary()->is_system_view_name(
+              lex->query_tables->db, lex->query_tables->table_name) &&
+          DBUG_EVALUATE_IF("skip_dd_table_access_check", true, false))) {
       my_error(ER_NO_SYSTEM_TABLE_ACCESS, MYF(0),
                ER_THD_NONCONST(thd, dictionary->table_type_error_code(
                                         ptr->db, ptr->table_name)),
