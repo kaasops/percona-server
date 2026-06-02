@@ -162,6 +162,8 @@
 
 #define MAX_CONNECTIONS 100000
 
+bool opt_reset_connection_keep_sp_cache = false;
+
 static constexpr const unsigned long DEFAULT_ERROR_COUNT{1024};
 static constexpr const unsigned long DEFAULT_SORT_MEMORY{256UL * 1024UL};
 static constexpr const unsigned HOST_CACHE_SIZE{128};
@@ -528,6 +530,13 @@ static Sys_var_bool Sys_lo_debug_missing_key(
     DEFAULT(false), LO_TRAILING_PROPERTIES);
 
 #endif /* WITH_LOCK_ORDER */
+
+static Sys_var_bool Sys_reset_connection_keep_sp_cache(
+    "reset_connection_keep_sp_cache",
+    "Keep stored procedure and function caches across COM_RESET_CONNECTION",
+    GLOBAL_VAR(opt_reset_connection_keep_sp_cache), CMD_LINE(OPT_ARG),
+    DEFAULT(true), NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(nullptr),
+    ON_UPDATE(nullptr));
 
 /* Sys_thread_affinity_main */
 

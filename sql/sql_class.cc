@@ -1226,11 +1226,15 @@ void THD::cleanup_connection(void) {
       Rpl_thd_context::TX_RPL_STAGE_CONNECTION_CLEANED);
   running_explain_analyze = false;
   m_thd_life_cycle_stage = enum_thd_life_cycle_stages::ACTIVE;
+
   init();
   stmt_map.reset();
   user_vars.clear();
-  sp_cache_clear(&sp_proc_cache);
-  sp_cache_clear(&sp_func_cache);
+
+  if (!m_skip_sp_cache_clear_on_cleanup) {
+    sp_cache_clear(&sp_proc_cache);
+    sp_cache_clear(&sp_func_cache);
+  }
 
   clear_error();
   // clear the warnings
@@ -1345,8 +1349,11 @@ void THD::cleanup(void) {
   */
   user_var_events.clear();
   close_temporary_tables(this);
-  sp_cache_clear(&sp_proc_cache);
-  sp_cache_clear(&sp_func_cache);
+
+  if (!m_skip_sp_cache_clear_on_cleanup) {
+    sp_cache_clear(&sp_proc_cache);
+    sp_cache_clear(&sp_func_cache);
+  }
 
   /*
     Actions above might generate events for the binary log, so we
@@ -1717,7 +1724,8 @@ extern "C" long long thd_start_time(const THD *thd) {
 
 extern "C" void thd_kill(ulong id) {
   Find_thd_with_id find_thd_with_id(id, false);
-  THD_ptr thd_ptr = Global_THD_manager::get_instance()->find_thd(&find_thd_with_id);
+  THD_ptr thd_ptr =
+      Global_THD_manager::get_instance()->find_thd(&find_thd_with_id);
   if (!thd_ptr) return;
 
   thd_ptr->awake(THD::KILL_CONNECTION);
@@ -2161,9 +2169,9 @@ void THD::shutdown_active_vio() {
 const char *get_client_host(const THD &client) noexcept {
   return client.security_context()->host_or_ip().length
              ? client.security_context()->host_or_ip().str
-             : client.security_context()->host().length
-                   ? client.security_context()->host().str
-                   : "";
+         : client.security_context()->host().length
+             ? client.security_context()->host().str
+             : "";
 }
 
 void THD::shutdown_clone_vio() {

@@ -1132,7 +1132,6 @@ class THD : public MDL_context_owner,
   */
   Thd_mem_cnt m_mem_cnt;
 
-
   /**
     Logical CPU shard index used for CPU-based sharding of table cache.
 
@@ -1145,7 +1144,7 @@ class THD : public MDL_context_owner,
     on the hot path. It is only updated when the thread is bound to
     a CPU or when CPU topology is re-evaluated for this THD.
   */
-  int m_cpu_shard {-1};
+  int m_cpu_shard{-1};
   /**
     Get current CPU shard index for this THD.
 
@@ -1160,9 +1159,12 @@ class THD : public MDL_context_owner,
       - a non-negative value in the range [0, table_cache_instances), or
       - -1 to mark shard as unknown and use legacy sharding fallback.
   */
-  void set_cpu_shard(int shard) noexcept {
-    m_cpu_shard = shard;
-  }
+  void set_cpu_shard(int shard) noexcept { m_cpu_shard = shard; }
+
+  /**
+      When true, cleanup_connection() will not clear stored routine caches.
+Intended for COM_RESET_CONNECTION handling only.    */
+  bool m_skip_sp_cache_clear_on_cleanup{false};
 
  private:
   bool is_stmt_prepare() const = delete;
@@ -1364,11 +1366,11 @@ class THD : public MDL_context_owner,
   */
   collation_unordered_map<std::string, unique_ptr_with_deleter<user_var_entry>>
       user_vars{system_charset_info, key_memory_user_var_entry};
-  struct rand_struct rand;                      // used for authentication
-  struct System_variables variables;            // Changeable local variables
-  struct System_status_var status_var;          // Per thread statistic vars
-  struct rand_struct slog_rand;                 // used for random slow log
-                                                // filtering
+  struct rand_struct rand;              // used for authentication
+  struct System_variables variables;    // Changeable local variables
+  struct System_status_var status_var;  // Per thread statistic vars
+  struct rand_struct slog_rand;         // used for random slow log
+                                        // filtering
   struct System_status_var
       *copy_status_var_ptr;  // A copy of the statistic vars asof the start of
                              // the query
@@ -3155,7 +3157,6 @@ class THD : public MDL_context_owner,
 
   /** number of name_const() substitutions, see sp_head.cc:subst_spvars() */
   uint query_name_consts;
-
 
   /*
     Used to update global user stats.  The global user stats are updated

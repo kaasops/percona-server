@@ -73,10 +73,10 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
 #ifdef UNIV_LINUX
 /* include defs for CPU time priority settings */
+#include <pthread.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
 #include <sys/time.h>
-#include <pthread.h>
 #include <unistd.h>
 
 static void pc_bind_to_cpu(size_t instance_no) {
@@ -214,7 +214,8 @@ struct page_cleaner_t {
   ulint n_disabled_debug;
   /*!< how many of pc threads
   have been disabled */
-#endif /* UNIV_DEBUG */
+#endif                   /* UNIV_DEBUG */
+  bool localized_active; /* true if NUMA-localized flushing is active */
 };
 
 static ut::unique_ptr<page_cleaner_t> page_cleaner;
@@ -239,40 +240,33 @@ static void buf_flush_localized_validate() {
     return;
   }
 
-  if (srv_buf_pool_instances == 0 ||
-      srv_n_page_cleaners == 0 ||
+  if (srv_buf_pool_instances == 0 || srv_n_page_cleaners == 0 ||
       srv_n_page_cleaners != srv_buf_pool_instances) {
-
     ib::warn(ER_IB_MSG_CPU_CORES_INFO)
-      << "innodb_flush_localized=ON but innodb_page_cleaners ("
-      << (ulong) srv_n_page_cleaners
-      << ") != innodb_buffer_pool_instances ("
-      << (ulong) srv_buf_pool_instances
-      << "); localized flushing disabled.";
+        << "innodb_flush_localized=ON but innodb_page_cleaners ("
+        << (ulong)srv_n_page_cleaners << ") != innodb_buffer_pool_instances ("
+        << (ulong)srv_buf_pool_instances << "); localized flushing disabled.";
 
     return;
   }
 
   if (srv_buf_pool_instances > 128) {
     ib::warn(ER_IB_MSG_CPU_CORES_INFO)
-      << "innodb_flush_localized=ON but innodb_buffer_pool_instances="
-      << (ulong) srv_buf_pool_instances
-      << " > 128; localized flushing disabled.";
+        << "innodb_flush_localized=ON but innodb_buffer_pool_instances="
+        << (ulong)srv_buf_pool_instances
+        << " > 128; localized flushing disabled.";
     return;
   }
 
   innodb_flush_localized_active = true;
 
   ib::info(ER_IB_MSG_CPU_CORES_INFO)
-    << "localized page flushing enabled: "
-    << "one page cleaner thread per buffer pool instance.";
+      << "localized page flushing enabled: "
+      << "one page cleaner thread per buffer pool instance.";
 }
 
 /* Validate localized page flushing mode after startup options are finalized. */
-void buf_flush_localized_validate_startup()
-{
-  buf_flush_localized_validate();
-}
+void buf_flush_localized_validate_startup() { buf_flush_localized_validate(); }
 
 /** Flush a batch of writes to the datafiles that have already been
 written to the dblwr buffer on disk. */
@@ -2858,32 +2852,26 @@ void buf_flush_page_cleaner_init() {
   ut_ad(page_cleaner == nullptr);
 
   page_cleaner = ut::make_unique<page_cleaner_t>(UT_NEW_THIS_FILE_PSI_KEY);
-
   mutex_create(LATCH_ID_PAGE_CLEANER, &page_cleaner->mutex);
-
   page_cleaner->is_requested = os_event_create();
   page_cleaner->is_finished = os_event_create();
-
   page_cleaner->n_slots = static_cast<ulint>(srv_buf_pool_instances);
-
   page_cleaner->slots = ut::make_unique<page_cleaner_slot_t[]>(
       UT_NEW_THIS_FILE_PSI_KEY, page_cleaner->n_slots);
 
   ut_d(page_cleaner->n_disabled_debug = 0);
 
   page_cleaner->is_running = true;
+  page_cleaner->localized_active = false;
 
   srv_threads.m_page_cleaner_coordinator = os_thread_create(
       page_flush_coordinator_thread_key, 0, buf_flush_page_coordinator_thread);
-
   srv_threads.m_page_cleaner_workers[0] =
       srv_threads.m_page_cleaner_coordinator;
-
   srv_threads.m_page_cleaner_coordinator.start();
 
   /* Make sure page cleaner is active. */
   ut_a(buf_flush_page_cleaner_is_active());
-
 }
 
 /**
@@ -2956,114 +2944,119 @@ static void pc_request(ulint min_n, lsn_t lsn_limit) {
   mutex_exit(&page_cleaner->mutex);
 }
 
-/* Do flush for one slot.
-   @param[in] worker_id  Worker index; currently ignored, kept for
-                         future localized mode.
-   @return the number of the slots which has not been treated yet. */
+/** Do flush for one slot.
+@param[in] worker_id Worker index.
+In localized mode each worker handles only the slot with the same index.
+In legacy mode any worker may pick any requested slot.
+@return the number of the slots which have not been treated yet. */
 static ulint pc_flush_slot(ulint worker_id) {
-  std::chrono::steady_clock::duration lru_time;
+  std::chrono::steady_clock::duration lru_time{};
   std::chrono::steady_clock::duration flush_list_time{};
   int lru_pass = 0;
   int list_pass = 0;
 
   mutex_enter(&page_cleaner->mutex);
 
-  if (page_cleaner->n_slots_requested > 0) {
-    page_cleaner_slot_t *slot = nullptr;
-    ulint i = ULINT_UNDEFINED;
+  if (page_cleaner->n_slots_requested == 0) {
+    mutex_exit(&page_cleaner->mutex);
+    return 0;
+  }
 
-    const bool localized =
-        innodb_flush_localized_active &&
-        worker_id < page_cleaner->n_slots;
+  page_cleaner_slot_t *slot = nullptr;
+  ulint i = ULINT_UNDEFINED;
+  const bool localized =
+      ((page_cleaner->localized_active) && (worker_id < page_cleaner->n_slots));
 
-    if (localized) {
-      /* Localized mode: this worker only handles its own slot. */
-      i = worker_id;
-      slot = &page_cleaner->slots[i];
+  if (localized) {
+    /* In localized mode a worker is responsible only for its own slot.
+    This keeps worker-to-buffer-pool mapping stable and prevents
+    cross-slot work stealing. */
+    i = worker_id;
+    slot = &page_cleaner->slots[i];
 
-      if (slot->state != PAGE_CLEANER_STATE_REQUESTED) {
-        /* Nothing to do for this worker right now. */
-        ulint ret = page_cleaner->n_slots_requested;
-        mutex_exit(&page_cleaner->mutex);
-        return ret;
-      }
-    } else {
-      /* Legacy behaviour: find any requested slot. */
-      for (i = 0; i < page_cleaner->n_slots; i++) {
-        slot = &page_cleaner->slots[i];
-
-        if (slot->state == PAGE_CLEANER_STATE_REQUESTED) {
-          break;
-        }
-      }
-
-      /* slot should be found because
-      page_cleaner->n_slots_requested > 0 */
-      ut_a(i < page_cleaner->n_slots);
-    }
-
-    buf_pool_t *buf_pool = buf_pool_from_array(i);
-
-    page_cleaner->n_slots_requested--;
-    page_cleaner->n_slots_flushing++;
-    slot->state = PAGE_CLEANER_STATE_FLUSHING;
-
-    if (page_cleaner->n_slots_requested == 0) {
-      os_event_reset(page_cleaner->is_requested);
-    }
-
-    if (!page_cleaner->is_running) {
-      slot->n_flushed_lru = 0;
-      slot->n_flushed_list = 0;
-    } else {
+    if (slot->state != PAGE_CLEANER_STATE_REQUESTED) {
+      ulint ret = page_cleaner->n_slots_requested;
       mutex_exit(&page_cleaner->mutex);
-
-      const auto lru_start = std::chrono::steady_clock::now();
-
-      /* Flush pages from end of LRU if required */
-      slot->n_flushed_lru = buf_flush_LRU_list(buf_pool);
-
-      lru_time = std::chrono::steady_clock::now() - lru_start;
-      lru_pass = 1;
-
-      if (!page_cleaner->is_running) {
-        slot->n_flushed_list = 0;
-      } else {
-        /* Flush pages from flush_list if required */
-        if (page_cleaner->requested) {
-          const auto flush_list_start = std::chrono::steady_clock::now();
-
-          slot->succeeded_list = buf_flush_do_batch(
-              buf_pool, BUF_FLUSH_LIST, slot->n_pages_requested,
-              page_cleaner->lsn_limit, &slot->n_flushed_list);
-
-          flush_list_time =
-              std::chrono::steady_clock::now() - flush_list_start;
-          list_pass = 1;
-        } else {
-          slot->n_flushed_list = 0;
-          slot->succeeded_list = true;
-        }
+      return ret;
+    }
+  } else {
+    /* Legacy behavior: pick the first requested slot from the global pool
+    of pending work. */
+    for (i = 0; i < page_cleaner->n_slots; i++) {
+      slot = &page_cleaner->slots[i];
+      if (slot->state == PAGE_CLEANER_STATE_REQUESTED) {
+        break;
       }
-
-      mutex_enter(&page_cleaner->mutex);
     }
 
-    page_cleaner->n_slots_flushing--;
-    page_cleaner->n_slots_finished++;
-    slot->state = PAGE_CLEANER_STATE_FINISHED;
+    /* A slot must exist because n_slots_requested > 0. */
+    ut_a(i < page_cleaner->n_slots);
+  }
 
-    slot->flush_lru_time +=
-        std::chrono::duration_cast<std::chrono::milliseconds>(lru_time);
-    slot->flush_list_time +=
-        std::chrono::duration_cast<std::chrono::milliseconds>(flush_list_time);
-    slot->flush_lru_pass += lru_pass;
-    slot->flush_list_pass += list_pass;
+  buf_pool_t *buf_pool = buf_pool_from_array(i);
 
-    if (page_cleaner->n_slots_requested == 0 &&
-        page_cleaner->n_slots_flushing == 0) {
-      os_event_set(page_cleaner->is_finished);
+  /* Move the slot from REQUESTED to FLUSHING while holding the mutex. */
+  page_cleaner->n_slots_requested--;
+  page_cleaner->n_slots_flushing++;
+  slot->state = PAGE_CLEANER_STATE_FLUSHING;
+
+  if (page_cleaner->n_slots_requested == 0) {
+    /* The last REQUESTED slot has been claimed. */
+    os_event_reset(page_cleaner->is_requested);
+  }
+
+  const bool is_running = page_cleaner->is_running;
+  const bool do_flush_list = page_cleaner->requested;
+  const ulint n_pages_requested = slot->n_pages_requested;
+  const lsn_t lsn_limit = page_cleaner->lsn_limit;
+
+  mutex_exit(&page_cleaner->mutex);
+
+  ulint n_flushed_lru = 0;
+  ulint n_flushed_list = 0;
+  bool succeeded_list = true;
+
+  if (is_running) {
+    const auto lru_start = std::chrono::steady_clock::now();
+
+    /* Flush pages from the LRU list for the selected buffer pool instance. */
+    n_flushed_lru = buf_flush_LRU_list(buf_pool);
+
+    lru_time = std::chrono::steady_clock::now() - lru_start;
+    lru_pass = 1;
+
+    if (do_flush_list) {
+      const auto flush_list_start = std::chrono::steady_clock::now();
+
+      succeeded_list =
+          buf_flush_do_batch(buf_pool, BUF_FLUSH_LIST, n_pages_requested,
+                             lsn_limit, &n_flushed_list);
+
+      flush_list_time = std::chrono::steady_clock::now() - flush_list_start;
+      list_pass = 1;
     }
+  }
+
+  mutex_enter(&page_cleaner->mutex);
+
+  /* Publish the final state only after all slot-local counters are ready. */
+  slot->n_flushed_lru = n_flushed_lru;
+  slot->n_flushed_list = n_flushed_list;
+  slot->succeeded_list = succeeded_list;
+  slot->flush_lru_time +=
+      std::chrono::duration_cast<std::chrono::milliseconds>(lru_time);
+  slot->flush_list_time +=
+      std::chrono::duration_cast<std::chrono::milliseconds>(flush_list_time);
+  slot->flush_lru_pass  += lru_pass;
+  slot->flush_list_pass += list_pass;
+
+  page_cleaner->n_slots_flushing--;
+  page_cleaner->n_slots_finished++;
+  slot->state = PAGE_CLEANER_STATE_FINISHED;
+
+  if (page_cleaner->n_slots_requested == 0 &&
+      page_cleaner->n_slots_flushing == 0) {
+    os_event_set(page_cleaner->is_finished);
   }
 
   ulint ret = page_cleaner->n_slots_requested;
@@ -3075,6 +3068,7 @@ static ulint pc_flush_slot(ulint worker_id) {
 
 /**
 Wait until all flush requests are finished.
+Wait until all flush requests are finished.
 @param n_flushed_lru    number of pages flushed from the end of the LRU list.
 @param n_flushed_list   number of pages flushed from the end of the
                         flush_list.
@@ -3085,6 +3079,7 @@ static bool pc_wait_finished(ulint *n_flushed_lru, ulint *n_flushed_list) {
   *n_flushed_lru = 0;
   *n_flushed_list = 0;
 
+  /* Wait until the last in-flight slot signals completion. */
   os_event_wait(page_cleaner->is_finished);
 
   mutex_enter(&page_cleaner->mutex);
@@ -3102,8 +3097,8 @@ static bool pc_wait_finished(ulint *n_flushed_lru, ulint *n_flushed_list) {
     *n_flushed_list += slot->n_flushed_list;
     all_succeeded &= slot->succeeded_list;
 
+    /* Reset the slot so it can be reused in the next round. */
     slot->state = PAGE_CLEANER_STATE_NONE;
-
     slot->n_pages_requested = 0;
   }
 
@@ -3238,13 +3233,13 @@ static void buf_flush_page_coordinator_thread() {
   THD *thd = create_internal_thd();
 
 #ifdef UNIV_LINUX
-
-  if (innodb_flush_localized_active) {
+  /* Bind coordinator to CPU 0 only when localized flushing is active. */
+  if (page_cleaner->localized_active) {
     pc_bind_to_cpu(0);
   }
 
-  /* linux might be able to set different setting for each thread.
-  worth to try to set high priority for page cleaner threads */
+  /* Linux might be able to set different setting for each thread.
+  Worth to try to set high priority for page cleaner threads. */
   if (buf_flush_page_cleaner_set_priority(buf_flush_page_cleaner_priority)) {
     ib::info(ER_IB_MSG_126) << "page_cleaner coordinator priority: "
                             << buf_flush_page_cleaner_priority;
@@ -3256,7 +3251,7 @@ static void buf_flush_page_coordinator_thread() {
 #endif /* UNIV_LINUX */
 
   /* We start from 1 because the coordinator thread is part of the
-  same set */
+  same set. */
   for (size_t i = 1; i < srv_threads.m_page_cleaner_workers_n; ++i) {
     srv_threads.m_page_cleaner_workers[i] = os_thread_create(
         page_flush_thread_key, i, buf_flush_page_cleaner_thread, i);
@@ -3267,7 +3262,7 @@ static void buf_flush_page_coordinator_thread() {
   while (!srv_read_only_mode &&
          srv_shutdown_state.load() < SRV_SHUTDOWN_CLEANUP &&
          recv_sys->spaces != nullptr) {
-    /* treat flushing requests during recovery. */
+    /* Treat flushing requests during recovery. */
     ulint n_flushed_lru = 0;
     ulint n_flushed_list = 0;
 
@@ -3280,7 +3275,7 @@ static void buf_flush_page_coordinator_thread() {
 
     switch (recv_sys->flush_type) {
       case BUF_FLUSH_LRU:
-        /* Flush pages from end of LRU if required */
+        /* Flush pages from end of LRU if required. */
         pc_request(0, LSN_MAX);
         while (pc_flush_slot(0) > 0) {
         }
@@ -3288,7 +3283,7 @@ static void buf_flush_page_coordinator_thread() {
         break;
 
       case BUF_FLUSH_LIST:
-        /* Flush all pages */
+        /* Flush all pages. */
         do {
           pc_request(ULINT_MAX, LSN_MAX);
           while (pc_flush_slot(0) > 0) {
@@ -3336,9 +3331,8 @@ static void buf_flush_page_coordinator_thread() {
     const bool is_server_active = is_withdrawing || was_server_active ||
                                   srv_check_activity(last_activity);
 
-    /* The page_cleaner skips sleep if the server is
-    idle and there are no pending IOs in the buffer pool
-    and there is work to do. */
+    /* The page_cleaner skips sleep if the server is idle and there are
+    no pending IOs in the buffer pool and there is work to do. */
     if ((is_server_active || buf_get_n_pending_read_ios() || n_flushed == 0) &&
         !is_sync_flush) {
       ret_sleep = pc_sleep_if_needed(loop_start_time + std::chrono::seconds{1},
@@ -3379,7 +3373,7 @@ static void buf_flush_page_coordinator_thread() {
           --warn_count;
         }
       } else {
-        /* reset counter */
+        /* Reset counter. */
         warn_interval = 1;
         warn_count = 0;
       }
@@ -3393,7 +3387,7 @@ static void buf_flush_page_coordinator_thread() {
 
     lsn_t lsn_limit;
     if (srv_flush_sync && !srv_read_only_mode) {
-      /* lsn_limit!=0 means there are requests. needs to check the lsn. */
+      /* lsn_limit != 0 means there are requests. Needs to check the lsn. */
       lsn_limit = log_sync_flush_lsn(*log_sys);
       if (lsn_limit != 0) {
         /* Avoid aggressive sync flush beyond limit when redo is disabled. */
@@ -3420,10 +3414,23 @@ static void buf_flush_page_coordinator_thread() {
       MONITOR_INC_WAIT_STATS_EX(MONITOR_ON_LOG_, _PAGE_WRITTEN, wait_stats);
     }
 
+    /* Re-evaluate localized flushing mode on each loop.
+    We require one worker per buffer pool instance and a sane instance count. */
+    bool can_localize =
+        innodb_flush_localized &&
+        srv_buf_pool_instances == srv_threads.m_page_cleaner_workers_n &&
+        srv_buf_pool_instances > 0 &&
+        srv_buf_pool_instances <= MAX_BUFFER_POOLS;
+
+    mutex_enter(&page_cleaner->mutex);
+    page_cleaner->localized_active = can_localize;
+    bool localized = page_cleaner->localized_active;
+    mutex_exit(&page_cleaner->mutex);
+
     if (is_sync_flush || is_server_active) {
       ulint n_to_flush;
 
-      /* Estimate pages from flush_list to be flushed */
+      /* Estimate pages from flush_list to be flushed. */
       if (is_sync_flush) {
         ut_a(lsn_limit > 0);
         ut_a(lsn_limit < LSN_MAX);
@@ -3443,24 +3450,29 @@ static void buf_flush_page_coordinator_thread() {
         lsn_limit = 0;
       }
 
-      /* Request flushing for threads */
+      /* Request flushing for threads. */
       pc_request(n_to_flush, lsn_limit);
 
       const auto flush_start = std::chrono::steady_clock::now();
 
-      /* Coordinator also treats requests */
-      while (pc_flush_slot(0) > 0) {
-        /* No op */
+      if (localized) {
+        /* Localized mode: do not globally drain all slots here.
+        Coordinator services only its own slot once. */
+        pc_flush_slot(0);
+      } else {
+        /* Coordinator also treats requests (legacy behavior). */
+        while (pc_flush_slot(0) > 0) {
+        }
       }
 
-      /* only coordinator is using these counters,
+      /* Only coordinator is using these counters,
       so no need to protect by lock. */
       page_cleaner->flush_time +=
           std::chrono::duration_cast<std::chrono::milliseconds>(
               std::chrono::steady_clock::now() - flush_start);
       page_cleaner->flush_pass++;
 
-      /* Wait for all slots to be finished */
+      /* Wait for all slots to be finished. */
       ulint n_flushed_lru = 0;
       ulint n_flushed_list = 0;
 
@@ -3497,7 +3509,7 @@ static void buf_flush_page_coordinator_thread() {
       }
 
     } else if (ret_sleep == OS_SYNC_TIME_EXCEEDED && srv_idle_flush_pct) {
-      /* no activity, slept enough */
+      /* No activity, slept enough. */
       buf_flush_lists(PCT_IO(srv_idle_flush_pct), LSN_MAX, &n_flushed);
 
       n_flushed_last += n_flushed;
@@ -3509,7 +3521,7 @@ static void buf_flush_page_coordinator_thread() {
       }
 
     } else {
-      /* no activity, but woken up by event */
+      /* No activity, but woken up by event. */
       n_flushed = 0;
     }
 
@@ -3523,31 +3535,13 @@ static void buf_flush_page_coordinator_thread() {
 
   if (srv_fast_shutdown == 2 ||
       srv_shutdown_state.load() == SRV_SHUTDOWN_EXIT_THREADS) {
-    /* In very fast shutdown or when innodb failed to start, we
+    /* In very fast shutdown or when InnoDB failed to start, we
     simulate a crash of the buffer pool. We are not required to do
     any flushing. */
     goto thread_exit;
   }
 
-  /* In case of normal and slow shutdown the page_cleaner thread
-  must wait for all other activity in the server to die down.
-  Note that we can start flushing the buffer pool as soon as the
-  server enters shutdown phase but we must stay alive long enough
-  to ensure that any work done by the master or purge threads is
-  also flushed.
-  During shutdown we pass through three stages. In the first stage,
-  when SRV_SHUTDOWN_CLEANUP is set other threads like the master
-  and the purge threads may be working as well. We start flushing
-  the buffer pool but can't be sure that no new pages are being
-  dirtied until we enter SRV_SHUTDOWN_FLUSH_PHASE phase which is
-  the last phase (meanwhile we visit SRV_SHUTDOWN_MASTER_STOP).
-
-  Note, that if we are handling fatal error, we set the state
-  directly to EXIT_THREADS in which case we also might exit the loop
-  below, but still some new dirty pages could be arriving...
-  In such case we just want to stop and don't care about the new pages.
-  However we need to be careful not to crash (e.g. in assertions). */
-
+  /* Normal/slow shutdown — as в оригинале. */
   do {
     pc_request(ULINT_MAX, LSN_MAX);
 
@@ -3560,25 +3554,12 @@ static void buf_flush_page_coordinator_thread() {
 
     n_flushed = n_flushed_lru + n_flushed_list;
 
-    /* We sleep only if there are no pages to flush */
     if (n_flushed == 0) {
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
   } while (srv_shutdown_state.load() < SRV_SHUTDOWN_FLUSH_PHASE);
 
-  /* At this point all threads including the master and the purge
-  thread must have been closed, unless we are handling some error
-  during initialization of InnoDB (srv_init_abort). In such case
-  we could have SRV_SHUTDOWN_EXIT_THREADS set directly from the
-  srv_shutdown_exit_threads(). */
   if (srv_shutdown_state.load() != SRV_SHUTDOWN_EXIT_THREADS) {
-    /* We could have srv_shutdown_state.load() >= FLUSH_PHASE only
-    when either: shutdown started or init is being aborted. In the
-    first case we would have FLUSH_PHASE and keep waiting until
-    this thread is alive before we switch to LAST_PHASE.
-
-    In the second case, we would jump to EXIT_THREADS from NONE,
-    so we would not enter here. */
     ut_a(!srv_is_being_started);
     ut_a(srv_shutdown_state.load() == SRV_SHUTDOWN_FLUSH_PHASE);
 
@@ -3590,29 +3571,18 @@ static void buf_flush_page_coordinator_thread() {
     }
   }
 
-  /* We can now make a final sweep on flushing the buffer pool
-  and exit after we have cleaned the whole buffer pool.
-  It is important that we wait for any running batch that has
-  been triggered by us to finish. Otherwise we can end up
-  considering end of that batch as a finish of our final
-  sweep and we'll come out of the loop leaving behind dirty pages
-  in the flush_list */
   buf_flush_await_no_flushing(nullptr, BUF_FLUSH_LIST);
   buf_flush_await_no_flushing(nullptr, BUF_FLUSH_LRU);
+
+  /* Shutdown must always run in legacy mode. */
+  mutex_enter(&page_cleaner->mutex);
+  page_cleaner->localized_active = false;
+  mutex_exit(&page_cleaner->mutex);
 
   bool success;
   bool are_any_read_ios_still_underway;
 
   do {
-    /* If there are any read operations pending, they can result in the ibuf
-    merges and a dirtying page after the read is completed. If there are any
-    IO reads running before we run the flush loop, we risk having some dirty
-    pages after flushing reports n_flushed == 0. The ibuf change merging on
-    page results in dirtying the page and is followed by decreasing the
-    n_pend_reads counter, thus it's safe to check it before flush loop and
-    have guarantees if it was seen with value of 0. These reads could be issued
-    in the previous stage(s), the srv_master thread on shutdown tasks clear the
-    ibuf unless it's the fast shutdown. */
     are_any_read_ios_still_underway = buf_get_n_pending_read_ios() > 0;
     pc_request(ULINT_MAX, LSN_MAX);
 
@@ -3636,24 +3606,16 @@ static void buf_flush_page_coordinator_thread() {
     ut_a(UT_LIST_GET_LEN(buf_pool->flush_list) == 0);
   }
 
-  /* Mark that it is safe to recover as we have already flushed all dirty
-  pages in buffer pools. */
   if (mtr_t::s_logging.is_disabled() && !srv_read_only_mode) {
     log_persist_crash_safe(*log_sys);
   }
   log_crash_safe_validate(*log_sys);
 
-  /* We have lived our life. Time to die. */
-
 thread_exit:
-  /* All worker threads are waiting for the event here,
-  and no more access to page_cleaner structure by them.
-  Wakes worker threads up just to make them exit. */
   page_cleaner->is_running = false;
   os_event_set(page_cleaner->is_requested);
 
   buf_flush_page_cleaner_close();
-
   destroy_internal_thd(thd);
 }
 
@@ -3662,32 +3624,29 @@ thread_exit:
   used as the slot/buffer pool index in localized mode. */
 static void buf_flush_page_cleaner_thread(size_t worker_id) {
 #ifdef UNIV_LINUX
-
   if (innodb_flush_localized_active) {
+    /* Bind this worker to the CPU selected for its localized slot. */
     pc_bind_to_cpu(worker_id);
   }
 
-  /* linux might be able to set different setting for each thread
-     worth to try to set high priority for page cleaner threads */
+  /* Linux might allow different settings per thread.
+  It is worth trying to raise priority for page cleaner threads. */
   if (buf_flush_page_cleaner_set_priority(buf_flush_page_cleaner_priority)) {
     ib::info(ER_IB_MSG_129)
-        << "page_cleaner worker priority: "
-        << buf_flush_page_cleaner_priority;
+        << "page_cleaner worker priority: " << buf_flush_page_cleaner_priority;
   }
 #endif /* UNIV_LINUX */
 
   for (;;) {
     os_event_wait(page_cleaner->is_requested);
-
     ut_d(buf_flush_page_cleaner_disabled_loop());
 
     if (!page_cleaner->is_running) {
       break;
     }
 
-    /* For now we ignore worker_id and keep legacy scheduling.
-       In the next step pc_flush_slot(_X_) will use worker_id when
-       innodb_flush_localized_active is true. */
+    /* In localized mode worker_id identifies the dedicated slot.
+    In legacy mode pc_flush_slot() may still pick any requested slot. */
     pc_flush_slot(static_cast<ulint>(worker_id));
   }
 }
