@@ -1234,6 +1234,10 @@ void THD::cleanup_connection(void) {
   if (!m_skip_sp_cache_clear_on_cleanup) {
     sp_cache_clear(&sp_proc_cache);
     sp_cache_clear(&sp_func_cache);
+  } else {
+    // SP cache preserved across COM_RESET_CONNECTION
+    status_var.sp_cache_resets_skipped++;
+    global_aggregated_stats.get_shard(thread_id()).sp_cache_resets_skipped++;
   }
 
   clear_error();
