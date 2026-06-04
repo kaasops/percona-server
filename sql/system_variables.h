@@ -763,6 +763,12 @@ struct System_status_var {
   ulonglong table_open_cache_triggers_hits;
   ulonglong table_open_cache_triggers_misses;
   ulonglong table_open_cache_triggers_overflows;
+
+  // Stored procedure cache statistics
+  ulonglong sp_cache_insert;
+  ulonglong sp_routine_count;
+  ulonglong sp_cache_resets_skipped;
+
   ulonglong select_full_join_count;
   ulonglong select_full_range_join_count;
   ulonglong select_range_count;

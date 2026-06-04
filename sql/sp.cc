@@ -2016,6 +2016,10 @@ enum_sp_return_code sp_cache_routine(THD *thd, enum_sp_type type,
 
   *sp = sp_cache_lookup(spc, name);
 
+  // Count every routine cache lookup as one routine call
+  thd->status_var.sp_routine_count++;
+  global_aggregated_stats.get_shard(thd->thread_id()).sp_routine_count++;
+
   if (lookup_only) return SP_OK;
 
   if (*sp) {
@@ -2026,6 +2030,9 @@ enum_sp_return_code sp_cache_routine(THD *thd, enum_sp_type type,
   switch ((ret = db_find_routine(thd, type, name, sp))) {
     case SP_OK:
       sp_cache_insert(spc, *sp);
+      // SP was not in cache, loaded from DD and inserted
+      thd->status_var.sp_cache_insert++;
+      global_aggregated_stats.get_shard(thd->thread_id()).sp_cache_insert++;
       break;
     case SP_DOES_NOT_EXISTS:
       ret = SP_OK;
