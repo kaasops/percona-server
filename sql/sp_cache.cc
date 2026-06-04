@@ -34,7 +34,7 @@
 #include "mysql/strings/m_ctype.h"
 #include "sql/psi_memory_key.h"
 #include "sql/sp_head.h"
-
+#include "sql/sql_class.h"  // THD
 /*
   Cache of stored routines.
 */

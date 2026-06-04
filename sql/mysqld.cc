@@ -6160,6 +6160,25 @@ static PSI_metric_info_v1 core_metrics[] = {
      MetricOTELType::ASYNC_COUNTER, MetricNumType::METRIC_INTEGER, 0, 0,
      get_metric_aggregated_integer,
      (void *)offsetof(aggregated_stats_buffer, table_open_cache_overflows)},
+
+    {"sp_cache_insert", "",
+     "Number of times a stored routine was loaded from DD into SP cache "
+     "(Sp_cache_insert)",
+     MetricOTELType::ASYNC_COUNTER, MetricNumType::METRIC_INTEGER, 0, 0,
+     get_metric_aggregated_integer,
+     (void *)offsetof(aggregated_stats_buffer, sp_cache_insert)},
+    {"sp_routine_count", "",
+     "Number of stored routine cache lookups (Sp_routine_count)",
+     MetricOTELType::ASYNC_COUNTER, MetricNumType::METRIC_INTEGER, 0, 0,
+     get_metric_aggregated_integer,
+     (void *)offsetof(aggregated_stats_buffer, sp_routine_count)},
+    {"sp_cache_resets_skipped", "",
+     "Number of times SP cache was preserved on COM_RESET_CONNECTION "
+     "(Sp_cache_resets_skipped)",
+     MetricOTELType::ASYNC_COUNTER, MetricNumType::METRIC_INTEGER, 0, 0,
+     get_metric_aggregated_integer,
+     (void *)offsetof(aggregated_stats_buffer, sp_cache_resets_skipped)},
+
     {"tc_log_page_waits", "",
      "For the memory-mapped implementation of the recovery log, this variable "
      "increments each time the server was not able to commit a transaction and "
@@ -12230,6 +12249,15 @@ SHOW_VAR status_vars[] = {
     {"Table_locks_immediate", (char *)&locks_immediate, SHOW_LONG,
      SHOW_SCOPE_GLOBAL},
     {"Table_locks_waited", (char *)&locks_waited, SHOW_LONG, SHOW_SCOPE_GLOBAL},
+
+    {"Sp_cache_insert", (char *)offsetof(System_status_var, sp_cache_insert),
+     SHOW_LONGLONG_STATUS, SHOW_SCOPE_ALL},
+    {"Sp_routine_count", (char *)offsetof(System_status_var, sp_routine_count),
+     SHOW_LONGLONG_STATUS, SHOW_SCOPE_ALL},
+    {"Sp_cache_resets_skipped",
+     (char *)offsetof(System_status_var, sp_cache_resets_skipped),
+     SHOW_LONGLONG_STATUS, SHOW_SCOPE_ALL},
+
     {"Table_open_cache_hits",
      (char *)offsetof(System_status_var, table_open_cache_hits),
      SHOW_LONGLONG_STATUS, SHOW_SCOPE_ALL},
