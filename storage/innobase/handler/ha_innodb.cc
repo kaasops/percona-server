@@ -662,16 +662,16 @@ const struct _ft_vft_ext ft_vft_ext_result = {
 
 #ifdef HAVE_PSI_INTERFACE
 #define PSI_KEY(n, flag, volatility, doc) \
-  { &(n##_key.m_value), #n, flag, volatility, doc }
+  {&(n##_key.m_value), #n, flag, volatility, doc}
 #define PSI_MEMORY_KEY(n, flag, volatility, doc) \
-  { &(n##_key), #n, flag, volatility, doc }
+  {&(n##_key), #n, flag, volatility, doc}
 #define PSI_MUTEX_KEY(n, flag, volatility, doc) \
-  { &(n##_key.m_value), #n, flag, volatility, doc }
+  {&(n##_key.m_value), #n, flag, volatility, doc}
 /* All RWLOCK used in Innodb are SX-locks */
 #define PSI_RWLOCK_KEY(n, volatility, doc) \
-  { &n##_key.m_value, #n, PSI_FLAG_RWLOCK_SX, volatility, doc }
+  {&n##_key.m_value, #n, PSI_FLAG_RWLOCK_SX, volatility, doc}
 #define PSI_THREAD_KEY(n, osn, flag, volatility, doc) \
-  { &(n##_key.m_value), #n, osn, flag, volatility, doc }
+  {&(n##_key.m_value), #n, osn, flag, volatility, doc}
 
 /* Keys to register pthread mutexes/cond in the current file with
 performance schema */
@@ -3766,8 +3766,7 @@ void Validate_files::check(const Const_iter &begin, const Const_iter &end,
       It should be able to reuse the deleted smaller ones later */
       auto current_max = m_space_max_id.load();
       while (current_max < space_id &&
-             !m_space_max_id.compare_exchange_weak(current_max, space_id))
-        ;
+             !m_space_max_id.compare_exchange_weak(current_max, space_id));
     }
 
     /* System and temp files are tracked and opened separately.
@@ -4831,8 +4830,7 @@ corresponding to whether checksums are enabled.
 #ifndef UNIV_HOTBACKUP
 static
 #endif /* !UNIV_HOTBACKUP */
-    void
-    innodb_log_checksums_func_update(bool check) {
+    void innodb_log_checksums_func_update(bool check) {
   log_checksum_algorithm_ptr.store(check ? log_block_calc_checksum_crc32
                                          : log_block_calc_checksum_none);
 }
@@ -4965,27 +4963,26 @@ static void innodb_buffer_pool_size_init() {
 #endif /* UNIV_DEBUG */
 
   {
-  /* CPU-based adjustment of buffer pool instances. */
- sql_cpu_topology_init(&sql_cpu_topology);
+    /* CPU-based adjustment of buffer pool instances. */
+    sql_cpu_topology_init(&sql_cpu_topology);
 
-  if (sql_cpu_topology.physical_cores != 0) {
-    if (srv_buf_pool_instances > sql_cpu_topology.physical_cores) {
-      ulong old = srv_buf_pool_instances;
-      srv_buf_pool_instances =
-        static_cast<ulong>(sql_cpu_topology.physical_cores);
+    if (sql_cpu_topology.physical_cores != 0) {
+      if (srv_buf_pool_instances > sql_cpu_topology.physical_cores) {
+        ulong old = srv_buf_pool_instances;
+        srv_buf_pool_instances =
+            static_cast<ulong>(sql_cpu_topology.physical_cores);
 
-      ib::info(ER_IB_MSG_CPU_CORES_INFO)
-        << "Adjusting innodb_buffer_pool_instances from "
-        << old << " to " << srv_buf_pool_instances
-        << " based on physical CPU cores "
-        << (ulong)sql_cpu_topology.physical_cores;
+        ib::info(ER_IB_MSG_CPU_CORES_INFO)
+            << "Adjusting innodb_buffer_pool_instances from " << old << " to "
+            << srv_buf_pool_instances << " based on physical CPU cores "
+            << (ulong)sql_cpu_topology.physical_cores;
+      }
+    } else {
+      ib::warn(ER_IB_MSG_CPU_CORES_INFO)
+          << "Physical CPU core count could not be determined, "
+          << "skipping CPU-based adjustment of innodb_buffer_pool_instances.";
     }
-  } else {
-    ib::warn(ER_IB_MSG_CPU_CORES_INFO)
-      << "Physical CPU core count could not be determined, "
-      << "skipping CPU-based adjustment of innodb_buffer_pool_instances.";
   }
-}
 
   /* Bind table cache instances to buffer pool instances. */
   {
@@ -4995,7 +4992,7 @@ static void innodb_buffer_pool_size_init() {
       instances = 1;
     }
 
-     /* Optional: avoid too many instances which would reduce per-cache depth. */
+    /* Optional: avoid too many instances which would reduce per-cache depth. */
     if (instances > 64) {
       instances = 64;
     }
@@ -5859,8 +5856,9 @@ static int innodb_init(void *p) {
       HTON_SUPPORTS_ATOMIC_DDL | HTON_CAN_RECREATE |
       HTON_SUPPORTS_SECONDARY_ENGINE | HTON_SUPPORTS_TABLE_ENCRYPTION |
       HTON_SUPPORTS_GENERATED_INVISIBLE_PK | HTON_SUPPORTS_BULK_LOAD |
-  // TODO(WL9440): to be enabled when distance scan is implemented in innodb.
-  //| HTON_SUPPORTS_DISTANCE_SCAN;
+      // TODO(WL9440): to be enabled when distance scan is implemented in
+      // innodb.
+      //| HTON_SUPPORTS_DISTANCE_SCAN;
       HTON_SUPPORTS_ONLINE_BACKUPS | HTON_SUPPORTS_COMPRESSED_COLUMNS;
 
   innobase_hton->replace_native_transaction_in_thd = innodb_replace_trx_in_thd;
@@ -14370,6 +14368,19 @@ static ulint innobase_parse_merge_threshold(THD *thd, const char *str) {
   return (0);
 }
 
+/** Parse hint for disabling AHI from table comment.
+  Returns true if InnoDB_AHI=OFF is found in the comment string.
+  Exact case match is required: use InnoDB_AHI=OFF.
+  @param[in]  str  table comment string
+  @return true if AHI should be disabled for this table */
+static bool innobase_parse_ahi_hint(const char *str) {
+  if (str == nullptr) {
+    return false;
+  }
+
+  return (strstr(str, "InnoDB_AHI=OFF") != nullptr);
+}
+
 /** Parse hint for table and its indexes, and update the information
 in dictionary.
 @param[in]      thd             Connection thread
@@ -14381,9 +14392,12 @@ void innobase_parse_hint_from_comment(THD *thd, dict_table_t *table,
   ulint merge_threshold_index[MAX_KEY];
   bool is_found[MAX_KEY];
 
+  bool disable_ahi_for_table = false;
+
   if (table_share->comment.str != nullptr) {
     merge_threshold_table =
         innobase_parse_merge_threshold(thd, table_share->comment.str);
+    disable_ahi_for_table = innobase_parse_ahi_hint(table_share->comment.str);
   } else {
     merge_threshold_table = DICT_INDEX_MERGE_THRESHOLD_DEFAULT;
   }
@@ -14422,8 +14436,13 @@ void innobase_parse_hint_from_comment(THD *thd, dict_table_t *table,
       pessimistic tree operations */
       rw_lock_x_lock(dict_index_get_lock(index), UT_LOCATION_HERE);
       index->merge_threshold = merge_threshold_table;
-      rw_lock_x_unlock(dict_index_get_lock(index));
 
+      // Apply AHI disable to GEN_CLUST_INDEX too
+      if (disable_ahi_for_table) {
+        index->disable_ahi = true;
+      }
+
+      rw_lock_x_unlock(dict_index_get_lock(index));
       continue;
     }
 
@@ -14439,6 +14458,10 @@ void innobase_parse_hint_from_comment(THD *thd, dict_table_t *table,
         pessimistic tree operations */
         rw_lock_x_lock(dict_index_get_lock(index), UT_LOCATION_HERE);
         index->merge_threshold = merge_threshold_index[i];
+        // Apply AHI disable hint
+        if (disable_ahi_for_table) {
+          index->disable_ahi = true;
+        }
         rw_lock_x_unlock(dict_index_get_lock(index));
         is_found[i] = true;
 
@@ -23821,21 +23844,22 @@ static MYSQL_SYSVAR_ULONG(write_io_threads, srv_n_write_io_threads,
                           "Number of background write I/O threads in InnoDB.",
                           nullptr, nullptr, 4, 1, 64, 0);
 #ifdef UNIV_LINUX
-static MYSQL_SYSVAR_ULONG(buffer_pool_parallel_init_threads, srv_buffer_pool_parallel_init_threads,
-                          PLUGIN_VAR_RQCMDARG,
-                          "Maximum threads for parallel buffer pool initialization (0=auto)",
-                          nullptr, nullptr, 0, 0, 128, 0);
-static MYSQL_SYSVAR_BOOL(large_page_populate, innodb_large_page_populate,
-                         PLUGIN_VAR_NOCMDARG,
-                         "Populate huge pages for InnoDB buffer pool at startup",
-                         nullptr, nullptr, false);
-static MYSQL_SYSVAR_BOOL(flush_localized, innodb_flush_localized,
-                        PLUGIN_VAR_NOCMDARG,
-                        "Enable NUMA-localized InnoDB page flushing (one page cleaner "
-                        "thread per buffer pool instance). Requires "
-                        "innodb_page_cleaners == innodb_buffer_pool_instances. When "
-                        "disabled, InnoDB uses the legacy page cleaner scheduling.",
-                        nullptr, nullptr, false);
+static MYSQL_SYSVAR_ULONG(
+    buffer_pool_parallel_init_threads, srv_buffer_pool_parallel_init_threads,
+    PLUGIN_VAR_RQCMDARG,
+    "Maximum threads for parallel buffer pool initialization (0=auto)", nullptr,
+    nullptr, 0, 0, 128, 0);
+static MYSQL_SYSVAR_BOOL(
+    large_page_populate, innodb_large_page_populate, PLUGIN_VAR_NOCMDARG,
+    "Populate huge pages for InnoDB buffer pool at startup", nullptr, nullptr,
+    false);
+static MYSQL_SYSVAR_BOOL(
+    flush_localized, innodb_flush_localized, PLUGIN_VAR_NOCMDARG,
+    "Enable NUMA-localized InnoDB page flushing (one page cleaner "
+    "thread per buffer pool instance). Requires "
+    "innodb_page_cleaners == innodb_buffer_pool_instances. When "
+    "disabled, InnoDB uses the legacy page cleaner scheduling.",
+    nullptr, nullptr, false);
 #endif
 static MYSQL_SYSVAR_ULONG(force_recovery, srv_force_recovery,
                           PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
@@ -24944,11 +24968,11 @@ static const dfield_t *innobase_get_field_from_update_vector(
   return upd_field ? &upd_field->new_val : nullptr;
 }
 
-dfield_t *innobase_get_computed_value(mem_heap_t **compress_heap,
-    const dtuple_t *row, const dict_v_col_t *col, const dict_table_t *table,
-    mem_heap_t **local_heap, mem_heap_t *heap, THD *thd, TABLE *mysql_table,
-    const dict_field_t *ifield, const dict_table_t *old_table,
-    upd_t *row_update) {
+dfield_t *innobase_get_computed_value(
+    mem_heap_t **compress_heap, const dtuple_t *row, const dict_v_col_t *col,
+    const dict_table_t *table, mem_heap_t **local_heap, mem_heap_t *heap,
+    THD *thd, TABLE *mysql_table, const dict_field_t *ifield,
+    const dict_table_t *old_table, upd_t *row_update) {
   byte rec_buf1[REC_VERSION_56_MAX_INDEX_COL_LEN];
   byte rec_buf2[REC_VERSION_56_MAX_INDEX_COL_LEN];
   byte *mysql_rec;
