@@ -761,6 +761,9 @@ extern ulint btr_cur_n_non_sea;
 /** Number of successful adaptive hash index lookups in
 btr_cur_search_to_nth_level(). */
 extern ulint btr_cur_n_sea;
+/** Number of B-tree searches in btr_cur_search_to_nth_level()
+where adaptive hash index is enabled for the index. */
+extern ulint btr_cur_n_non_sea_ahi_enabled;
 /** Old value of btr_cur_n_non_sea.  Copied by
 srv_refresh_innodb_monitor_stats().  Referenced by
 srv_printf_innodb_monitor(). */

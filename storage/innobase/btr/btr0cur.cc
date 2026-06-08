@@ -124,18 +124,20 @@ operations by purge as the previous, when it seems to be growing huge.
 throughput clearly from about 100000. */
 constexpr uint32_t BTR_CUR_FINE_HISTORY_LENGTH = 100000;
 
-/** Number of searches down the B-tree in btr_cur_search_to_nth_level(). */
+/* Number of searches down the B-tree in btr_cur_search_to_nth_level(). */
 ulint btr_cur_n_non_sea = 0;
-/** Number of successful adaptive hash index lookups in
+/* Number of successful adaptive hash index lookups in
 btr_cur_search_to_nth_level(). */
 ulint btr_cur_n_sea = 0;
-/** Old value of btr_cur_n_non_sea.  Copied by
+/* Number of B-tree searches in btr_cur_search_to_nth_level()
+where adaptive hash index is enabled for the index. */
+ulint btr_cur_n_non_sea_ahi_enabled = 0;
+/* Old value of btr_cur_n_non_sea.  Copied by
 srv_refresh_innodb_monitor_stats().  Referenced by
 srv_printf_innodb_monitor(). */
 ulint btr_cur_n_non_sea_old = 0;
-/** Old value of btr_cur_n_sea.  Copied by
-srv_refresh_innodb_monitor_stats().  Referenced by
-srv_printf_innodb_monitor(). */
+/* Old value of btr_cur_n_sea.  Copied by srv_refresh_innodb_monitor_stats().
+Referenced by srv_printf_innodb_monitor(). */
 ulint btr_cur_n_sea_old = 0;
 
 #ifdef UNIV_DEBUG
@@ -814,12 +816,17 @@ void btr_cur_search_to_nth_level(
 
     return;
   }
+
+  /* If the hash search did not succeed, do binary search down the tree. */
   btr_cur_n_non_sea++;
+
+  /* Count B-tree searches only when AHI could be used. */
+  if (!index->disable_ahi && UNIV_LIKELY(btr_search_enabled)) {
+    btr_cur_n_non_sea_ahi_enabled++;
+  }
+
   DBUG_EXECUTE_IF("non_ahi_search",
                   assert(!strcmp(index->table->name.m_name, "test/t1")););
-
-  /* If the hash search did not succeed, do binary search down the
-  tree */
 
   if (has_search_latch) {
     /* Release possible search latch to obey latching order */

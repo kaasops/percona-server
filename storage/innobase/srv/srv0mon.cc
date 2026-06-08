@@ -52,12 +52,13 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
 /* Macro to standardize the counter names for counters in the
 "monitor_buf_page" module as they have very structured defines */
-#define MONITOR_BUF_PAGE(name, description, code, op, op_code)       \
-  {                                                                  \
-    "buffer_page_" op "_" name, "buffer_page_io",                    \
-        "Number of " description " Pages " op, MONITOR_GROUP_MODULE, \
-        MONITOR_DEFAULT_START, MONITOR_##code##_##op_code            \
-  }
+#define MONITOR_BUF_PAGE(name, description, code, op, op_code) \
+  {"buffer_page_" op "_" name,                                 \
+   "buffer_page_io",                                           \
+   "Number of " description " Pages " op,                      \
+   MONITOR_GROUP_MODULE,                                       \
+   MONITOR_DEFAULT_START,                                      \
+   MONITOR_##code##_##op_code}
 
 #define MONITOR_BUF_PAGE_READ(name, description, code) \
   MONITOR_BUF_PAGE(name, description, code, "read", PAGE_READ)
@@ -74,7 +75,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
            MONITOR_DEFAULT_START, code##WAIT_LOOPS)
 
 #define MONITOR_WAIT_STATS_SIMPLE_WRAP(a1, a2, a3, a4, a5, a6) \
-  { a1, a2, a3, a4, a5, a6 }
+  {a1, a2, a3, a4, a5, a6}
 
 #define MONITOR_WAIT_STATS(name, module, description, code) \
   MONITOR_WAIT_STATS_EX(name, module, description, code,    \
@@ -1118,6 +1119,12 @@ static monitor_info_t innodb_counter_info[] = {
      static_cast<monitor_type_t>(MONITOR_EXISTING | MONITOR_DEFAULT_ON),
      MONITOR_DEFAULT_START, MONITOR_OVLD_ADAPTIVE_HASH_SEARCH_BTREE},
 
+    {"adaptive_hash_searches_btree_ahi_enabled", "adaptive_hash_index",
+     "Number of B-tree searches on indexes with Adaptive Hash Index enabled",
+     static_cast<monitor_type_t>(MONITOR_EXISTING | MONITOR_DEFAULT_ON),
+     MONITOR_DEFAULT_START,
+     MONITOR_OVLD_ADAPTIVE_HASH_SEARCH_BTREE_AHI_ENABLED},
+
     {"adaptive_hash_pages_added", "adaptive_hash_index",
      "Number of index pages on which the Adaptive Hash Index is built",
      MONITOR_NONE, MONITOR_DEFAULT_START, MONITOR_ADAPTIVE_HASH_PAGE_ADDED},
@@ -2035,6 +2042,10 @@ void srv_mon_process_existing_counter(
 
     case MONITOR_OVLD_ADAPTIVE_HASH_SEARCH_BTREE:
       value = btr_cur_n_non_sea;
+      break;
+
+    case MONITOR_OVLD_ADAPTIVE_HASH_SEARCH_BTREE_AHI_ENABLED:
+      value = btr_cur_n_non_sea_ahi_enabled;
       break;
 
     default:
