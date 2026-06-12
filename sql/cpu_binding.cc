@@ -3,43 +3,36 @@
 #include "log.h"
 
 #include <pthread.h>
-#include <map>
-#include <sstream>
+#include <atomic>
 #include <cctype>
 #include <cstdlib>
-#include <atomic>
+#include <map>
+#include <sstream>
 
-struct CpuBindingParsedMap
-  {
+struct CpuBindingParsedMap {
   std::map<ThreadRole, CpuBindingEntry> entries;
   CpuBindingParsedMap() = default;
-  };
+};
 
 static CpuBindingParsedMap g_cpu_binding_parsed;
 
-struct RoleBindingPlan
-  {
+struct RoleBindingPlan {
   bool initialized;
-  cpu_set_t cpuset;          // used for ANY/FIXED
+  cpu_set_t cpuset;  // used for ANY/FIXED
   unsigned long bound_threads;
-  int last_socket;           // last socket used for SPARSE
+  int last_socket;  // last socket used for SPARSE
 
-  RoleBindingPlan()
-    : initialized(false),
-      bound_threads(0),
-      last_socket(-1)
-  {
+  RoleBindingPlan() : initialized(false), bound_threads(0), last_socket(-1) {
     CPU_ZERO(&cpuset);
   }
-  };
+};
 
 static std::map<ThreadRole, RoleBindingPlan> g_role_plan;
 //
 static std::vector<cpu_set_t> g_socket_cpusets;
 static bool g_socket_cpusets_initialized = false;
 //
-static bool
-build_cpuset_for_socket(int socket, cpu_set_t &cpuset) {
+static bool build_cpuset_for_socket(int socket, cpu_set_t &cpuset) {
 #ifdef __linux__
 
   if (!sql_cpu_topology.initialized) {
@@ -47,11 +40,10 @@ build_cpuset_for_socket(int socket, cpu_set_t &cpuset) {
   }
 
   const auto &sockets = sql_cpu_topology.sockets;
-  if (socket < 0 ||
-      socket >= static_cast<int>(sockets.size())) {
+  if (socket < 0 || socket >= static_cast<int>(sockets.size())) {
     sql_print_warning(
-      "cpu_binding: requested socket %d out of range (sockets=%zu)",
-      socket, sockets.size());
+        "cpu_binding: requested socket %d out of range (sockets=%zu)", socket,
+        sockets.size());
     return false;
   }
 
@@ -65,13 +57,12 @@ build_cpuset_for_socket(int socket, cpu_set_t &cpuset) {
   }
 
   if (CPU_COUNT(&cpuset) == 0) {
-    sql_print_warning(
-      "cpu_binding: socket %d has no logical CPUs in topology",
-      socket);
+    sql_print_warning("cpu_binding: socket %d has no logical CPUs in topology",
+                      socket);
     return false;
   }
 
- return true;
+  return true;
 #else
   (void)socket;
   (void)cpuset;
@@ -79,8 +70,7 @@ build_cpuset_for_socket(int socket, cpu_set_t &cpuset) {
 #endif
 }
 
-static bool
-init_socket_cpusets() {
+static bool init_socket_cpusets() {
 #ifdef __linux__
   if (g_socket_cpusets_initialized) {
     return !g_socket_cpusets.empty();
@@ -119,28 +109,28 @@ init_socket_cpusets() {
 
 static std::string cpu_binding_trim_spaces(const std::string &s) {
   size_t start = 0;
-  while (start < s.size() &&
-    std::isspace(static_cast<unsigned char>(s[start])))
+  while (start < s.size() && std::isspace(static_cast<unsigned char>(s[start])))
     ++start;
 
   size_t end = s.size();
-  while (end > start &&
-    std::isspace(static_cast<unsigned char>(s[end - 1])))
+  while (end > start && std::isspace(static_cast<unsigned char>(s[end - 1])))
     --end;
 
   return s.substr(start, end - start);
-  }
-
+}
 
 static const char *cpu_binding_mode_name(BindingMode mode) {
   switch (mode) {
-    case BindingMode::ANY:    return "ANY";
-    case BindingMode::SPARSE: return "SPARSE";
-    case BindingMode::FIXED:  return "FIXED";
-    default:                  return "UNKNOWN_MODE";
-    }
+    case BindingMode::ANY:
+      return "ANY";
+    case BindingMode::SPARSE:
+      return "SPARSE";
+    case BindingMode::FIXED:
+      return "FIXED";
+    default:
+      return "UNKNOWN_MODE";
   }
-
+}
 
 static const char *cpu_binding_role_name(ThreadRole role) {
   switch (role) {
@@ -156,32 +146,30 @@ static const char *cpu_binding_role_name(ThreadRole role) {
       return "CLIENT_THREAD";
     default:
       return "UNKNOWN_THREAD_ROLE";
-    }
   }
+}
 
-using CpuFilter = void(*)(cpu_set_t &cpuset,
-const CpuBindingEntry &entry,
-ThreadRole role);
+using CpuFilter = void (*)(cpu_set_t &cpuset, const CpuBindingEntry &entry,
+                           ThreadRole role);
 
 static bool cpu_binding_build_cpuset_chain(ThreadRole role,
-const CpuBindingEntry &entry,
-cpu_set_t &cpuset,
-unsigned long planned_threads) {
-
+                                           const CpuBindingEntry &entry,
+                                           cpu_set_t &cpuset,
+                                           unsigned long planned_threads) {
   sql_print_information(
-    "cpu_binding: start role=%s planned_threads=%lu, mode=%s",
-    cpu_binding_role_name(role),
-    planned_threads, cpu_binding_mode_name(entry.mode));
+      "cpu_binding: start role=%s planned_threads=%lu, mode=%s",
+      cpu_binding_role_name(role), planned_threads,
+      cpu_binding_mode_name(entry.mode));
 
 #ifdef __linux__
   if (!sql_cpu_topology.initialized) {
     sql_cpu_topology_init(&sql_cpu_topology);
-    }
+  }
   if (sql_cpu_topology.sockets.empty()) {
     return false;
-    }
+  }
 
-// -- BindingMode::ANY
+  // -- BindingMode::ANY
   if (entry.mode == BindingMode::ANY) {
     cpu_set_t new_set;
     CPU_ZERO(&new_set);
@@ -195,46 +183,40 @@ unsigned long planned_threads) {
     }
 
     if (CPU_COUNT(&new_set) == 0) {
-      sql_print_warning(
-        "cpu_binding: role=%s ANY produced empty cpuset",
-        cpu_binding_role_name(role));
+      sql_print_warning("cpu_binding: role=%s ANY produced empty cpuset",
+                        cpu_binding_role_name(role));
       return false;
     }
 
     cpuset = new_set;
     return true;
   }
-// -- BindingMode::ANY
+  // -- BindingMode::ANY
 
-
-// -- BindingMode::FIXED
+  // -- BindingMode::FIXED
   if (entry.mode == BindingMode::FIXED) {
     int idx = entry.socket;
-    if (idx < 0 ||
-        idx >= static_cast<int>(g_socket_cpusets.size())) {
+    if (idx < 0 || idx >= static_cast<int>(g_socket_cpusets.size())) {
       sql_print_warning(
-        "cpu_binding: role=%s FIXED socket=%d is out of range (sockets=%zu)",
-        cpu_binding_role_name(role),
-        idx,
-        g_socket_cpusets.size());
+          "cpu_binding: role=%s FIXED socket=%d is out of range (sockets=%zu)",
+          cpu_binding_role_name(role), idx, g_socket_cpusets.size());
       return false;
     }
 
     const cpu_set_t &socket_set = g_socket_cpusets[static_cast<size_t>(idx)];
     if (CPU_COUNT(&socket_set) == 0) {
       sql_print_warning(
-        "cpu_binding: role=%s FIXED socket=%d produced empty cpuset",
-        cpu_binding_role_name(role), idx);
+          "cpu_binding: role=%s FIXED socket=%d produced empty cpuset",
+          cpu_binding_role_name(role), idx);
       return false;
     }
 
     cpuset = socket_set;
     return true;
   }
-// -- BindingMode::FIXED
+  // -- BindingMode::FIXED
 
-
-// -- BindingMode::SPARSE
+  // -- BindingMode::SPARSE
   if (entry.mode == BindingMode::SPARSE) {
     if (role == ThreadRole::CLIENT_THREAD) {
       return CPU_COUNT(&cpuset) > 0;
@@ -252,16 +234,15 @@ unsigned long planned_threads) {
     }
 
     if (CPU_COUNT(&new_set) == 0) {
-      sql_print_warning(
-        "cpu_binding: role=%s SPARSE produced empty cpuset",
-        cpu_binding_role_name(role));
+      sql_print_warning("cpu_binding: role=%s SPARSE produced empty cpuset",
+                        cpu_binding_role_name(role));
       return false;
     }
 
     cpuset = new_set;
     return true;
   }
-// -- BindingMode::SPARSE
+  // -- BindingMode::SPARSE
 
   return false;
 #else
@@ -270,22 +251,22 @@ unsigned long planned_threads) {
   (void)cpuset;
   return false;
 #endif
-  }
-
+}
 
 // Public API: apply binding for role; planned_threads is for SPARSE logic.
-void cpu_binding_apply_for_role(ThreadRole role,
-pthread_t thread,
-unsigned long planned_threads) {
-
-  sql_print_information("cpu_binding_apply_for_role(raw): role=%s, planned_threads=%lu",
-    cpu_binding_role_name(role), planned_threads);
+void cpu_binding_apply_for_role(ThreadRole role, pthread_t thread,
+                                unsigned long planned_threads) {
+  sql_print_information(
+      "cpu_binding_apply_for_role(raw): role=%s, planned_threads=%lu",
+      cpu_binding_role_name(role), planned_threads);
 
 #ifdef __linux__
   auto it = g_cpu_binding_parsed.entries.find(role);
   if (it == g_cpu_binding_parsed.entries.end()) {
-    sql_print_information("cpu_binding_apply_for_role(g_cpu_binding_parsed): g_cpu_binding_parsed.entries.end() has reached, role=%s",
-      cpu_binding_role_name(role));
+    sql_print_information(
+        "cpu_binding_apply_for_role(g_cpu_binding_parsed): "
+        "g_cpu_binding_parsed.entries.end() has reached, role=%s",
+        cpu_binding_role_name(role));
     return;
   }
 
@@ -303,10 +284,10 @@ unsigned long planned_threads) {
       }
 
       if (!cpu_binding_build_cpuset_chain(role, entry, cpuset,
-        planned_threads)) {
+                                          planned_threads)) {
         sql_print_warning(
-          "cpu_binding: empty cpuset for role=%s, skipping affinity",
-          cpu_binding_role_name(role));
+            "cpu_binding: empty cpuset for role=%s, skipping affinity",
+            cpu_binding_role_name(role));
         return;
       }
 
@@ -314,17 +295,13 @@ unsigned long planned_threads) {
       plan.initialized = true;
     }
 
-    int err = pthread_setaffinity_np(thread,
-      sizeof(cpu_set_t),
-      &plan.cpuset);
+    int err = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &plan.cpuset);
     if (err != 0) {
       sql_print_warning(
-        "Failed to set CPU affinity (cached) for thread role=%d "
-        "(mode=%s, socket=%d), error=%d",
-        static_cast<int>(role),
-        cpu_binding_mode_name(entry.mode),
-        entry.socket,
-        err);
+          "Failed to set CPU affinity (cached) for thread role=%d "
+          "(mode=%s, socket=%d), error=%d",
+          static_cast<int>(role), cpu_binding_mode_name(entry.mode),
+          entry.socket, err);
     }
     return;
   }
@@ -332,8 +309,8 @@ unsigned long planned_threads) {
   // SPARSE: round-robin over sockets using cached per-socket cpusets.
   if (!init_socket_cpusets()) {
     sql_print_warning(
-      "cpu_binding: topology not initialized for SPARSE role=%s",
-      cpu_binding_role_name(role));
+        "cpu_binding: topology not initialized for SPARSE role=%s",
+        cpu_binding_role_name(role));
     return;
   }
   if (g_socket_cpusets.empty()) {
@@ -347,28 +324,22 @@ unsigned long planned_threads) {
   }
 
   int num_sockets = static_cast<int>(g_socket_cpusets.size());
-  int next_socket = (plan.last_socket < 0)
-                      ? 0
-                      : (plan.last_socket + 1) % num_sockets;
+  int next_socket =
+      (plan.last_socket < 0) ? 0 : (plan.last_socket + 1) % num_sockets;
 
   const cpu_set_t &cpuset = g_socket_cpusets[static_cast<size_t>(next_socket)];
   if (CPU_COUNT(&cpuset) == 0) {
-    sql_print_warning(
-      "cpu_binding: SPARSE socket=%d has empty cpuset",
-      next_socket);
+    sql_print_warning("cpu_binding: SPARSE socket=%d has empty cpuset",
+                      next_socket);
     return;
   }
 
-  int err = pthread_setaffinity_np(thread,
-    sizeof(cpu_set_t),
-    &cpuset);
+  int err = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
   if (err != 0) {
     sql_print_warning(
-      "Failed to set CPU affinity (SPARSE) for thread role=%d "
-      "(socket=%d), error=%d",
-      static_cast<int>(role),
-      next_socket,
-      err);
+        "Failed to set CPU affinity (SPARSE) for thread role=%d "
+        "(socket=%d), error=%d",
+        static_cast<int>(role), next_socket, err);
     return;
   }
 
@@ -381,8 +352,7 @@ unsigned long planned_threads) {
 #endif
 }
 
-bool parse_cpu_binding_string(const std::string &raw,
-                              CpuBindingEntry &out) {
+bool parse_cpu_binding_string(const std::string &raw, CpuBindingEntry &out) {
   std::string s = cpu_binding_trim_spaces(raw);
 
   if (s.empty() || s == "any") {
@@ -422,16 +392,14 @@ static const char *cpu_binding_thread_role_option_name(ThreadRole role) {
       return "thread_affinity_client";
     default:
       return "thread_affinity_unknown";
-    }
   }
+}
 
 void cpu_binding_register_option(ThreadRole role, const char *raw_value) {
-
   sql_print_warning("cpu_binding_register_option(): role=%s, raw_value=%s",
-    cpu_binding_role_name(role), raw_value);
+                    cpu_binding_role_name(role), raw_value);
 
-  if (raw_value == nullptr)
-    return;
+  if (raw_value == nullptr) return;
 
   const char *option_name = cpu_binding_thread_role_option_name(role);
 
@@ -440,17 +408,15 @@ void cpu_binding_register_option(ThreadRole role, const char *raw_value) {
 
   if (!parse_cpu_binding_string(raw, entry)) {
     sql_print_warning(
-      "Invalid value for %s: '%s', "
-      "expected 'socket,core,thread' with numbers or 'any' or 'sparse'.",
-      option_name, raw_value);
+        "Invalid value for %s: '%s', "
+        "expected 'socket,core,thread' with numbers or 'any' or 'sparse'.",
+        option_name, raw_value);
     return;
-    }
+  }
 
   g_cpu_binding_parsed.entries[role] = entry;
 
-  sql_print_information(
-    "Parsed %s='%s' as mode=%s socket=%d",
-    option_name, raw.c_str(),
-    cpu_binding_mode_name(entry.mode), entry.socket);
-
-  }
+  sql_print_information("Parsed %s='%s' as mode=%s socket=%d", option_name,
+                        raw.c_str(), cpu_binding_mode_name(entry.mode),
+                        entry.socket);
+}
