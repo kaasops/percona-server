@@ -4987,6 +4987,11 @@ static void innodb_buffer_pool_size_init() {
   }
 }
 
+  /* Final runtime validation for buffer pool instances.
+  This check must hold in release builds as well. */
+  ut_a(srv_buf_pool_instances >= 1);
+  ut_a(srv_buf_pool_instances <= MAX_BUFFER_POOLS);
+
   /* Bind table cache instances to buffer pool instances. */
   {
     ulong instances = srv_buf_pool_instances;
