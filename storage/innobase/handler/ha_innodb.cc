@@ -4909,6 +4909,19 @@ static void innodb_buffer_pool_size_init() {
   ulong srv_buf_pool_instances_org = srv_buf_pool_instances;
 #endif /* UNIV_DEBUG */
 
+  const bool user_instances_set = innodb_buffer_pool_instances_is_set();
+  const ulong requested_instances = srv_buf_pool_instances;
+
+  const char *selection_reason = "unknown";
+  ulong physical_cores = 0;
+  ulong effective_cpu_limit = 0;
+  ulong memory_limit_instances = 0;
+
+  bool small_pool_forced = false;
+  bool capped_by_physical_cores = false;
+  bool cpu_limit_capped_by_max_buffer_pools = false;
+  bool instances_capped_by_max_buffer_pools = false;
+
   /* If innodb_dedicated_server == ON */
   if (srv_dedicated_server && sysvar_source_svc != nullptr) {
     static const char *variable_name = "innodb_buffer_pool_size";
@@ -4923,8 +4936,9 @@ static void innodb_buffer_pool_size_init() {
           ;
         } else if (server_mem <= 4.0) {
           srv_buf_pool_size = static_cast<ulint>(server_mem * 0.5 * GB);
-        } else
+        } else {
           srv_buf_pool_size = static_cast<ulint>(server_mem * 0.75 * GB);
+        }
       } else {
         ib::warn(ER_IB_MSG_533)
             << "Option innodb_dedicated_server"
@@ -4936,25 +4950,100 @@ static void innodb_buffer_pool_size_init() {
     }
   }
 
+  /* Compute memory-based limit: target about 1 GiB per instance. */
+  memory_limit_instances = static_cast<ulong>(srv_buf_pool_size / GB);
+  if (memory_limit_instances == 0) {
+    memory_limit_instances = 1;
+  }
+
+  /* Small pools always use a single instance. */
   if (srv_buf_pool_size < BUF_POOL_SIZE_THRESHOLD) {
-    /* 1 bp instance when bp size < 1GB */
-    if (innodb_buffer_pool_instances_is_set() && srv_buf_pool_instances != 1) {
+    if (user_instances_set && srv_buf_pool_instances != 1) {
       ib::info(ER_IB_MSG_534)
           << "Adjusting innodb_buffer_pool_instances from "
           << srv_buf_pool_instances
           << " to 1 since innodb_buffer_pool_size is less than "
           << BUF_POOL_SIZE_THRESHOLD / MB << " MiB";
     }
-    srv_buf_pool_instances = 1;
-  } else if (!innodb_buffer_pool_instances_is_set()) {
-    /* Calculate bp instances using hints from bp size, chunk size and CPUs */
-    const auto bp_hint_ull = srv_buf_pool_size / (srv_buf_pool_chunk_unit * 2);
-    ulong bp_hint = bp_hint_ull > std::numeric_limits<ulong>::max()
-                        ? std::numeric_limits<ulong>::max()
-                        : static_cast<ulong>(bp_hint_ull);
-    ulong cpu_hint = ulong{std::thread::hardware_concurrency() / 4};
 
-    srv_buf_pool_instances = std::clamp(std::min(bp_hint, cpu_hint), 1UL, 64UL);
+    srv_buf_pool_instances = 1;
+    selection_reason = "small_pool_forced_1";
+    small_pool_forced = true;
+  } else {
+    /* Initialize CPU topology once and use physical cores as the CPU limit. */
+    sql_cpu_topology_init(&sql_cpu_topology);
+
+    physical_cores = sql_cpu_topology.physical_cores;
+    if (physical_cores == 0) {
+      /* Fall back to generic detector if detailed topology is unavailable. */
+      physical_cores = sql_cpu_get_physical();
+    }
+    if (physical_cores == 0) {
+      physical_cores = 1;
+    }
+
+    effective_cpu_limit = physical_cores;
+
+    /* Clamp CPU-derived limit to [1, MAX_BUFFER_POOLS]. */
+    if (effective_cpu_limit > static_cast<ulong>(MAX_BUFFER_POOLS)) {
+      effective_cpu_limit = static_cast<ulong>(MAX_BUFFER_POOLS);
+      cpu_limit_capped_by_max_buffer_pools = true;
+    }
+
+    if (user_instances_set) {
+      /* User-specified value is a hard upper bound.
+      Only trim it down to physical cores and MAX_BUFFER_POOLS. */
+      ulong user_instances = srv_buf_pool_instances;
+
+      if (user_instances == 0) {
+        user_instances = 1;
+      }
+
+      if (user_instances > static_cast<ulong>(MAX_BUFFER_POOLS)) {
+        user_instances = static_cast<ulong>(MAX_BUFFER_POOLS);
+        instances_capped_by_max_buffer_pools = true;
+      }
+
+      if (user_instances > effective_cpu_limit) {
+        user_instances = effective_cpu_limit;
+        capped_by_physical_cores = true;
+      }
+
+      srv_buf_pool_instances = user_instances;
+
+      if (capped_by_physical_cores && instances_capped_by_max_buffer_pools) {
+        selection_reason = "user_config_capped_by_max_and_cores";
+      } else if (capped_by_physical_cores) {
+        selection_reason = "user_config_capped_by_cores";
+      } else if (instances_capped_by_max_buffer_pools) {
+        selection_reason = "user_config_capped_by_max";
+      } else {
+        selection_reason = "user_config_kept";
+      }
+    } else {
+      /* Auto-select instances from buffer pool size and physical core count.
+      Keep at least about 1 GiB per instance and never exceed CPU/core limits.
+    */
+      ulong auto_instances = memory_limit_instances;
+
+      if (auto_instances > effective_cpu_limit) {
+        auto_instances = effective_cpu_limit;
+        capped_by_physical_cores = true;
+      }
+
+      srv_buf_pool_instances = auto_instances;
+
+      if (capped_by_physical_cores) {
+        selection_reason = cpu_limit_capped_by_max_buffer_pools
+                               ? "auto_capped_by_max_and_cores"
+                               : "auto_capped_by_cores";
+      } else if (cpu_limit_capped_by_max_buffer_pools &&
+                 memory_limit_instances > effective_cpu_limit) {
+        selection_reason = "auto_capped_by_max";
+      } else {
+        selection_reason = "auto_selected";
+      }
+    }
   }
 
 #ifdef UNIV_DEBUG
@@ -4963,29 +5052,6 @@ static void innodb_buffer_pool_size_init() {
     srv_buf_pool_instances = srv_buf_pool_instances_org;
   };
 #endif /* UNIV_DEBUG */
-
-  {
-  /* CPU-based adjustment of buffer pool instances. */
- sql_cpu_topology_init(&sql_cpu_topology);
-
-  if (sql_cpu_topology.physical_cores != 0) {
-    if (srv_buf_pool_instances > sql_cpu_topology.physical_cores) {
-      ulong old = srv_buf_pool_instances;
-      srv_buf_pool_instances =
-        static_cast<ulong>(sql_cpu_topology.physical_cores);
-
-      ib::info(ER_IB_MSG_CPU_CORES_INFO)
-        << "Adjusting innodb_buffer_pool_instances from "
-        << old << " to " << srv_buf_pool_instances
-        << " based on physical CPU cores "
-        << (ulong)sql_cpu_topology.physical_cores;
-    }
-  } else {
-    ib::warn(ER_IB_MSG_CPU_CORES_INFO)
-      << "Physical CPU core count could not be determined, "
-      << "skipping CPU-based adjustment of innodb_buffer_pool_instances.";
-  }
-}
 
   /* Final runtime validation for buffer pool instances.
   This check must hold in release builds as well. */
@@ -5020,6 +5086,25 @@ static void innodb_buffer_pool_size_init() {
   ut_ad(srv_buf_pool_chunk_unit * srv_buf_pool_instances <= srv_buf_pool_size);
 
   srv_buf_pool_curr_size = srv_buf_pool_size;
+
+  ib::info(ER_IB_MSG_CPU_CORES_INFO)
+      << "innodb_buffer_pool_instances=" << srv_buf_pool_instances
+      << " selected"
+      << " (reason=" << selection_reason
+      << ", user_set=" << (user_instances_set ? "yes" : "no")
+      << ", requested=" << requested_instances
+      << ", buffer_pool_size=" << srv_buf_pool_size
+      << ", memory_limit_instances=" << memory_limit_instances
+      << ", physical_cores=" << physical_cores
+      << ", effective_cpu_limit=" << effective_cpu_limit
+      << ", small_pool_forced=" << (small_pool_forced ? "yes" : "no")
+      << ", capped_by_physical_cores="
+      << (capped_by_physical_cores ? "yes" : "no")
+      << ", cpu_limit_capped_by_max_buffer_pools="
+      << (cpu_limit_capped_by_max_buffer_pools ? "yes" : "no")
+      << ", instances_capped_by_max_buffer_pools="
+      << (instances_capped_by_max_buffer_pools ? "yes" : "no")
+      << ", MAX_BUFFER_POOLS=" << static_cast<ulong>(MAX_BUFFER_POOLS) << ")";
 
   /* Do not enable backoff algorithm for small buffer pool. */
   if (!innodb_empty_free_list_algorithm_allowed(
