@@ -13206,6 +13206,9 @@ ER_AUDIT_SYS_VAR_INVALID_FILE_DIRECTORY
 #
 start-error-number 48200
 
+ER_LOG_REPLICA_TRANSLATED_DEPRECATED_PRIVILEGE
+  eng "Replica applier rewrote removed dynamic privilege '%s' into '%s' before applying the query received from an older source server. Original query: %s"
+
 #
 # End of Percona Server 8.4 error log messages
 #
