@@ -26,11 +26,11 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "sql/cpu_topology.h"
 #include "my_compiler.h"
 #include "my_dbug.h"
 #include "my_macros.h"
 #include "mysql/components/services/bits/psi_bits.h"
+#include "sql/cpu_topology.h"
 #include "sql/sql_test.h"  // lock_descriptions[]
 #include "thr_lock.h"
 #include "thr_mutex.h"
@@ -39,22 +39,32 @@
 #include <sched.h>
 #endif
 
-
 /**
   Container for all table cache instances in the system.
 */
 Table_cache_manager table_cache_manager;
 
-static int
-find_topology_logical_index(int cpu_id) {
-  sql_cpu_topology_init(&sql_cpu_topology);
-  if (!sql_cpu_topology.initialized)
-    return -1;
+static int find_topology_logical_index(int cpu_id) {
+  Sql_cpu_topology topology{};
+  sql_build_cpu_topology(topology);
 
-  for (size_t i = 0; i < sql_cpu_topology.logical_ids.size(); ++i) {
-    if (sql_cpu_topology.logical_ids[i] == cpu_id)
-      return static_cast<int>(i);
+  if (!topology.initialized) {
+    return -1;
   }
+
+  int logical_index = 0;
+
+  for (const auto &socket : topology.sockets) {
+    for (const auto &core : socket.cores) {
+      for (uint32_t logical_cpu_id : core.logical_cpu_ids) {
+        if (static_cast<int>(logical_cpu_id) == cpu_id) {
+          return logical_index;
+        }
+        ++logical_index;
+      }
+    }
+  }
+
   return -1;
 }
 
@@ -66,8 +76,7 @@ uint Table_cache_manager::cache_index_for_thread(THD *thd) const {
   }
 
   const int cpu_shard = thd->cpu_shard();
-  if (cpu_shard >= 0 &&
-      static_cast<ulong>(cpu_shard) < instances &&
+  if (cpu_shard >= 0 && static_cast<ulong>(cpu_shard) < instances &&
       static_cast<ulong>(cpu_shard) < MAX_TABLE_CACHES) {
     return static_cast<uint>(cpu_shard);
   }

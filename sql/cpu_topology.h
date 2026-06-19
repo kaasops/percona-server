@@ -1,79 +1,103 @@
-/******************************************************
-CPU topology helpers
-*******************************************************/
+#ifndef SQL_CPU_TOPOLOGY_H
+#define SQL_CPU_TOPOLOGY_H
 
-#ifndef CPU_TOPOLOGY_H
-#define CPU_TOPOLOGY_H
+#include <sched.h>
+#include <stdint.h>
 
 #include <vector>
 
-/* Return number of logical CPUs visible to the process.
-   Returns >= 1 (never 0). */
-unsigned long sql_cpu_get_logical();
-
-/* Return number of physical cores if detectable.
-   Returns 0 if cannot be determined reliably. */
-unsigned long sql_cpu_get_physical();
-
-/******************************************************
-CPU topology description for NUMA‑aware scheduling
-*******************************************************/
-
-/** Description of a logical CPU (vCPU). */
-struct Sql_cpu_thread {
-  /** Logical CPU id (as used by sched_setaffinity/pthread_setaffinity_np). */
-  int cpu_id;
-};
-
-/** Description of a physical core and all its logical threads. */
 struct Sql_cpu_core {
-  /** Core id within the physical package (core_id from sysfs). */
-  int core_id;
-  /** List of logical threads (vCPUs) on this core. */
-  std::vector<Sql_cpu_thread> threads;
+  uint32_t core_id{0};
+  std::vector<uint32_t> logical_cpu_ids{};
+
+  void clear() noexcept;
 };
 
-/** Description of a NUMA socket (physical package). */
 struct Sql_cpu_socket {
-  /** Physical package id (NUMA socket, physical_package_id from sysfs). */
-  int socket_id;
-  /** List of physical cores on this socket. */
-  std::vector<Sql_cpu_core> cores;
+  uint32_t socket_id{0};
+  std::vector<Sql_cpu_core> cores{};
+
+  void clear() noexcept;
 };
 
-/** CPU topology snapshot for the current process. */
 struct Sql_cpu_topology {
-  /** True if this structure has been initialized. */
-  bool initialized;
-  /** Number of logical CPUs visible to the process. */
-  unsigned long logical_cpus;
-  /** Number of physical cores (may be 0 if not detectable). */
-  unsigned long physical_cores;
-  /** Threads per core (0 if unknown or not uniform). */
-  unsigned long threads_per_core;
-  /** True if HyperThreading (or similar SMT) appears to be enabled. */
-  bool hyperthreading_on;
-  /** Tree view: sockets -> cores -> threads. */
-  std::vector<Sql_cpu_socket> sockets;
-  /** Flat view: all logical CPU ids seen in the topology. */
-  std::vector<int> logical_ids;
+  bool initialized{false};
+
+  uint32_t logical_cpus{0};
+  uint32_t physical_cores{0};
+  uint32_t sockets_count{0};
+
+  bool smt_enabled{false};
+  uint32_t threads_per_core{1};
+
+  std::vector<Sql_cpu_socket> sockets{};
+
+  std::vector<int32_t> cpu_to_socket{};
+  std::vector<int32_t> cpu_to_core{};
+
+  [[nodiscard]] uint32_t effective_cpu_capacity() const noexcept {
+    return physical_cores != 0 ? physical_cores : logical_cpus;
+  }
+
+  [[nodiscard]] bool has_smt() const noexcept { return smt_enabled; }
+
+  void clear() noexcept;
 };
 
-/** Global CPU topology snapshot for InnoDB. */
-extern Sql_cpu_topology sql_cpu_topology;
+struct Sql_numa_node {
+  uint32_t node_id{0};
+  std::vector<uint32_t> logical_cpu_ids{};
+  std::vector<uint32_t> distance{};
 
-/** Initialize CPU topology snapshot.
-Fills logical_cpus, physical_cores, sockets[] and logical_ids[] fields.
-Safe to call multiple times; subsequent calls will return immediately. */
-void sql_cpu_topology_init(Sql_cpu_topology *topology);
+  uint64_t mem_total_kb{0};
+  uint64_t mem_free_kb{0};
 
-/** Return number of physical cores for which we have topology information.
-Returns 0 if the topology could not be detected. */
-unsigned long sql_cpu_get_core_count_with_topology();
+  void clear() noexcept;
+};
 
-/** Get core description by linear index across all sockets.
-Cores are ordered by (socket_id, core_id).
-Returns false if index is out of range or topology is unavailable. */
-bool sql_cpu_get_core_by_index(unsigned long index, Sql_cpu_core *out);
+struct Sql_numa_snapshot {
+  bool initialized{false};
 
-#endif /* CPU_TOPOLOGY_H */
+  uint32_t nodes_count{0};
+
+  std::vector<Sql_numa_node> nodes{};
+  std::vector<int32_t> cpu_to_node{};
+
+  void clear() noexcept;
+};
+
+struct Sql_machine_topology {
+  Sql_cpu_topology cpu{};
+  Sql_numa_snapshot numa{};
+
+  void clear() noexcept;
+};
+
+void sql_build_cpu_topology(Sql_cpu_topology &topology) noexcept;
+
+void sql_build_numa_snapshot(Sql_numa_snapshot &snapshot) noexcept;
+
+void sql_build_machine_topology(Sql_machine_topology &topology) noexcept;
+
+[[nodiscard]] bool sql_build_cpuset_for_socket(const Sql_cpu_topology &topology,
+                                               uint32_t socket_id,
+                                               cpu_set_t *cpuset) noexcept;
+
+[[nodiscard]] bool sql_build_cpuset_for_numa_node(
+    const Sql_numa_snapshot &snapshot, uint32_t node_id,
+    cpu_set_t *cpuset) noexcept;
+
+[[nodiscard]] bool sql_build_cpuset_for_instance(
+    const Sql_machine_topology &topology, uint32_t instance_no,
+    cpu_set_t *cpuset) noexcept;
+
+[[nodiscard]] uint32_t sql_numa_node_count(
+    const Sql_numa_snapshot &snapshot) noexcept;
+
+[[nodiscard]] const Sql_numa_node *sql_numa_node_by_index(
+    const Sql_numa_snapshot &snapshot, uint32_t index) noexcept;
+
+[[nodiscard]] int32_t sql_numa_cpu_to_node(const Sql_numa_snapshot &snapshot,
+                                           uint32_t cpu_id) noexcept;
+
+#endif /* SQL_CPU_TOPOLOGY_H */

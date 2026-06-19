@@ -662,16 +662,16 @@ const struct _ft_vft_ext ft_vft_ext_result = {
 
 #ifdef HAVE_PSI_INTERFACE
 #define PSI_KEY(n, flag, volatility, doc) \
-  { &(n##_key.m_value), #n, flag, volatility, doc }
+  {&(n##_key.m_value), #n, flag, volatility, doc}
 #define PSI_MEMORY_KEY(n, flag, volatility, doc) \
-  { &(n##_key), #n, flag, volatility, doc }
+  {&(n##_key), #n, flag, volatility, doc}
 #define PSI_MUTEX_KEY(n, flag, volatility, doc) \
-  { &(n##_key.m_value), #n, flag, volatility, doc }
+  {&(n##_key.m_value), #n, flag, volatility, doc}
 /* All RWLOCK used in Innodb are SX-locks */
 #define PSI_RWLOCK_KEY(n, volatility, doc) \
-  { &n##_key.m_value, #n, PSI_FLAG_RWLOCK_SX, volatility, doc }
+  {&n##_key.m_value, #n, PSI_FLAG_RWLOCK_SX, volatility, doc}
 #define PSI_THREAD_KEY(n, osn, flag, volatility, doc) \
-  { &(n##_key.m_value), #n, osn, flag, volatility, doc }
+  {&(n##_key.m_value), #n, osn, flag, volatility, doc}
 
 /* Keys to register pthread mutexes/cond in the current file with
 performance schema */
@@ -3766,8 +3766,7 @@ void Validate_files::check(const Const_iter &begin, const Const_iter &end,
       It should be able to reuse the deleted smaller ones later */
       auto current_max = m_space_max_id.load();
       while (current_max < space_id &&
-             !m_space_max_id.compare_exchange_weak(current_max, space_id))
-        ;
+             !m_space_max_id.compare_exchange_weak(current_max, space_id));
     }
 
     /* System and temp files are tracked and opened separately.
@@ -4831,8 +4830,7 @@ corresponding to whether checksums are enabled.
 #ifndef UNIV_HOTBACKUP
 static
 #endif /* !UNIV_HOTBACKUP */
-    void
-    innodb_log_checksums_func_update(bool check) {
+    void innodb_log_checksums_func_update(bool check) {
   log_checksum_algorithm_ptr.store(check ? log_block_calc_checksum_crc32
                                          : log_block_calc_checksum_none);
 }
@@ -4970,13 +4968,15 @@ static void innodb_buffer_pool_size_init() {
     selection_reason = "small_pool_forced_1";
     small_pool_forced = true;
   } else {
-    /* Initialize CPU topology once and use physical cores as the CPU limit. */
-    sql_cpu_topology_init(&sql_cpu_topology);
+    /* Build CPU topology snapshot and use physical cores as the CPU limit. */
+    Sql_cpu_topology topology{};
+    sql_build_cpu_topology(topology);
 
-    physical_cores = sql_cpu_topology.physical_cores;
+    physical_cores = static_cast<ulong>(topology.physical_cores);
     if (physical_cores == 0) {
-      /* Fall back to generic detector if detailed topology is unavailable. */
-      physical_cores = sql_cpu_get_physical();
+      /* Fall back to logical CPUs when physical core topology is unavailable.
+       */
+      physical_cores = static_cast<ulong>(topology.logical_cpus);
     }
     if (physical_cores == 0) {
       physical_cores = 1;
@@ -5066,7 +5066,7 @@ static void innodb_buffer_pool_size_init() {
       instances = 1;
     }
 
-     /* Optional: avoid too many instances which would reduce per-cache depth. */
+    /* Optional: avoid too many instances which would reduce per-cache depth. */
     if (instances > 64) {
       instances = 64;
     }
@@ -5949,8 +5949,9 @@ static int innodb_init(void *p) {
       HTON_SUPPORTS_ATOMIC_DDL | HTON_CAN_RECREATE |
       HTON_SUPPORTS_SECONDARY_ENGINE | HTON_SUPPORTS_TABLE_ENCRYPTION |
       HTON_SUPPORTS_GENERATED_INVISIBLE_PK | HTON_SUPPORTS_BULK_LOAD |
-  // TODO(WL9440): to be enabled when distance scan is implemented in innodb.
-  //| HTON_SUPPORTS_DISTANCE_SCAN;
+      // TODO(WL9440): to be enabled when distance scan is implemented in
+      // innodb.
+      //| HTON_SUPPORTS_DISTANCE_SCAN;
       HTON_SUPPORTS_ONLINE_BACKUPS | HTON_SUPPORTS_COMPRESSED_COLUMNS;
 
   innobase_hton->replace_native_transaction_in_thd = innodb_replace_trx_in_thd;
@@ -23911,21 +23912,22 @@ static MYSQL_SYSVAR_ULONG(write_io_threads, srv_n_write_io_threads,
                           "Number of background write I/O threads in InnoDB.",
                           nullptr, nullptr, 4, 1, 64, 0);
 #ifdef UNIV_LINUX
-static MYSQL_SYSVAR_ULONG(buffer_pool_parallel_init_threads, srv_buffer_pool_parallel_init_threads,
-                          PLUGIN_VAR_RQCMDARG,
-                          "Maximum threads for parallel buffer pool initialization (0=auto)",
-                          nullptr, nullptr, 0, 0, 128, 0);
-static MYSQL_SYSVAR_BOOL(large_page_populate, innodb_large_page_populate,
-                         PLUGIN_VAR_NOCMDARG,
-                         "Populate huge pages for InnoDB buffer pool at startup",
-                         nullptr, nullptr, false);
-static MYSQL_SYSVAR_BOOL(flush_localized, innodb_flush_localized,
-                        PLUGIN_VAR_NOCMDARG,
-                        "Enable NUMA-localized InnoDB page flushing (one page cleaner "
-                        "thread per buffer pool instance). Requires "
-                        "innodb_page_cleaners == innodb_buffer_pool_instances. When "
-                        "disabled, InnoDB uses the legacy page cleaner scheduling.",
-                        nullptr, nullptr, false);
+static MYSQL_SYSVAR_ULONG(
+    buffer_pool_parallel_init_threads, srv_buffer_pool_parallel_init_threads,
+    PLUGIN_VAR_RQCMDARG,
+    "Maximum threads for parallel buffer pool initialization (0=auto)", nullptr,
+    nullptr, 0, 0, 128, 0);
+static MYSQL_SYSVAR_BOOL(
+    large_page_populate, innodb_large_page_populate, PLUGIN_VAR_NOCMDARG,
+    "Populate huge pages for InnoDB buffer pool at startup", nullptr, nullptr,
+    false);
+static MYSQL_SYSVAR_BOOL(
+    flush_localized, innodb_flush_localized, PLUGIN_VAR_NOCMDARG,
+    "Enable NUMA-localized InnoDB page flushing (one page cleaner "
+    "thread per buffer pool instance). Requires "
+    "innodb_page_cleaners == innodb_buffer_pool_instances. When "
+    "disabled, InnoDB uses the legacy page cleaner scheduling.",
+    nullptr, nullptr, false);
 #endif
 static MYSQL_SYSVAR_ULONG(force_recovery, srv_force_recovery,
                           PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
@@ -25034,11 +25036,11 @@ static const dfield_t *innobase_get_field_from_update_vector(
   return upd_field ? &upd_field->new_val : nullptr;
 }
 
-dfield_t *innobase_get_computed_value(mem_heap_t **compress_heap,
-    const dtuple_t *row, const dict_v_col_t *col, const dict_table_t *table,
-    mem_heap_t **local_heap, mem_heap_t *heap, THD *thd, TABLE *mysql_table,
-    const dict_field_t *ifield, const dict_table_t *old_table,
-    upd_t *row_update) {
+dfield_t *innobase_get_computed_value(
+    mem_heap_t **compress_heap, const dtuple_t *row, const dict_v_col_t *col,
+    const dict_table_t *table, mem_heap_t **local_heap, mem_heap_t *heap,
+    THD *thd, TABLE *mysql_table, const dict_field_t *ifield,
+    const dict_table_t *old_table, upd_t *row_update) {
   byte rec_buf1[REC_VERSION_56_MAX_INDEX_COL_LEN];
   byte rec_buf2[REC_VERSION_56_MAX_INDEX_COL_LEN];
   byte *mysql_rec;

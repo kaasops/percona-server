@@ -18,7 +18,7 @@ enum class BindingMode { ANY, SPARSE, FIXED };
 /** Parsed CPU binding for a single thread role. */
 struct CpuBindingEntry {
   BindingMode mode;
-  int socket;  // valid if socket_mode == FIXED
+  int socket;  // Valid only when mode == BindingMode::FIXED.
 
   CpuBindingEntry() : mode(BindingMode::ANY), socket(-1) {}
 };
@@ -36,4 +36,5 @@ void cpu_binding_apply_for_role(ThreadRole role, pthread_t thread,
 
 int cpu_binding_get_role_socket(ThreadRole role);
 int cpu_binding_get_socket_cores(int socket_id);
+
 #endif /* CPU_BINDING_H */

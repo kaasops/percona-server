@@ -75,11 +75,11 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "mem0mem.h"
 #include "mtr0mtr.h"
 
+#include "cpu_topology.h"
 #include "my_dbug.h"
 #include "my_psi_config.h"
 #include "mysql/psi/mysql_stage.h"
 #include "mysqld.h"
-#include "cpu_topology.h"
 
 #include "ddl0fts.h"
 #include "os0file.h"
@@ -1704,35 +1704,131 @@ dberr_t srv_start(bool create_new_db) {
   srv_is_being_started = true;
 
 #ifdef UNIV_LINUX
-  /* Log CPU topology at InnoDB startup. */
-  sql_cpu_topology_init(&sql_cpu_topology);
+  /* Log CPU and NUMA topology at InnoDB startup. */
+  Sql_machine_topology machine{};
+  sql_build_machine_topology(machine);
 
-  ib::info(ER_IB_MSG_CPU_CORES_INFO)
-    << "CPU topology: sockets=" << (ulong) sql_cpu_topology.sockets.size()
-    << ", logical CPUs=" << (ulong) sql_cpu_topology.logical_cpus
-    << ", physical cores=" << (ulong) sql_cpu_topology.physical_cores
-    << ", threads per core=" << (ulong) sql_cpu_topology.threads_per_core
-    << ", HyperThreading="
-    << (sql_cpu_topology.hyperthreading_on ? "ON" : "OFF");
+  const Sql_cpu_topology &cpu = machine.cpu;
+  const Sql_numa_snapshot &numa = machine.numa;
 
-  for (const auto &socket : sql_cpu_topology.sockets) {
+  if (cpu.initialized) {
     ib::info(ER_IB_MSG_CPU_CORES_INFO)
-      << "\tsocket " << socket.socket_id
-      << ": cores=" << (ulong) socket.cores.size();
+        << "CPU topology detected: sockets="
+        << static_cast<ulong>(cpu.sockets_count)
+        << ", physical cores=" << static_cast<ulong>(cpu.physical_cores)
+        << ", logical CPUs=" << static_cast<ulong>(cpu.logical_cpus)
+        << ", threads/core=" << static_cast<ulong>(cpu.threads_per_core)
+        << ", SMT=" << (cpu.has_smt() ? "on" : "off");
 
-    for (const auto &core : socket.cores) {
-      std::ostringstream threads_str;
-      for (size_t i = 0; i < core.threads.size(); ++i) {
-        if (i > 0) {
-          threads_str << ",";
+    for (const auto &socket : cpu.sockets) {
+      ib::info(ER_IB_MSG_CPU_CORES_INFO)
+          << "\tsocket " << static_cast<ulong>(socket.socket_id) << ":";
+
+      for (const auto &core : socket.cores) {
+        std::ostringstream cpus_str;
+
+        for (size_t i = 0; i < core.logical_cpu_ids.size(); ++i) {
+          if (i > 0) {
+            cpus_str << ",";
+          }
+          cpus_str << static_cast<ulong>(core.logical_cpu_ids[i]);
         }
-        threads_str << core.threads[i].cpu_id;
+
+        ib::info(ER_IB_MSG_CPU_CORES_INFO)
+            << "\t\tcore " << static_cast<ulong>(core.core_id)
+            << ": threads=" << static_cast<ulong>(core.logical_cpu_ids.size())
+            << " [cpu_ids=" << cpus_str.str() << "]";
+      }
+    }
+  }
+
+  if (numa.initialized && numa.nodes_count > 0) {
+    auto format_mem_with_units = [](uint64_t kb) -> std::string {
+      std::ostringstream oss;
+
+      if (kb >= (1024ULL * 1024ULL)) {
+        oss << static_cast<ulong>(kb) << " (" << std::fixed
+            << std::setprecision(2)
+            << (static_cast<double>(kb) / (1024.0 * 1024.0)) << " GiB)";
+      } else if (kb >= 1024ULL) {
+        oss << static_cast<ulong>(kb) << " (" << std::fixed
+            << std::setprecision(2) << (static_cast<double>(kb) / 1024.0)
+            << " MiB)";
+      } else {
+        oss << static_cast<ulong>(kb);
+      }
+
+      return oss.str();
+    };
+
+    auto format_distance =
+        [](const std::vector<uint32_t> &distance) -> std::string {
+      std::ostringstream oss;
+      oss << "[";
+
+      for (size_t i = 0; i < distance.size(); ++i) {
+        if (i > 0) {
+          oss << ",";
+        }
+        oss << static_cast<ulong>(distance[i]);
+      }
+
+      oss << "]";
+      return oss.str();
+    };
+
+    auto format_cpu_list =
+        [](const std::vector<uint32_t> &cpus) -> std::string {
+      std::ostringstream oss;
+      oss << "[";
+
+      for (size_t i = 0; i < cpus.size(); ++i) {
+        if (i > 0) {
+          oss << ",";
+        }
+        oss << static_cast<ulong>(cpus[i]);
+      }
+
+      oss << "]";
+      return oss.str();
+    };
+
+    uint64_t total_mem_kb = 0;
+    uint64_t free_mem_kb = 0;
+    size_t total_logical_cpus = 0;
+
+    for (const auto &node : numa.nodes) {
+      total_mem_kb += node.mem_total_kb;
+      free_mem_kb += node.mem_free_kb;
+      total_logical_cpus += node.logical_cpu_ids.size();
+    }
+
+    ib::info(ER_IB_MSG_CPU_CORES_INFO)
+        << "NUMA topology detected: nodes="
+        << static_cast<ulong>(numa.nodes_count)
+        << ", logical CPUs=" << static_cast<ulong>(total_logical_cpus)
+        << ", MemTotal_kB=" << format_mem_with_units(total_mem_kb)
+        << ", MemFree_kB=" << format_mem_with_units(free_mem_kb);
+
+    for (const auto &node : numa.nodes) {
+      ib::info(ER_IB_MSG_CPU_CORES_INFO)
+          << "\tNUMA node " << static_cast<ulong>(node.node_id) << ":";
+
+      ib::info(ER_IB_MSG_CPU_CORES_INFO)
+          << "\t\tMemTotal_kB=" << format_mem_with_units(node.mem_total_kb);
+
+      ib::info(ER_IB_MSG_CPU_CORES_INFO)
+          << "\t\tMemFree_kB=" << format_mem_with_units(node.mem_free_kb);
+
+      if (!node.distance.empty()) {
+        ib::info(ER_IB_MSG_CPU_CORES_INFO)
+            << "\t\tDistance=" << format_distance(node.distance);
+      } else {
+        ib::info(ER_IB_MSG_CPU_CORES_INFO) << "\t\tDistance=[]";
       }
 
       ib::info(ER_IB_MSG_CPU_CORES_INFO)
-        << "\t\tcore " << core.core_id
-        << ": threads=" << core.threads.size()
-        << " [cpu_ids=" << threads_str.str() << "]";
+          << "\t\tLogical CPUs=" << format_cpu_list(node.logical_cpu_ids);
     }
   }
 #endif /* UNIV_LINUX */
