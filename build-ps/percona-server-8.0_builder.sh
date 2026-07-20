@@ -323,6 +323,7 @@ get_sources(){
     rsync -av extra/libzbd/ ${PSDIR}/extra/libzbd --exclude .git
     rsync -av storage/rocksdb/rocksdb_plugins/ ${PSDIR}/storage/rocksdb/rocksdb_plugins --exclude .git
     rsync -av extra/libkmip/ ${PSDIR}/extra/libkmip/ --exclude .git
+    rsync -av extra/zlib-ng/zlib-ng/ ${PSDIR}/extra/zlib-ng/zlib-ng/ --exclude .git
     #
     cd ${PSDIR}
 

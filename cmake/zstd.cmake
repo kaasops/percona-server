@@ -92,6 +92,9 @@ MACRO (MYSQL_CHECK_ZSTD)
 
   IF(WITH_ZSTD STREQUAL "bundled")
     MYSQL_USE_BUNDLED_ZSTD()
+    # For EXTRACT_LINK_LIBRARIES: bundled zstd is linked statically and
+    # needs no link flag.
+    SET(zstd_SYSTEM_LINK_FLAGS "" CACHE STRING "Link flag for zstd")
   ELSEIF(WITH_ZSTD STREQUAL "system")
     FIND_SYSTEM_ZSTD()
     IF (NOT SYSTEM_ZSTD_FOUND)
