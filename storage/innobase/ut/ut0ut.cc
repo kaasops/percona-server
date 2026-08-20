@@ -96,26 +96,27 @@ void meb_sprintf_timestamp_without_extra_chars(
 
 #else  /* UNIV_HOTBACKUP */
 
+/* No -O0 forcing needed: the volatile counter and the asm-volatile
+UT_RELAX_CPU() already prevent the compiler from folding this loop. */
 ulint ut_delay(ulint delay) {
-  ulint i, j;
-  /* We don't expect overflow here, as ut::spin_wait_pause_multiplier is limited
-  to 100, and values of delay are not larger than @@innodb_spin_wait_delay
-  which is limited by 1 000. Anyway, in case an overflow happened, the program
-  would still work (as iterations is unsigned). */
+  volatile ulint i = 0;
   const ulint iterations = delay * ut::spin_wait_pause_multiplier;
+
   UT_LOW_PRIORITY_CPU();
 
-  j = 0;
+  while (i < iterations) {
+    // 10 relax instructions per loop iteration
+    UT_RELAX_CPU(); UT_RELAX_CPU(); UT_RELAX_CPU(); UT_RELAX_CPU(); UT_RELAX_CPU();
+    UT_RELAX_CPU(); UT_RELAX_CPU(); UT_RELAX_CPU(); UT_RELAX_CPU(); UT_RELAX_CPU();
 
-  for (i = 0; i < iterations; i++) {
-    j += i;
-    UT_RELAX_CPU();
+    i += 10;
   }
 
   UT_RESUME_PRIORITY_CPU();
 
-  return (j);
+  return iterations;
 }
+
 #endif /* UNIV_HOTBACKUP */
 
 /** Calculates fast the number rounded up to the nearest power of 2.
