@@ -24,6 +24,7 @@
 #include "mysql/components/library_mysys/my_memory.h"
 #include <assert.h>
 #include <stdlib.h>
+#include "my_config.h"
 #include "mysql/components/services/psi_memory.h"
 
 #ifdef HAVE_VALGRIND
@@ -41,7 +42,12 @@
   } while (0)
 #endif /* HAVE_VALGRIND */
 
-#define HEADER_SIZE 32
+/* Must stay equal to PSI_HEADER_SIZE (include/mysql/psi/mysql_memory.h):
+   the header sits between the pointer a component allocates through this
+   library and the pointer the server-side PSI layer offsets by, so the two
+   sides of the server/component .so boundary have to agree on one value,
+   not maintain two independent ones. */
+#define HEADER_SIZE CPU_LEVEL1_DCACHE_LINESIZE
 #define MAGIC 1234
 #define USER_TO_HEADER(P) ((my_memory_header *)(((char *)P) - HEADER_SIZE))
 #define HEADER_TO_USER(P) (((char *)P) + HEADER_SIZE)

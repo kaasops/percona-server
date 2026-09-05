@@ -30,6 +30,7 @@
 */
 
 #include "my_compiler.h"
+#include "my_config.h"
 #include "my_inttypes.h"
 #include "template_utils.h"
 
@@ -83,7 +84,13 @@ struct my_memory_header {
 };
 typedef struct my_memory_header my_memory_header;
 
-#define PSI_HEADER_SIZE 32
+/* No #ifdef fallback here, unlike the CPU_LEVEL1_DCACHE_LINESIZE use in
+   storage/perfschema/pfs_global.h: this value has to stay in lock-step with
+   HEADER_SIZE in components/library_mysys/my_memory.cc across the
+   server/component .so boundary, so an undefined macro must fail the build
+   loudly instead of silently falling back to a different constant on one
+   side only. */
+#define PSI_HEADER_SIZE CPU_LEVEL1_DCACHE_LINESIZE
 
 #define PSI_MEMORY_MAGIC 1234
 
