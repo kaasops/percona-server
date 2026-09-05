@@ -435,8 +435,7 @@ inline int cmp_data(ulint mtype, ulint prtype, bool is_asc, const byte *data1,
       ut_ad(prtype & DATA_BINARY_TYPE);
       pad = ULINT_UNDEFINED;
       if (prtype & DATA_GIS_MBR) {
-        return (cmp_whole_field(mtype, prtype, is_asc, data1, (unsigned)len1,
-                                data2, (unsigned)len2));
+        goto return_default;
       }
       break;
     case DATA_BLOB:
@@ -446,6 +445,7 @@ inline int cmp_data(ulint mtype, ulint prtype, bool is_asc, const byte *data1,
       }
       [[fallthrough]];
     default:
+    return_default:
       return (cmp_whole_field(mtype, prtype, is_asc, data1, (unsigned)len1,
                               data2, (unsigned)len2));
   }

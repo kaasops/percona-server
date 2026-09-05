@@ -173,10 +173,14 @@ struct purge_node_t {
   /** Undo recs to purge */
   Recs *recs;
 
-  void init() { new (&m_lob_pages) LOB_free_set(); }
+  void init() { m_lob_pages = nullptr; }
   void deinit() {
     mem_heap_free(heap);
-    m_lob_pages.~LOB_free_set();
+    // PFS memory accounting: pair with the ut::new_withkey() allocation in
+    // add_lob_page() (row0purge.cc); ut::delete_() is itself null-safe.
+    if (m_lob_pages != nullptr) {
+      ut::delete_(m_lob_pages);
+    }
   }
 
   /** Add an LOB page to the list of pages that will be freed at the end of a
@@ -217,7 +221,7 @@ struct purge_node_t {
                                 ut::allocator<Page_free_tuple>>;
 
   /** Set of LOB first pages that are to be freed. */
-  LOB_free_set m_lob_pages;
+  LOB_free_set *m_lob_pages;
 };
 
 #endif
