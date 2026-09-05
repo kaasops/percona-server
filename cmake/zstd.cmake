@@ -92,6 +92,10 @@ MACRO (MYSQL_CHECK_ZSTD)
 
   IF(WITH_ZSTD STREQUAL "bundled")
     MYSQL_USE_BUNDLED_ZSTD()
+    # Bundled zstd is linked statically, so mysql_config --libs needs no
+    # -lzstd. Set to an explicit empty string, not unset: that is how
+    # EXTRACT_LINK_LIBRARIES tells "no flag needed" from "flag missing".
+    SET(zstd_SYSTEM_LINK_FLAGS "" CACHE STRING "Link flag for zstd")
   ELSEIF(WITH_ZSTD STREQUAL "system")
     FIND_SYSTEM_ZSTD()
     IF (NOT SYSTEM_ZSTD_FOUND)

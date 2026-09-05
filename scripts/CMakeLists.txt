@@ -384,11 +384,13 @@ MACRO(EXTRACT_LINK_LIBRARIES target var)
       ELSEIF (lib MATCHES "^ext::")
         STRING(REGEX MATCH "ext::([a-z]+)" MATCH_LIB "${lib}")
         SET(SYSTEM_LIB ${CMAKE_MATCH_1})
-        SET(SYSTEM_LINK_FLAG ${${SYSTEM_LIB}_SYSTEM_LINK_FLAGS})
-        IF(NOT SYSTEM_LINK_FLAG)
+        # DEFINED, not a truthiness check: a statically linked bundled
+        # dependency marks "no flag needed" with an empty string. Only a
+        # variable never set at all is a real configuration gap.
+        IF(NOT DEFINED ${SYSTEM_LIB}_SYSTEM_LINK_FLAGS)
           MESSAGE(WARNING "Missing link flag for ${lib}")
-        ELSE()
-          SET(${var} "${${var}} ${SYSTEM_LINK_FLAG} ")
+        ELSEIF(${SYSTEM_LIB}_SYSTEM_LINK_FLAGS)
+          SET(${var} "${${var}} ${${SYSTEM_LIB}_SYSTEM_LINK_FLAGS} ")
         ENDIF()
       ELSEIF(lib MATCHES "OpenSSL::SSL")
         IF(SOLARIS AND WITH_SSL STREQUAL "system")
