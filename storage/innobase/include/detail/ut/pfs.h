@@ -42,6 +42,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include <utility>
 
 #include "mysql/psi/mysql_memory.h"
+#include "ut0cpu_cache.h"
 
 namespace ut {
 namespace detail {
@@ -97,7 +98,16 @@ struct PFS_metadata {
   static constexpr auto meta_size = sizeof(pfs_memory_key_t) +
                                     sizeof(pfs_owning_thread_t) +
                                     sizeof(pfs_datalen_t);
-  static constexpr auto size = meta_size + sizeof(pfs_meta_offset_t);
+  /* Padded to the cache line size (instead of the minimal
+     meta_size + sizeof(pfs_meta_offset_t), i.e. 32 bytes after alignment)
+     so that the DATA segment layout relative to cache line boundaries
+     matches the DISABLE_PSI_MEMORY=ON build and PFS metadata accesses do
+     not share a cache line with user data. Trade-off: per-allocation
+     overhead of PFS-instrumented ut:: allocations grows 32 -> 64 bytes
+     (128 on PowerPC); paths with alignment >= cache line size are
+     unaffected. Gated on an RSS measurement (see commit message). */
+  static constexpr auto size = ut::INNODB_CACHE_LINE_SIZE;
+  static_assert(size >= meta_size + sizeof(pfs_meta_offset_t));
 
   /** Helper function which stores the PFS thread info into the OWNER field. */
   static inline void pfs_owning_thread(data_segment_ptr data,
