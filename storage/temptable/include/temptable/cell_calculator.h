@@ -30,8 +30,8 @@ TempTable Cell_calculator declaration. */
 #include <algorithm>
 #include <cstdint>
 
+#include "extra/xxhash/my_xxhash.h"
 #include "my_dbug.h"
-#include "my_murmur3.h"
 #include "mysql/strings/m_ctype.h"
 #include "sql/field.h"
 #include "sql/key.h"
@@ -74,6 +74,10 @@ class Cell_calculator {
       const Cell &rhs) const;
 
  private:
+  static inline size_t binary_hash(const unsigned char *data, size_t length) {
+    return static_cast<size_t>(MY_XXH3_64(data, length, 0));
+  }
+
   enum class Mode : uint8_t {
     BINARY,
     CHARSET,
@@ -188,7 +192,7 @@ inline size_t Cell_calculator::hash(const Cell &cell) const {
     assert(data_length == 4 || data_length == 8);
     const double val = data_length == 4 ? float4get(data) : float8get(data);
     if (val == 0.0) return s_zero_hash;
-    return murmur3_32(data, data_length, 0);
+    return binary_hash(data, data_length);
   }
 
   /*
@@ -218,7 +222,7 @@ inline size_t Cell_calculator::hash(const Cell &cell) const {
   So we use if-else instead of switch below. */
 
   if (m_mode == Mode::BINARY) {
-    return murmur3_32(data, data_length, 0);
+    return binary_hash(data, data_length);
   } else if (m_mode == Mode::CHARSET) {
     length = data_length;
   } else if (m_mode == Mode::CHARSET_AND_CHAR_LENGTH) {
@@ -317,7 +321,7 @@ inline size_t Cell_calculator::zero_hash() {
   uchar float_data[8];
 
   float8store(float_data, 0.0);
-  return murmur3_32(float_data, 8, 0);
+  return binary_hash(float_data, 8);
 }
 
 } /* namespace temptable */

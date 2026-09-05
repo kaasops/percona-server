@@ -174,7 +174,9 @@ TEST(CellCalculator, NullEmpty) {
 
   EXPECT_EQ(calculator.hash(cell_null1), 1);
   EXPECT_EQ(calculator.hash(cell_null2), 1);
-  EXPECT_EQ(calculator.hash(cell_empty), 0);
+  // XXH3-64 of a zero-length input, seed 0.
+  EXPECT_EQ(calculator.hash(cell_empty),
+            static_cast<size_t>(3244421341483603138ULL));
 
   EXPECT_EQ(calculator.compare(cell_null1, cell_null2), 0);
 
