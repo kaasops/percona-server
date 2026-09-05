@@ -70,8 +70,12 @@ class Sharded_rw_lock {
     ut_ad(ut_is_2pow(n_shards));
     m_n_shards = n_shards;
 
-    m_shards = static_cast<Shard *>(
-        ut::zalloc_withkey(UT_NEW_THIS_FILE_PSI_KEY, sizeof(Shard) * n_shards));
+    /* Aligned to a kernel page, not merely to a cache line: the shard
+    array then starts its own page instead of sharing one with unrelated data,
+    which matters where pages are interleaved across NUMA nodes. */
+    m_shards = static_cast<Shard *>(ut::aligned_zalloc_withkey(
+        UT_NEW_THIS_FILE_PSI_KEY, sizeof(Shard) * n_shards,
+        ut::INNODB_KERNEL_PAGE_SIZE_DEFAULT));
 
     for_each([
 #ifdef UNIV_PFS_RWLOCK
@@ -88,14 +92,14 @@ class Sharded_rw_lock {
 
     for_each([](rw_lock_t &lock) { rw_lock_free(&lock); });
 
-    ut::free(m_shards);
+    ut::aligned_free(m_shards);
     m_shards = nullptr;
     m_n_shards = 0;
   }
 
   size_t s_lock(ut::Location location) {
     const size_t shard_no =
-        default_indexer_t<>::get_rnd_index() & (m_n_shards - 1);
+        cpu_indexer_t<>::get_rnd_index() & (m_n_shards - 1);
     rw_lock_s_lock_gen(&m_shards[shard_no], 0, location);
     return shard_no;
   }
@@ -148,7 +152,13 @@ class Sharded_rw_lock {
 #endif /* !UNIV_DEBUG */
 
  private:
-  using Shard = ut::Cacheline_padded<rw_lock_t>;
+  /* Aligned rather than padded: an aligned shard occupies whole cache
+  lines, so a shard's own data never spans one line more than it needs, and no
+  two shards share a line. This requires the array below to be allocated by an
+  allocator that honours over-alignment - which is why ut::Cacheline_padded
+  exists and why it is still the right choice for arrays allocated by plain
+  ut::zalloc. Here we control the allocation. */
+  using Shard = ut::Cacheline_aligned<rw_lock_t>;
 
   template <typename F>
   void for_each(F f) {

@@ -94,7 +94,7 @@ Latches::Unique_sharded_rw_lock::Unique_sharded_rw_lock() {
 #ifdef UNIV_PFS_RWLOCK
       lock_sys_global_rw_lock_key,
 #endif
-      LATCH_ID_LOCK_SYS_GLOBAL, 64);
+      LATCH_ID_LOCK_SYS_GLOBAL, 128);
 }
 
 Latches::Unique_sharded_rw_lock::~Unique_sharded_rw_lock() { rw_lock.free(); }
