@@ -52,14 +52,11 @@
 */
 #ifdef HAVE_BUILTIN_EXPECT
 
-// likely/unlikely are likely to clash with other symbols, do not #define
-#if defined(__cplusplus)
-constexpr bool likely(bool expr) { return __builtin_expect(expr, true); }
-constexpr bool unlikely(bool expr) { return __builtin_expect(expr, false); }
-#else
-#define likely(x) __builtin_expect((x), 1)
-#define unlikely(x) __builtin_expect((x), 0)
-#endif
+// Macros, not constexpr functions: the branch_weights hint does not
+// reliably survive the call boundary under some compiler and LTO
+// configurations.
+#define likely(x) __builtin_expect(!!(x), 1)
+#define unlikely(x) __builtin_expect(!!(x), 0)
 
 #else /* HAVE_BUILTIN_EXPECT */
 
