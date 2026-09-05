@@ -210,7 +210,9 @@ bool Table_cache_manager::init() {
   Table_cache::init_psi_keys();
   for (uint i = 0; i < table_cache_instances; i++) {
     if (m_table_cache[i].init()) {
-      for (uint j = 0; j < i; j++) m_table_cache[i].destroy();
+      /* Unwind the slots that succeeded (0..i-1), not slot i itself -
+      its own init() is what just failed. */
+      for (uint j = 0; j < i; j++) m_table_cache[j].destroy();
       return true;
     }
   }
