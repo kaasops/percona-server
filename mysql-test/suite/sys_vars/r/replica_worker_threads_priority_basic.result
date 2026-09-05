@@ -1,0 +1,16 @@
+SELECT @@global.replica_worker_threads_priority;
+@@global.replica_worker_threads_priority
+0
+SET @@global.replica_worker_threads_priority = -15;
+ERROR HY000: Variable 'replica_worker_threads_priority' is a read only variable
+SET @@session.replica_worker_threads_priority = -15;
+ERROR HY000: Variable 'replica_worker_threads_priority' is a read only variable
+SET PERSIST replica_worker_threads_priority = -15;
+ERROR HY000: Variable 'replica_worker_threads_priority' is a read only variable
+SELECT @@global.replica_worker_threads_priority;
+@@global.replica_worker_threads_priority
+0
+SELECT VARIABLE_VALUE FROM performance_schema.global_variables
+WHERE VARIABLE_NAME='replica_worker_threads_priority';
+VARIABLE_VALUE
+0

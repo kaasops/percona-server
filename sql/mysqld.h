@@ -122,6 +122,9 @@ typedef Bitmap<((MAX_INDEXES + 7) / 8 * 8)> Key_map; /* Used for finding keys */
 extern bool dynamic_plugins_are_initialized;
 
 extern bool opt_reset_connection_keep_sp_cache;
+extern long opt_replica_io_thread_priority;
+extern long opt_replica_coordinator_thread_priority;
+extern long opt_replica_worker_threads_priority;
 
 /* Function prototypes */
 

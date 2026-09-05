@@ -13243,3 +13243,6 @@ ER_IB_MSG_TRX_SYS_NUMA_INTERLEAVE
 ER_IB_MSG_BP_SOCKET_DISTRIBUTION
   eng "%s"
 
+ER_RPL_REPLICA_THREAD_PRIORITY_FAILED
+  eng "Failed to set the scheduling priority of the replication %s thread to nice %d (errno %d). The thread keeps the priority it inherited; lowering it requires CAP_SYS_NICE or a sufficient RLIMIT_NICE."
+

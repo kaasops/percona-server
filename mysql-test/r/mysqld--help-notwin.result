@@ -1210,6 +1210,14 @@ The following options may be given as the first argument:
  maximum number of milliseconds between updates.
  --replica-compressed-protocol 
  Use compression in the source/replica protocol.
+ --replica-coordinator-thread-priority[=#] 
+ Nice value applied at thread start to the replication
+ applier coordinator threads. If omitted, preserves the
+ inherited nice value; an explicit 0 sets nice to 0.
+ READONLY: the value is read when the thread starts, so
+ changing it needs a server restart. Effective on Linux
+ only, and lowering it below the process nice requires
+ CAP_SYS_NICE or a sufficient RLIMIT_NICE.
  --replica-enable-event=name 
  Tells the replication applier thread to enable the events
  that match the specified wildcard pattern without setting
@@ -1227,6 +1235,14 @@ The following options may be given as the first argument:
  IDEMPOTENT mode, replication will ignore duplicate key
  errors and key not found errors. In STRICT mode,
  replication will stop at those errors.
+ --replica-io-thread-priority[=#] 
+ Nice value applied at thread start to this server's
+ replication receiver (I/O) threads. If omitted, preserves
+ the inherited nice value; an explicit 0 sets nice to 0.
+ READONLY: the value is read when the thread starts, so
+ changing it needs a server restart. Effective on Linux
+ only, and lowering it below the process nice requires
+ CAP_SYS_NICE or a sufficient RLIMIT_NICE.
  --replica-load-tmpdir=name 
  The location where this replica will store temporary
  files when replicating a LOAD DATA INFILE command from a
@@ -1291,6 +1307,14 @@ The following options may be given as the first argument:
  If the variable is assigned the empty set, no conversions
  are allowed and it is expected that the types match
  exactly.
+ --replica-worker-threads-priority[=#] 
+ Nice value applied at thread start to the replication
+ applier worker threads. If omitted, preserves the
+ inherited nice value; an explicit 0 sets nice to 0.
+ READONLY: the value is read when the thread starts, so
+ changing it needs a server restart. Effective on Linux
+ only, and lowering it below the process nice requires
+ CAP_SYS_NICE or a sufficient RLIMIT_NICE.
  --replicate-do-db=name 
  Make replication applier threads apply only changes to
  the specified database. To specify more than one
@@ -2086,7 +2110,9 @@ replica-allow-batching TRUE
 replica-checkpoint-group 512
 replica-checkpoint-period 300
 replica-compressed-protocol FALSE
+replica-coordinator-thread-priority 0
 replica-exec-mode STRICT
+replica-io-thread-priority 0
 replica-max-allowed-packet 1073741824
 replica-net-timeout 60
 replica-parallel-type LOGICAL_CLOCK
@@ -2098,6 +2124,7 @@ replica-sql-verify-checksum TRUE
 replica-transaction-retries 10
 replica-translate-deprecated-priv FALSE
 replica-type-conversions 
+replica-worker-threads-priority 0
 replicate-same-server-id FALSE
 replication-optimize-for-static-plugin-config FALSE
 replication-sender-observe-commit-only FALSE

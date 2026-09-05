@@ -163,6 +163,9 @@
 #define MAX_CONNECTIONS 100000
 
 bool opt_reset_connection_keep_sp_cache = false;
+long opt_replica_io_thread_priority = 0;
+long opt_replica_coordinator_thread_priority = 0;
+long opt_replica_worker_threads_priority = 0;
 
 static constexpr const unsigned long DEFAULT_ERROR_COUNT{1024};
 static constexpr const unsigned long DEFAULT_SORT_MEMORY{256UL * 1024UL};
@@ -4266,6 +4269,42 @@ static Sys_var_bool Sys_replica_preserve_commit_order(
 
 static Sys_var_deprecated_alias Sys_slave_preserve_commit_order(
     "slave_preserve_commit_order", Sys_replica_preserve_commit_order);
+
+static Sys_var_long Sys_replica_io_thread_priority(
+    "replica_io_thread_priority",
+    "Nice value applied at thread start to this server's replication receiver "
+    "(I/O) threads. If omitted, preserves the inherited nice value; an "
+    "explicit 0 sets nice to 0. READONLY: the value is read when the thread "
+    "starts, so changing it needs a server restart. Effective on Linux only, "
+    "and lowering it below the process nice requires CAP_SYS_NICE or a "
+    "sufficient RLIMIT_NICE.",
+    READ_ONLY GLOBAL_VAR(opt_replica_io_thread_priority), CMD_LINE(OPT_ARG),
+    VALID_RANGE(-20, 19), DEFAULT(0), BLOCK_SIZE(1), NO_MUTEX_GUARD,
+    NOT_IN_BINLOG, ON_CHECK(nullptr), ON_UPDATE(nullptr));
+
+static Sys_var_long Sys_replica_coordinator_thread_priority(
+    "replica_coordinator_thread_priority",
+    "Nice value applied at thread start to the replication applier coordinator "
+    "threads. If omitted, preserves the inherited nice value; an explicit 0 "
+    "sets nice to 0. READONLY: the value is read when the thread starts, so "
+    "changing it needs a server restart. Effective on Linux only, and lowering "
+    "it below the process nice requires CAP_SYS_NICE or a sufficient "
+    "RLIMIT_NICE.",
+    READ_ONLY GLOBAL_VAR(opt_replica_coordinator_thread_priority),
+    CMD_LINE(OPT_ARG), VALID_RANGE(-20, 19), DEFAULT(0), BLOCK_SIZE(1),
+    NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(nullptr), ON_UPDATE(nullptr));
+
+static Sys_var_long Sys_replica_worker_threads_priority(
+    "replica_worker_threads_priority",
+    "Nice value applied at thread start to the replication applier worker "
+    "threads. If omitted, preserves the inherited nice value; an explicit 0 "
+    "sets nice to 0. READONLY: the value is read when the thread starts, so "
+    "changing it needs a server restart. Effective on Linux only, and lowering "
+    "it below the process nice requires CAP_SYS_NICE or a sufficient "
+    "RLIMIT_NICE.",
+    READ_ONLY GLOBAL_VAR(opt_replica_worker_threads_priority),
+    CMD_LINE(OPT_ARG), VALID_RANGE(-20, 19), DEFAULT(0), BLOCK_SIZE(1),
+    NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(nullptr), ON_UPDATE(nullptr));
 
 static Sys_var_bool Sys_replica_translate_deprecated_priv(
     "replica_translate_deprecated_priv",

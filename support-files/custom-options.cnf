@@ -136,3 +136,27 @@ loose-innodb_numa_interleave = OFF
 # RECOMMENDED: 256 -- ask for the maximum and let the cap decide, so one
 #   file serves hosts with different core counts.
 loose-innodb_buffer_pool_instances = 256
+
+# DESCRIPTION: Nice value applied at thread start to the replication
+#   receiver (I/O) threads. If omitted, preserves the inherited nice
+#   value; explicit 0 sets nice to 0. READONLY, Linux only; lowering the
+#   value below the process nice needs CAP_SYS_NICE or a sufficient
+#   RLIMIT_NICE, granted by the systemd drop-in that ships with the
+#   package.
+# DEFAULT: 0
+# RECOMMENDED: -15 -- the value this patchset ships with.
+loose-replica_io_thread_priority = -15
+
+# DESCRIPTION: Nice value applied at thread start to the replication
+#   applier coordinator threads. Same mechanism and requirements as
+#   replica_io_thread_priority.
+# DEFAULT: 0
+# RECOMMENDED: -15 -- the value this patchset ships with.
+loose-replica_coordinator_thread_priority = -15
+
+# DESCRIPTION: Nice value applied at thread start to the replication
+#   applier worker threads. Same mechanism and requirements as
+#   replica_io_thread_priority.
+# DEFAULT: 0
+# RECOMMENDED: -15 -- the value this patchset ships with.
+loose-replica_worker_threads_priority = -15

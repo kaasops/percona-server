@@ -33,6 +33,12 @@
 
 #include "sql/rpl_replica.h"
 
+#ifdef __linux__
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
+
 #include "my_config.h"
 
 #include <errno.h>
@@ -146,6 +152,7 @@
 #include "sql/rpl_rli_pdb.h"  // Slave_worker
 #include "sql/rpl_trx_boundary_parser.h"
 #include "sql/rpl_utility.h"
+#include "sql/set_var.h"
 #include "sql/sql_backup_lock.h"  // is_instance_backup_locked
 #include "sql/sql_class.h"        // THD
 #include "sql/sql_const.h"
@@ -5340,15 +5347,41 @@ static int try_to_reconnect(THD *thd, MYSQL *mysql, Master_info *mi,
   return 0;
 }
 
+static bool replica_thread_priority_is_set(const char *name) {
+  enum enum_variable_source source;
+  const bool failed =
+      get_sysvar_source(name, static_cast<uint>(strlen(name)), &source);
+  assert(!failed);
+  return !failed && source != COMPILED;
+}
+
+/** Apply an explicitly configured nice value to the calling thread. */
+static void replica_thread_apply_priority(long nice_value, const char *what) {
+#ifdef __linux__
+  errno = 0;
+  if (setpriority(PRIO_PROCESS, static_cast<id_t>(syscall(SYS_gettid)),
+                  static_cast<int>(nice_value)) != 0) {
+    LogErr(WARNING_LEVEL, ER_RPL_REPLICA_THREAD_PRIORITY_FAILED, what,
+           static_cast<int>(nice_value), errno);
+  }
+#else
+  (void)nice_value;
+  (void)what;
+#endif
+}
+
 /**
   Slave IO thread entry point.
 
-  @param arg Pointer to Master_info struct that holds information for
-  the IO thread.
-
+  @param arg Pointer to Master_info struct holding information for the IO thread.
   @return Always 0.
 */
 extern "C" void *handle_slave_io(void *arg) {
+  static const bool priority_is_set =
+      replica_thread_priority_is_set("replica_io_thread_priority");
+  if (priority_is_set) {
+    replica_thread_apply_priority(opt_replica_io_thread_priority, "receiver");
+  }
   THD *thd{nullptr};  // needs to be first for thread_stack
   bool thd_added{false};
   MYSQL *mysql;
@@ -6031,6 +6064,12 @@ static int check_temp_dir(char *tmp_file, const char *channel_name) {
 */
 extern "C" {
 static void *handle_slave_worker(void *arg) {
+  static const bool priority_is_set =
+      replica_thread_priority_is_set("replica_worker_threads_priority");
+  if (priority_is_set) {
+    replica_thread_apply_priority(opt_replica_worker_threads_priority,
+                                  "worker");
+  }
   THD *thd; /* needs to be first for thread_stack */
   bool thd_added = false;
   int error = 0;
@@ -7068,6 +7107,12 @@ static int report_apply_event_error(THD *thd, Relay_log_info *rli) {
   @return Always 0.
 */
 extern "C" void *handle_slave_sql(void *arg) {
+  static const bool priority_is_set =
+      replica_thread_priority_is_set("replica_coordinator_thread_priority");
+  if (priority_is_set) {
+    replica_thread_apply_priority(opt_replica_coordinator_thread_priority,
+                                  "coordinator");
+  }
   THD *thd; /* needs to be first for thread_stack */
   bool thd_added = false;
   bool main_loop_error = false;

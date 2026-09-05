@@ -46,7 +46,7 @@ INSERT INTO aliases(name) VALUES
 ('slave_parallel_workers'), ('slave_pending_jobs_size_max'),
 ('pseudo_slave_mode'), ('skip_slave_start');
 
-include/assert.inc [Expect 115 variables in the table.]
+include/assert.inc [Expect 118 variables in the table.]
 
 # Test SET PERSIST_ONLY
 SET PERSIST_ONLY binlog_cache_size = @@GLOBAL.binlog_cache_size;
@@ -148,9 +148,11 @@ SET PERSIST_ONLY replica_allow_batching = @@GLOBAL.replica_allow_batching;
 SET PERSIST_ONLY replica_checkpoint_group = @@GLOBAL.replica_checkpoint_group;
 SET PERSIST_ONLY replica_checkpoint_period = @@GLOBAL.replica_checkpoint_period;
 SET PERSIST_ONLY replica_compressed_protocol = @@GLOBAL.replica_compressed_protocol;
+SET PERSIST_ONLY replica_coordinator_thread_priority = @@GLOBAL.replica_coordinator_thread_priority;
 SET PERSIST_ONLY replica_enable_event = @@GLOBAL.replica_enable_event;
 ERROR HY000: Variable 'replica_enable_event' is a non persistent read only variable
 SET PERSIST_ONLY replica_exec_mode = @@GLOBAL.replica_exec_mode;
+SET PERSIST_ONLY replica_io_thread_priority = @@GLOBAL.replica_io_thread_priority;
 SET PERSIST_ONLY replica_load_tmpdir = @@GLOBAL.replica_load_tmpdir;
 ERROR HY000: Variable 'replica_load_tmpdir' is a non persistent read only variable
 SET PERSIST_ONLY replica_max_allowed_packet = @@GLOBAL.replica_max_allowed_packet;
@@ -167,6 +169,7 @@ SET PERSIST_ONLY replica_sql_verify_checksum = @@GLOBAL.replica_sql_verify_check
 SET PERSIST_ONLY replica_transaction_retries = @@GLOBAL.replica_transaction_retries;
 SET PERSIST_ONLY replica_translate_deprecated_priv = @@GLOBAL.replica_translate_deprecated_priv;
 SET PERSIST_ONLY replica_type_conversions = @@GLOBAL.replica_type_conversions;
+SET PERSIST_ONLY replica_worker_threads_priority = @@GLOBAL.replica_worker_threads_priority;
 SET PERSIST_ONLY replication_optimize_for_static_plugin_config = @@GLOBAL.replication_optimize_for_static_plugin_config;
 SET PERSIST_ONLY replication_sender_observe_commit_only = @@GLOBAL.replication_sender_observe_commit_only;
 SET PERSIST_ONLY rpl_read_size = @@GLOBAL.rpl_read_size;
@@ -269,16 +272,16 @@ Warning	1287	'@@sync_relay_log_info' is deprecated and will be removed in a futu
 Warning	1287	'@@sync_relay_log_info' is deprecated and will be removed in a future release.
 SET PERSIST_ONLY sync_source_info = @@GLOBAL.sync_source_info;
 
-include/assert.inc [Expect 102 persisted variables in persisted_variables table.]
+include/assert.inc [Expect 105 persisted variables in persisted_variables table.]
 
 ############################################################
 # 2. Restart server, it must preserve the persisted variable
 #    settings. Verify persisted configuration.
 # restart
 
-include/assert.inc [Expect 102 persisted variables in persisted_variables table.]
-include/assert.inc [Expect 102 persisted variables shown as PERSISTED in variables_info table.]
-include/assert.inc [Expect 102 persisted variables with matching persisted and global values.]
+include/assert.inc [Expect 105 persisted variables in persisted_variables table.]
+include/assert.inc [Expect 105 persisted variables shown as PERSISTED in variables_info table.]
+include/assert.inc [Expect 105 persisted variables with matching persisted and global values.]
 
 ############################################################
 # 3. Test RESET PERSIST. Verify persisted variable settings
@@ -350,9 +353,11 @@ RESET PERSIST replica_allow_batching;
 RESET PERSIST replica_checkpoint_group;
 RESET PERSIST replica_checkpoint_period;
 RESET PERSIST replica_compressed_protocol;
+RESET PERSIST replica_coordinator_thread_priority;
 RESET PERSIST replica_enable_event;
 ERROR HY000: Variable replica_enable_event does not exist in persisted config file
 RESET PERSIST replica_exec_mode;
+RESET PERSIST replica_io_thread_priority;
 RESET PERSIST replica_load_tmpdir;
 ERROR HY000: Variable replica_load_tmpdir does not exist in persisted config file
 RESET PERSIST replica_max_allowed_packet;
@@ -366,6 +371,7 @@ RESET PERSIST replica_sql_verify_checksum;
 RESET PERSIST replica_transaction_retries;
 RESET PERSIST replica_translate_deprecated_priv;
 RESET PERSIST replica_type_conversions;
+RESET PERSIST replica_worker_threads_priority;
 RESET PERSIST replication_optimize_for_static_plugin_config;
 RESET PERSIST replication_sender_observe_commit_only;
 RESET PERSIST rpl_read_size;
