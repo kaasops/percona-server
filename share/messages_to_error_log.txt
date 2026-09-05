@@ -13201,6 +13201,15 @@ ER_AUDIT_SYS_VAR_INVALID_FILE_DIRECTORY
 # End of Percona Server 8.0 server error log messages
 #
 
+#
+# Start of Percona Server 8.4 error log messages
+#
+start-error-number 48200
+
+#
+# End of Percona Server 8.4 error log messages
+#
+
 ################################################################################
 # Error numbers 50000 to 51999 are reserved. Please do not use them for
 # other error messages.
