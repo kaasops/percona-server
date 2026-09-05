@@ -92,8 +92,6 @@ void Dup::report(const dfield_t *dfield) noexcept {
 dberr_t pread(os_fd_t fd, void *ptr, size_t len, os_offset_t offset,
               void *crypt_buf, /*!< in: crypt buf or NULL */
               space_id_t space_id) noexcept {
-  IF_ENABLED("ddl_read_failure", return DB_IO_ERROR;)
-
   IORequest request;
 
   /* Merge sort pages are never compressed. */
@@ -107,6 +105,8 @@ dberr_t pread(os_fd_t fd, void *ptr, size_t len, os_offset_t offset,
   posix_fadvise(fd, offset, len, POSIX_FADV_DONTNEED);
 #endif /* POSIX_FADV_DONTNEED */
 
+  IF_ENABLED("ddl_read_failure", err = DB_IO_ERROR;)
+
   /* For encrypted tables, decrypt data after reading and copy data */
   if (err == DB_SUCCESS && log_tmp_is_encrypted()) {
     if (log_tmp_block_decrypt(static_cast<const byte *>(ptr), len,
@@ -117,6 +117,11 @@ dberr_t pread(os_fd_t fd, void *ptr, size_t len, os_offset_t offset,
     } else {
       err = DB_IO_DECRYPT_FAIL;
     }
+  }
+
+  if (err != DB_SUCCESS) {
+    ib::error() << "DDL temp file read failed: offset=" << offset
+                << ", len=" << len << ", err=" << err;
   }
 
   return err;

@@ -317,6 +317,15 @@ dberr_t Merge_file_sort::Output_file::write(const mrec_t *mrec,
       auto err = ddl::pwrite(m_file.get(), m_buffer.first, len, m_offset,
                              m_crypt_buffer.first, m_space_id);
 
+#ifdef UNIV_DEBUG
+      if (Sync_point::enabled(m_ctx.thd(), "ddl_merge_write_failure")) {
+        err = DB_IO_ERROR;
+      }
+#endif /* UNIV_DEBUG */
+      if (err == DB_IO_ERROR) {
+        err = DB_TEMP_FILE_WRITE_FAIL;
+      }
+
       if (err != DB_SUCCESS) {
         return err;
       }
@@ -368,8 +377,17 @@ dberr_t Merge_file_sort::Output_file::flush() noexcept {
   }
 
   const auto len = ut_uint64_align_up(m_ptr - m_buffer.first, IO_BLOCK_SIZE);
-  const auto err = ddl::pwrite(m_file.get(), m_buffer.first, len, m_offset,
-                               m_crypt_buffer.first, m_space_id);
+  auto err = ddl::pwrite(m_file.get(), m_buffer.first, len, m_offset,
+                         m_crypt_buffer.first, m_space_id);
+
+#ifdef UNIV_DEBUG
+  if (Sync_point::enabled(m_ctx.thd(), "ddl_merge_write_failure")) {
+    err = DB_IO_ERROR;
+  }
+#endif /* UNIV_DEBUG */
+  if (err == DB_IO_ERROR) {
+    err = DB_TEMP_FILE_WRITE_FAIL;
+  }
 
   m_offset += len;
   m_write_offsets.push_back(m_offset);

@@ -54,6 +54,31 @@ SET DEBUG = '+d,ddl_write_failure';
 alter table t1 drop primary key,add primary key(f2,f1);
 ERROR HY000: Temporary file write failure.
 SET DEBUG = '-d,ddl_write_failure';
+#
+# Error during merge file read in alter operation produces a
+# readable diagnostic (ER_TEMP_FILE_WRITE_FAILURE).
+#
+CALL mtr.add_suppression("DDL temp file read failed");
+SET SESSION innodb_ddl_threads = 1;
+SET SESSION innodb_ddl_buffer_size = 65536;
+SET DEBUG = '+d,ddl_read_failure';
+alter table t1 drop primary key,add primary key(f2,f1);
+ERROR HY000: Temporary file write failure.
+SET DEBUG = '-d,ddl_read_failure';
+SET SESSION innodb_ddl_threads = DEFAULT;
+SET SESSION innodb_ddl_buffer_size = DEFAULT;
+Pattern "DDL temp file read failed" found
+#
+# Error during merge file write (merge/sort phase) in alter
+# operation produces a readable diagnostic
+# (ER_TEMP_FILE_WRITE_FAILURE).
+#
+SET SESSION innodb_ddl_buffer_size = 65536;
+SET DEBUG = '+d,ddl_merge_write_failure';
+alter table t1 drop primary key,add primary key(f2,f1);
+ERROR HY000: Temporary file write failure.
+SET DEBUG = '-d,ddl_merge_write_failure';
+SET SESSION innodb_ddl_buffer_size = DEFAULT;
 drop table t1;
 create table t1(k1 int auto_increment primary key,
 k2 char(200),k3 char(200))engine=innodb;

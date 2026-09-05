@@ -74,6 +74,37 @@ SET DEBUG = '+d,ddl_write_failure';
 --error ER_TEMP_FILE_WRITE_FAILURE
 alter table t1 drop primary key,add primary key(f2,f1);
 SET DEBUG = '-d,ddl_write_failure';
+
+--echo #
+--echo # Error during merge file read in alter operation produces a
+--echo # readable diagnostic (ER_TEMP_FILE_WRITE_FAILURE).
+--echo #
+CALL mtr.add_suppression("DDL temp file read failed");
+SET SESSION innodb_ddl_threads = 1;
+SET SESSION innodb_ddl_buffer_size = 65536;
+SET DEBUG = '+d,ddl_read_failure';
+--error ER_TEMP_FILE_WRITE_FAILURE
+alter table t1 drop primary key,add primary key(f2,f1);
+SET DEBUG = '-d,ddl_read_failure';
+SET SESSION innodb_ddl_threads = DEFAULT;
+SET SESSION innodb_ddl_buffer_size = DEFAULT;
+
+let SEARCH_FILE= $MYSQLTEST_VARDIR/log/mysqld.1.err;
+let SEARCH_PATTERN= DDL temp file read failed;
+--source include/search_pattern.inc
+
+--echo #
+--echo # Error during merge file write (merge/sort phase) in alter
+--echo # operation produces a readable diagnostic
+--echo # (ER_TEMP_FILE_WRITE_FAILURE).
+--echo #
+SET SESSION innodb_ddl_buffer_size = 65536;
+SET DEBUG = '+d,ddl_merge_write_failure';
+--error ER_TEMP_FILE_WRITE_FAILURE
+alter table t1 drop primary key,add primary key(f2,f1);
+SET DEBUG = '-d,ddl_merge_write_failure';
+SET SESSION innodb_ddl_buffer_size = DEFAULT;
+
 drop table t1;
 
 # Optimize table via inplace algorithm

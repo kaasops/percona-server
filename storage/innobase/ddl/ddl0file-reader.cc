@@ -129,8 +129,12 @@ dberr_t File_reader::seek() noexcept {
   ut_a(m_range.second > m_range.first);
 
   m_read_len = get_read_len_next();
-  const auto err = ddl::pread(m_file.get(), m_io_buffer.first, m_read_len,
-                              m_range.first, m_crypt_buffer.first, m_space_id);
+  auto err = ddl::pread(m_file.get(), m_io_buffer.first, m_read_len,
+                        m_range.first, m_crypt_buffer.first, m_space_id);
+
+  if (err == DB_IO_ERROR) {
+    err = DB_TEMP_FILE_WRITE_FAIL;
+  }
 
   if (err == DB_SUCCESS) {
     /* Fetch the record. */
