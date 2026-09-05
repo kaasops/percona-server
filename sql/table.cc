@@ -8301,7 +8301,12 @@ bool assert_invalid_dict_is_locked(const TABLE *table) {
   @return true if the assertion holds, terminates the process otherwise
 */
 bool assert_invalid_stats_is_locked(const TABLE *table) {
-  table_cache_manager.assert_owner(table->in_use);
+  /* Address the cache instance that actually owns this TABLE (its stamp),
+  not whatever shard table->in_use currently resolves to - the two can
+  disagree, and this assertion exists specifically to catch the
+  wrong-cache class of bug that would otherwise cause. */
+  table_cache_manager.cache_by_index(table->table_cache_index())
+      ->assert_owner();
   return true;
 }
 #endif

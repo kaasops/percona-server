@@ -1,0 +1,72 @@
+#
+# Bug: table cache TABLE objects released into the wrong shard
+# after the resolving thread's shard preference changes between
+# acquire and release.
+#
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT);
+INSERT INTO t1 VALUES (1,1),(2,2);
+CREATE TABLE t2 (a INT PRIMARY KEY);
+INSERT INTO t2 VALUES (1);
+CREATE TABLE t5 (a INT PRIMARY KEY, b INT);
+INSERT INTO t5 VALUES (1,1);
+CREATE TRIGGER bu_t5 BEFORE UPDATE ON t5 FOR EACH ROW SET NEW.b = NEW.b + 1;
+SET SESSION debug = '+d,table_cache_rotate_shard';
+# 1. Plain statement: acquire and end-of-statement release resolve
+#    to different shards on every call.
+SELECT * FROM t1 ORDER BY a;
+a	b
+1	1
+2	2
+SELECT t1.a FROM t1 JOIN t2 ON t1.a = t2.a;
+a
+1
+# 2. TABLE held across statements: HANDLER.
+HANDLER t1 OPEN;
+SELECT 1;
+1
+1
+HANDLER t1 READ `PRIMARY` FIRST;
+a	b
+1	1
+HANDLER t1 CLOSE;
+# 3. TABLE held across statements: LOCK TABLES ... UNLOCK TABLES.
+LOCK TABLES t1 READ, t2 READ;
+SELECT COUNT(*) FROM t1;
+COUNT(*)
+2
+SELECT COUNT(*) FROM t2;
+COUNT(*)
+1
+UNLOCK TABLES;
+# 4. remove_table() path: share invalidated while a TABLE is cached.
+FLUSH TABLES;
+SELECT * FROM t1 ORDER BY a;
+a	b
+1	1
+2	2
+ALTER TABLE t1 ADD COLUMN c INT;
+SELECT * FROM t1 ORDER BY a;
+a	b	c
+1	1	NULL
+2	2	NULL
+# 5. Multiple tables opened and released within one statement
+#    (foreign key parent/child, additional table opens for the
+#    constraint check).
+CREATE TABLE parent (id INT PRIMARY KEY) ENGINE=InnoDB;
+CREATE TABLE child (id INT PRIMARY KEY, pid INT, FOREIGN KEY (pid) REFERENCES parent(id)) ENGINE=InnoDB;
+INSERT INTO parent VALUES (1);
+INSERT INTO child VALUES (1,1);
+UPDATE child SET pid = 1 WHERE id = 1;
+DELETE FROM child;
+# 6. Table with a trigger: finalize_load() retargets the
+#    fully-loaded-triggers counter to the TABLE's owning shard, not
+#    the updating thread's current one. FLUSH TABLES forces the
+#    TABLE (and its counter contribution) out via remove_table(),
+#    which asserts the counter never underflows on the wrong shard.
+UPDATE t5 SET b = b + 1 WHERE a = 1;
+SELECT * FROM t5;
+a	b
+1	3
+FLUSH TABLES;
+SET SESSION debug = '-d,table_cache_rotate_shard';
+DROP TABLE child, parent, t5, t2, t1;

@@ -1440,6 +1440,12 @@ struct TABLE {
   handler *file{nullptr};
   TABLE *next{nullptr}, *prev{nullptr};
 
+  /** Sentinel for TABLE::m_table_cache_index: not owned by any cache. */
+  static constexpr uint NO_TABLE_CACHE_INDEX = 0xFFFFFFFFu;
+
+  /** Table cache instance owning this TABLE, or NO_TABLE_CACHE_INDEX. */
+  uint table_cache_index() const noexcept { return m_table_cache_index; }
+
  private:
   /**
      Links for the lists of used/unused TABLE objects for the particular
@@ -1467,6 +1473,18 @@ struct TABLE {
     for linking TABLE objects in a list.
   */
   friend class Table_cache;
+
+  /**
+    Index of the Table_cache instance this TABLE was inserted into by
+    Table_cache::add_used_table(), or NO_TABLE_CACHE_INDEX if the object
+    is not (or no longer) owned by any table cache instance (temporary
+    tables and other uncached TABLE objects never get a valid index).
+    Written only under the owning cache's lock; read by release paths to
+    select the cache to lock, so that a TABLE is always returned to the
+    instance that owns its cache element, regardless of which shard the
+    releasing thread currently resolves to.
+  */
+  uint m_table_cache_index{NO_TABLE_CACHE_INDEX};
 
  public:
   // Pointer to the histograms available on the table.

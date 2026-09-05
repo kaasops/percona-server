@@ -1383,6 +1383,82 @@ TEST_F(TableCacheDoubleCacheTest, ManagerLoadedTriggersTables) {
 }
 
 /*
+  Coverage for TABLE::table_cache_index(): the stamp Table_cache::
+  add_used_table() writes at acquire time survives release() (the TABLE
+  is still owned by the same instance, just unused) and is cleared by
+  remove_table() - release paths elsewhere key off exactly this lifecycle
+  to address the owning cache instance instead of re-resolving one from
+  the current thread.
+*/
+
+TEST_F(TableCacheDoubleCacheTest, StampTracksOwningCacheInstance) {
+  THD *thd_1 = get_thd(0);
+
+  Table_cache *table_cache_1 = table_cache_manager.get_cache(thd_1);
+  const uint cache_1_index = table_cache_manager.cache_index(table_cache_1);
+
+  Mock_share share_1("share_1");
+  TABLE *table_1 = share_1.create_table(thd_1);
+
+  EXPECT_EQ(TABLE::NO_TABLE_CACHE_INDEX, table_1->table_cache_index());
+
+  table_cache_1->lock();
+  add_used_table(table_cache_1, thd_1, table_1);
+  EXPECT_EQ(cache_1_index, table_1->table_cache_index());
+
+  table_cache_1->release_table(thd_1, table_1);
+  EXPECT_EQ(cache_1_index, table_1->table_cache_index());
+
+  table_cache_1->remove_table(table_1);
+  EXPECT_EQ(TABLE::NO_TABLE_CACHE_INDEX, table_1->table_cache_index());
+  table_cache_1->unlock();
+
+  share_1.destroy_table(table_1);
+}
+
+/*
+  Table_trigger_dispatcher::finalize_load() must route the
+  fully-loaded-triggers counter increment to the shard that owns the
+  TABLE, not to whatever shard the THD passed to finalize_load() happens
+  to resolve to. Simulated here with a THD that never touched the TABLE
+  at all (thd_2), the way a caller with the wrong shard reasoning would
+  have picked in the pre-fix code (Table_cache_manager::get_cache(thd)).
+*/
+
+TEST_F(TableCacheDoubleCacheTest, TriggersLoadCounterTargetsOwningShard) {
+  THD *thd_1 = get_thd(0);
+  THD *thd_2 = get_thd(1);
+
+  Table_cache *table_cache_1 = table_cache_manager.get_cache(thd_1);
+  Table_cache *table_cache_2 = table_cache_manager.get_cache(thd_2);
+  ASSERT_TRUE(table_cache_1 != table_cache_2);
+
+  Mock_share share_1("share_1");
+  TABLE *table_1 = share_1.create_table_with_triggers(thd_1);
+
+  table_cache_1->lock();
+  add_used_table(table_cache_1, thd_1, table_1);
+  table_cache_1->unlock();
+
+  // thd_2 never acquired this TABLE - passing it here only affects
+  // setup_trigger_fields()'s SP binding, not which cache instance owns
+  // the counter that gets incremented.
+  table_1->triggers->finalize_load(thd_2);
+  EXPECT_TRUE(table_1->triggers->has_load_been_finalized());
+
+  EXPECT_EQ(1U, table_cache_1->loaded_triggers_tables());
+  EXPECT_EQ(0U, table_cache_2->loaded_triggers_tables());
+
+  table_cache_1->lock();
+  table_cache_1->remove_table(table_1);
+  table_cache_1->unlock();
+
+  EXPECT_EQ(0U, table_cache_1->loaded_triggers_tables());
+
+  share_1.destroy_table(table_1);
+}
+
+/*
   Coverage for lock and unlock methods of Table_cache_manager class.
 */
 
@@ -1652,7 +1728,12 @@ TEST_F(TableCacheDoubleCacheTest, Iterator) {
   EXPECT_TRUE(it++ == nullptr);
   EXPECT_TRUE(it++ == nullptr);
 
-  table_cache_1->remove_table(table_4);
+  // table_4 was added into table_cache_2 (add_used_table(table_cache_2,
+  // thd_2, table_4) above), not table_cache_1 - removing it from the
+  // wrong instance used to silently mutate the wrong Table_cache's
+  // internal lists (this is exactly the bug class TABLE::
+  // table_cache_index()'s stamp and this assert now catch loudly).
+  table_cache_2->remove_table(table_4);
 
   // And now no used TABLE objects for share_1 at all
   it.rewind();

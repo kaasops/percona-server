@@ -369,7 +369,23 @@ bool Table_trigger_dispatcher::finalize_load(THD *thd) {
 
   m_load_finalized = true;
 
-  table_cache_manager.get_cache(thd)->notify_triggers_load();
+  /* Route the increment to the shard that actually owns m_subject_table
+  (stamped at add_used_table() time), not whatever shard the calling
+  thread thd currently resolves to: this counter and its matching
+  decrement in Table_cache::remove_table() both key off the TABLE's
+  stamp, and mixing the two addressing schemes would desync a per-shard
+  atomic that's only ever incremented/decremented, never reset, from its
+  owning shard's actual trigger-loaded TABLE count. Guarded, not just
+  asserted: every path that reaches finalize_load() stamps the TABLE
+  first, so the sentinel should be unreachable here - but on a release
+  build, calling cache_by_index() with it would index
+  m_table_cache[NO_TABLE_CACHE_INDEX] instead of safely skipping the
+  notify. */
+  const uint cache_idx = m_subject_table->table_cache_index();
+  assert(cache_idx != TABLE::NO_TABLE_CACHE_INDEX);
+  if (cache_idx != TABLE::NO_TABLE_CACHE_INDEX) {
+    table_cache_manager.cache_by_index(cache_idx)->notify_triggers_load();
+  }
 
   return false;
 }

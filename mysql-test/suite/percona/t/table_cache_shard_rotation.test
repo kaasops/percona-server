@@ -1,0 +1,81 @@
+#
+# Table_cache_manager::cache_index_for_thread() picks a table cache shard
+# for the calling thread. TABLE objects used to be released back into
+# whatever shard the *releasing* thread currently resolves to, not the
+# shard they were actually inserted into at acquire time - if the two
+# ever disagreed (e.g. the thread's shard preference changed between
+# acquire and release), the release path locked and mutated the wrong
+# Table_cache instance's internal lists while holding the wrong mutex.
+#
+# TABLE::table_cache_index() now stamps the owning cache instance at
+# acquire time, and release paths use the stamp instead of re-resolving
+# from the current thread. The table_cache_rotate_shard debug point below
+# forces cache_index_for_thread() to return a different shard on every
+# single call (via an atomic rotor), which makes every acquire/release
+# pair for every TABLE in this test resolve to different shards
+# unconditionally - so this test crashes/asserts on a debug build without
+# the fix, and passes with it.
+#
+--source include/have_debug.inc
+
+--echo #
+--echo # Bug: table cache TABLE objects released into the wrong shard
+--echo # after the resolving thread's shard preference changes between
+--echo # acquire and release.
+--echo #
+
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT);
+INSERT INTO t1 VALUES (1,1),(2,2);
+CREATE TABLE t2 (a INT PRIMARY KEY);
+INSERT INTO t2 VALUES (1);
+CREATE TABLE t5 (a INT PRIMARY KEY, b INT);
+INSERT INTO t5 VALUES (1,1);
+CREATE TRIGGER bu_t5 BEFORE UPDATE ON t5 FOR EACH ROW SET NEW.b = NEW.b + 1;
+
+SET SESSION debug = '+d,table_cache_rotate_shard';
+
+--echo # 1. Plain statement: acquire and end-of-statement release resolve
+--echo #    to different shards on every call.
+SELECT * FROM t1 ORDER BY a;
+SELECT t1.a FROM t1 JOIN t2 ON t1.a = t2.a;
+
+--echo # 2. TABLE held across statements: HANDLER.
+HANDLER t1 OPEN;
+SELECT 1;
+HANDLER t1 READ `PRIMARY` FIRST;
+HANDLER t1 CLOSE;
+
+--echo # 3. TABLE held across statements: LOCK TABLES ... UNLOCK TABLES.
+LOCK TABLES t1 READ, t2 READ;
+SELECT COUNT(*) FROM t1;
+SELECT COUNT(*) FROM t2;
+UNLOCK TABLES;
+
+--echo # 4. remove_table() path: share invalidated while a TABLE is cached.
+FLUSH TABLES;
+SELECT * FROM t1 ORDER BY a;
+ALTER TABLE t1 ADD COLUMN c INT;
+SELECT * FROM t1 ORDER BY a;
+
+--echo # 5. Multiple tables opened and released within one statement
+--echo #    (foreign key parent/child, additional table opens for the
+--echo #    constraint check).
+CREATE TABLE parent (id INT PRIMARY KEY) ENGINE=InnoDB;
+CREATE TABLE child (id INT PRIMARY KEY, pid INT, FOREIGN KEY (pid) REFERENCES parent(id)) ENGINE=InnoDB;
+INSERT INTO parent VALUES (1);
+INSERT INTO child VALUES (1,1);
+UPDATE child SET pid = 1 WHERE id = 1;
+DELETE FROM child;
+
+--echo # 6. Table with a trigger: finalize_load() retargets the
+--echo #    fully-loaded-triggers counter to the TABLE's owning shard, not
+--echo #    the updating thread's current one. FLUSH TABLES forces the
+--echo #    TABLE (and its counter contribution) out via remove_table(),
+--echo #    which asserts the counter never underflows on the wrong shard.
+UPDATE t5 SET b = b + 1 WHERE a = 1;
+SELECT * FROM t5;
+FLUSH TABLES;
+
+SET SESSION debug = '-d,table_cache_rotate_shard';
+
+DROP TABLE child, parent, t5, t2, t1;

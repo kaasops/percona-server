@@ -289,7 +289,18 @@ class Table_cache_manager {
 
   /** Get instance of table cache to be used by particular connection. */
   Table_cache *get_cache(THD *thd) {
-    return &m_table_cache[thd->thread_id() % table_cache_instances];
+    return &m_table_cache[cache_index_for_thread(thd)];
+  }
+
+  /**
+    Get table cache instance by index. Used by paths that must address the
+    cache instance which owns a specific TABLE (TABLE::table_cache_index())
+    rather than the instance preferred by the current thread.
+  */
+  Table_cache *cache_by_index(uint idx) {
+    assert(idx != TABLE::NO_TABLE_CACHE_INDEX);
+    assert(idx < table_cache_instances);
+    return &m_table_cache[idx];
   }
 
   /** Get index for the table cache in container. */
@@ -303,7 +314,6 @@ class Table_cache_manager {
 
   void lock_all_and_tdc();
   void unlock_all_and_tdc();
-  void assert_owner(THD *thd);
   void assert_owner_all();
   void assert_owner_all_and_tdc();
 
@@ -319,6 +329,18 @@ class Table_cache_manager {
   friend class Table_cache_iterator;
 
  private:
+  /**
+    Compute index of table cache instance for the given thread.
+
+    Currently just thread_id() modulo instances (same mapping get_cache()
+    used inline before this method existed) - pulled out into its own
+    function so DBUG_EXECUTE_IF("table_cache_rotate_shard", ...) has one
+    place to force a different shard on every call, for
+    percona.table_cache_shard_rotation. CPU-based shard selection lands in
+    a later change.
+  */
+  uint cache_index_for_thread(THD *thd) const;
+
   /**
     An array of Table_cache instances.
     Only the first table_cache_instances elements in it are used.
@@ -494,6 +516,13 @@ bool Table_cache::add_used_table(THD *thd, TABLE *table) {
 
   assert(table->in_use == thd);
 
+  /* Stamp the owning cache instance on the TABLE itself: release paths
+  address the cache by this stamp instead of re-resolving it from the
+  releasing thread, so a TABLE always goes back to the instance that
+  actually holds its cache element even when the two differ between
+  acquire and release. */
+  table->m_table_cache_index = table_cache_manager.cache_index(this);
+
   /*
     Try to get Table_cache_element representing this table in the cache
     from array in the TABLE_SHARE.
@@ -541,6 +570,12 @@ void Table_cache::remove_table(TABLE *table) {
 
   assert_owner();
 
+  /* The TABLE must actually belong to this cache instance - catches a
+  caller that resolved the wrong Table_cache (e.g. by the releasing
+  thread's current shard preference instead of the TABLE's stamp) before
+  it can corrupt this instance's lists under its own lock. */
+  assert(table->table_cache_index() == table_cache_manager.cache_index(this));
+
   if (table->in_use) {
     /* Remove from per-table chain of used TABLE objects. */
     el->used_tables.remove(table);
@@ -556,8 +591,15 @@ void Table_cache::remove_table(TABLE *table) {
   }
 
   m_table_count--;
-  if (table->triggers && table->triggers->has_load_been_finalized())
+  if (table->triggers && table->triggers->has_load_been_finalized()) {
+    /* Guards against the underflow that a mis-targeted decrement would
+    cause on this atomic unsigned counter: notify_triggers_load()'s
+    increment and this decrement must always land on the same shard (the
+    one that stamped the TABLE), never on whichever shard some other
+    thread currently resolves to. */
+    assert(m_table_triggers_count > 0);
     m_table_triggers_count--;
+  }
 
   if (el->used_tables.is_empty() && el->free_tables_full_triggers.is_empty() &&
       el->free_tables_slim.is_empty()) {
@@ -570,6 +612,8 @@ void Table_cache::remove_table(TABLE *table) {
     */
     table->s->cache_element[table_cache_manager.cache_index(this)] = nullptr;
   }
+
+  table->m_table_cache_index = TABLE::NO_TABLE_CACHE_INDEX;
 }
 
 /**
@@ -639,6 +683,7 @@ TABLE *Table_cache::get_table(THD *thd, const char *key, size_t key_length,
 
   if (table) {
     assert(!table->in_use);
+    assert(table->table_cache_index() == table_cache_manager.cache_index(this));
 
     /* Unlink table from unused tables list for this cache. */
     unlink_unused_table(table);
@@ -672,6 +717,8 @@ void Table_cache::release_table(THD *thd, TABLE *table) {
       table->s->cache_element[table_cache_manager.cache_index(this)];
 
   assert_owner();
+
+  assert(table->table_cache_index() == table_cache_manager.cache_index(this));
 
   assert(table->in_use);
   assert(table->file);

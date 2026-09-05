@@ -1788,7 +1788,12 @@ void close_thread_tables(THD *thd) {
   table is marked as needing re-open.
 */
 static void release_or_close_table(THD *thd, TABLE *table) {
-  Table_cache *tc = table_cache_manager.get_cache(thd);
+  /* Release into the cache instance that owns this TABLE (stamped at
+  acquire time), not whatever shard the releasing thread currently
+  resolves to: the two need not agree, and a TABLE's cache instance never
+  changes once it is stamped. */
+  Table_cache *tc =
+      table_cache_manager.cache_by_index(table->table_cache_index());
 
   tc->lock();
 
@@ -3573,7 +3578,10 @@ table_found:
     if (thd->backup_tables_lock.abort_if_acquired() ||
         thd->backup_tables_lock.acquire_protection(thd, MDL_STATEMENT,
                                                    ot_ctx->get_timeout())) {
-      Table_cache *tc = table_cache_manager.get_cache(thd);
+      /* Release into the owning cache instance, not the thread's current
+      shard - see release_or_close_table() for why. */
+      Table_cache *tc =
+          table_cache_manager.cache_by_index(table->table_cache_index());
 
       tc->lock();
 

@@ -27,6 +27,7 @@
 #include <string.h>
 
 #include <algorithm>
+#include <atomic>
 
 #include "my_compiler.h"
 #include "my_dbug.h"
@@ -284,6 +285,34 @@ void Table_cache_manager::resolve_instance_count() {
       table_cache_per_instance_limit(table_cache_triggers, effective);
 }
 
+/**
+  Compute index of table cache instance for the given thread.
+  @sa Table_cache_manager::cache_index_for_thread() in table_cache.h for
+  the contract.
+*/
+uint Table_cache_manager::cache_index_for_thread(THD *thd) const {
+  const ulong instances = table_cache_instances;
+  /* resolve_instance_count() (called once from init_server_components(),
+  before table_def_init()) clamps table_cache_instances to
+  [1, MAX_TABLE_CACHES] and nothing lowers it afterwards - unlike the
+  donor this was adapted from, which couldn't assume that and clamped a
+  possible 0 to 1 here instead. */
+  assert(instances >= 1);
+
+  /* Test-only: force a different shard on every resolution so that the
+  acquire-time and release-time resolutions for the same TABLE are
+  guaranteed to disagree - this is what makes
+  percona.table_cache_shard_rotation crash/assert on a debug build
+  without the release-by-stamp fix and pass with it. */
+  DBUG_EXECUTE_IF("table_cache_rotate_shard", {
+    static std::atomic<uint> rotor{0};
+    return rotor.fetch_add(1, std::memory_order_relaxed) %
+           static_cast<uint>(instances);
+  });
+
+  return static_cast<uint>(thd->thread_id() % instances);
+}
+
 /** Destroy all instances of table cache which were used by server. */
 
 void Table_cache_manager::destroy() {
@@ -340,16 +369,6 @@ void Table_cache_manager::unlock_all_and_tdc() {
   mysql_mutex_unlock(&LOCK_open);
 
   for (uint i = 0; i < table_cache_instances; i++) m_table_cache[i].unlock();
-}
-
-/**
-  Assert that caller owns lock on the table cache.
-
-  @param thd Thread handle
-*/
-void Table_cache_manager::assert_owner(THD *thd) {
-  Table_cache *tc = get_cache(thd);
-  tc->assert_owner();
 }
 
 /**
