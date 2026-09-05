@@ -12,3 +12,17 @@
 #   RECOMMENDED: guidance if it differs from the default
 
 [mysqld]
+
+
+# DESCRIPTION: Rewrite replicated SET_USER_ID to
+#   SET_ANY_DEFINER,ALLOW_NONEXISTENT_DEFINER in the replica SQL
+#   applier, so replicating from an 8.0 source that still grants the
+#   removed SET_USER_ID privilege doesn't stop the applier thread.
+#   Does not affect user-issued GRANT/REVOKE; can be changed only
+#   while the replica SQL thread is stopped.
+# DEFAULT: OFF (upstream, opt-in)
+# RECOMMENDED: ON -- keeps applier threads from stopping if any 8.0
+#   source still replicating to this server grants SET_USER_ID; no
+#   effect if none do. Cheaper to leave on than to diagnose an applier
+#   stopping mid-upgrade.
+loose-replica_translate_deprecated_priv = ON
