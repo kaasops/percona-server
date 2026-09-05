@@ -7409,7 +7409,7 @@ ER_REPLICA_CHANNEL_NOT_RUNNING
    eng "This operation requires running replication threads; configure replica and run START REPLICA FOR CHANNEL '%s'"
 
 ER_REPLICA_CHANNEL_WAS_RUNNING
-   eng "Replication thread(s) for channel '%s' are already runnning."
+   eng "Replication thread(s) for channel '%s' are already running."
 
 ER_REPLICA_CHANNEL_WAS_NOT_RUNNING
   eng "Replication thread(s) for channel '%s' are already stopped."

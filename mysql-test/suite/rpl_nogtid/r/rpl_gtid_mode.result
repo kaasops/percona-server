@@ -334,7 +334,7 @@ include/rpl/sync_to_replica.inc
 [connection slave]
 include/rpl/start_replica.inc
 Warnings:
-Note	3083	Replication thread(s) for channel '' are already runnning.
+Note	3083	Replication thread(s) for channel '' are already running.
 [connection master]
 call mtr.add_suppression("Could not open * for logging");
 include/rpl/sync_to_replica.inc

@@ -68,7 +68,7 @@ ERROR HY000: Incorrect parameter or combination of parameters for START REPLICA 
 START REPLICA sql_thread;
 START REPLICA until SOURCE_LOG_FILE='master-bin.000001', SOURCE_LOG_POS=SOURCE_LOG_POS;
 Warnings:
-Note	3083	Replication thread(s) for channel '' are already runnning.
+Note	3083	Replication thread(s) for channel '' are already running.
 include/rpl/stop_replica.inc
 drop table if exists t1;
 RESET REPLICA;

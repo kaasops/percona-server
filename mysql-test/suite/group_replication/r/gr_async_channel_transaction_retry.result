@@ -103,7 +103,7 @@ include/rpl/reconnect.inc
 [connection slave]
 include/rpl/start_applier.inc
 Warnings:
-Note	3083	Replication thread(s) for channel '' are already runnning.
+Note	3083	Replication thread(s) for channel '' are already running.
 [connection master]
 DROP TABLE t1;
 DROP TABLE t2;

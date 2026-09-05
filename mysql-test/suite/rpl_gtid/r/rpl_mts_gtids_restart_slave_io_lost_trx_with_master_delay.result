@@ -70,7 +70,7 @@ SET GLOBAL DEBUG= @save_debug;
 include/rpl/start_receiver.inc
 include/rpl/start_applier.inc
 Warnings:
-Note	3083	Replication thread(s) for channel '' are already runnning.
+Note	3083	Replication thread(s) for channel '' are already running.
 INSERT INTO t1 VALUES (3);
 include/rpl/sync_to_replica.inc
 include/diff_tables.inc [master:t1, slave:t1]

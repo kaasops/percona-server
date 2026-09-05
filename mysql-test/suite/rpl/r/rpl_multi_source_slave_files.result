@@ -23,10 +23,10 @@ START REPLICA SQL_THREAD;
 include/rpl/for_each_connection.inc [include/rpl/wait_for_applier_to_start.inc]
 START REPLICA SQL_THREAD;
 Warnings:
-Note	3083	Replication thread(s) for channel 'channel_1' are already runnning.
-Note	3083	Replication thread(s) for channel 'channel_3' are already runnning.
-Note	3083	Replication thread(s) for channel 'channel_4' are already runnning.
-Note	3083	Replication thread(s) for channel 'channel_5' are already runnning.
+Note	3083	Replication thread(s) for channel 'channel_1' are already running.
+Note	3083	Replication thread(s) for channel 'channel_3' are already running.
+Note	3083	Replication thread(s) for channel 'channel_4' are already running.
+Note	3083	Replication thread(s) for channel 'channel_5' are already running.
 include/rpl/for_each_connection.inc [include/rpl/wait_for_applier_to_start.inc]
 START REPLICA IO_THREAD;
 include/rpl/for_each_connection.inc [include/rpl/wait_for_receiver_to_start.inc]

@@ -60,7 +60,7 @@ master-bin.000002	#	Xid	#	#	COMMIT /* XID */
 [connection slave]
 include/rpl/start_receiver.inc
 Warnings:
-Note	3083	Replication thread(s) for channel '' are already runnning.
+Note	3083	Replication thread(s) for channel '' are already running.
 [connection master]
 include/rpl/sync_to_replica_received.inc
 RELAY LOG EVENTS for 
@@ -95,7 +95,7 @@ slave-relay-bin.000006	#	Write_rows	#	#	table_id: # flags: STMT_END_F
 slave-relay-bin.000006	#	Xid	#	#	COMMIT /* XID */
 include/rpl/start_applier.inc
 Warnings:
-Note	3083	Replication thread(s) for channel '' are already runnning.
+Note	3083	Replication thread(s) for channel '' are already running.
 [connection master]
 include/rpl/sync_to_replica.inc
 include/assert.inc [Assert that master and slave tables have the same content]

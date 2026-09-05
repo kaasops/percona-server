@@ -54,7 +54,7 @@ include/rpl/sync_to_replica.inc
 ######## 2.1. WRITESET with REPLICA ########
 include/rpl/start_replica.inc
 Warnings:
-Note	3083	Replication thread(s) for channel '' are already runnning.
+Note	3083	Replication thread(s) for channel '' are already running.
 include/rpl/sync_to_replica.inc
 include/include/rpl/assert_logical_timestamps.inc
 
