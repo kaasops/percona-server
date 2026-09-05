@@ -21,6 +21,8 @@
   along with this program; if not, write to the Free Software
   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
+#include <new>
+
 #include "my_inttypes.h"
 #include "my_sys.h"
 #include "storage/perfschema/pfs_global.h"
@@ -28,13 +30,24 @@
 bool pfs_initialized = false;
 
 void *pfs_malloc(PFS_builtin_memory_class *, size_t size, myf flags) {
+#ifdef PFS_ALIGNEMENT
+  /* Match the production pfs_malloc()'s alignment guarantee. */
+  void *ptr =
+      ::operator new(size, std::align_val_t(PFS_ALIGNEMENT), std::nothrow);
+#else
   void *ptr = malloc(size);
+#endif
   if (ptr && (flags & MY_ZEROFILL)) memset(ptr, 0, size);
   return ptr;
 }
 
 void pfs_free(PFS_builtin_memory_class *, size_t, void *ptr) {
-  if (ptr != nullptr) free(ptr);
+  if (ptr == nullptr) return;
+#ifdef PFS_ALIGNEMENT
+  ::operator delete(ptr, std::align_val_t(PFS_ALIGNEMENT));
+#else
+  free(ptr);
+#endif
 }
 
 void *pfs_malloc_array(PFS_builtin_memory_class *klass, size_t n, size_t size,
