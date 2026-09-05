@@ -2080,6 +2080,23 @@ class SyncFileIO {
     m_buf = reinterpret_cast<uchar *>(m_buf) + n_bytes;
   }
 
+  /** The platform-native OS error code (errno on POSIX, GetLastError() on
+  Windows) of the last failed read/write syscall executed by this object
+  Captured by
+  execute() immediately after the syscall reports failure, before any other
+  call can clobber it; a freshly constructed object starts at 0, and a
+  successful/short execute() call leaves the field untouched - it is written
+  only on the failure branch. This class does not itself guarantee the value
+  can never be stale: a caller that called execute() again after a failure
+  and got a success would still see the earlier failure's code here, since
+  nothing resets it on success. Both current callers (os_file_io()'s retry
+  loop, execute_with_retry()) never do that - they stop retrying on the
+  first hard failure - so for them this always reflects the latest attempt
+  (C3b), but that is a property of the caller's control flow, not of this
+  class.
+  @return the captured OS error code, or 0 if none */
+  int os_error() const noexcept { return m_os_err; }
+
  private:
   /** Open file handle */
   os_file_t m_fh;
@@ -2095,6 +2112,9 @@ class SyncFileIO {
 
   /** The total number of bytes to be read/written. */
   const size_t m_orig_bytes;
+
+  /** See os_error(). */
+  int m_os_err{0};
 };
 
 /** Submit buffered AIO requests on the given segment to the kernel. */

@@ -2075,6 +2075,13 @@ ssize_t SyncFileIO::execute(const IORequest &request) {
     n_bytes = pwrite(m_fh, m_buf, m_n, m_offset);
   }
 
+  if (n_bytes == -1) {
+    /* Capture errno as the very first statement after the syscall
+    C1): any other call standing between here and the diagnostic layer,
+    including logging, can clobber it before it is read. */
+    m_os_err = errno;
+  }
+
   return (n_bytes);
 }
 
@@ -3925,6 +3932,17 @@ ssize_t SyncFileIO::execute(const IORequest &request) {
     if (error == ERROR_IO_PENDING) {
       result =
           GetOverlappedResult(m_fh, &overlapped, &n_bytes_transfered, true);
+      if (!result) {
+        /* GetOverlappedResult() is itself a syscall and the last one before
+        this function returns; it can fail with a different code than the
+        primary Read/WriteFile() call above, so it must be captured here,
+        not from the earlier `error`. */
+        m_os_err = static_cast<int>(GetLastError());
+      }
+    } else {
+      /* `error` above already is the failure captured immediately after the
+      primary call, before any other syscall. */
+      m_os_err = static_cast<int>(error);
     }
   } else {
     /* The IO was executed synchronously (this can happen even for files opened
@@ -5034,11 +5052,20 @@ NUM_RETRIES_ON_PARTIAL_IO times to read/write the complete data.
 @param[in]      n               number of bytes to read, starting from offset
 @param[out]     err             DB_SUCCESS or error code
 @param[in]      e_block         encrypted block or nullptr.
+@param[out]     os_err          OS error code of the last completed syscall
+                                attempt; 0 if none failed.
 @return number of bytes read/written, -1 if error */
 [[nodiscard]] static ssize_t os_file_io(const IORequest &in_type,
                                         os_file_t file, void *buf, ulint n,
                                         os_offset_t offset, dberr_t *err,
-                                        const file::Block *e_block) {
+                                        const file::Block *e_block,
+                                        int *os_err) {
+  /* Set first, before any other statement, so that every return path below
+  - including the early success return inside the retry loop - leaves
+  *os_err in a defined state (the successful path never writes
+  it again). */
+  *os_err = 0;
+
   ulint original_n = n;
   file::Block *block{};
   IORequest type = in_type;
@@ -5156,6 +5183,12 @@ NUM_RETRIES_ON_PARTIAL_IO times to read/write the complete data.
         << "Retry attempts for " << (type.is_read() ? "reading" : "writing")
         << " partial data failed.";
   }
+  /* This is the only failure exit of this function: the loop above breaks
+  out of the retry loop on the first hard failure (-1), so os_error() here
+  reflects exactly the last completed attempt; it stays 0 if
+  retries were merely exhausted without any syscall ever returning -1
+  (C5). */
+  *os_err = sync_file_io.os_error();
   return bytes_returned;
 }
 
@@ -5167,11 +5200,14 @@ NUM_RETRIES_ON_PARTIAL_IO times to read/write the complete data.
 @param[in]      offset          file offset from the start where to read
 @param[out]     err             DB_SUCCESS or error code
 @param[in]      e_block         encrypted block or nullptr.
+@param[out]     os_err          OS error code of the last completed syscall
+                                attempt; 0 if none failed.
 @return number of bytes written, -1 if error */
 [[nodiscard]] static ssize_t os_file_pwrite(IORequest &type, os_file_t file,
                                             const byte *buf, ulint n,
                                             os_offset_t offset, dberr_t *err,
-                                            const file::Block *e_block) {
+                                            const file::Block *e_block,
+                                            int *os_err) {
 #ifdef UNIV_HOTBACKUP
   static meb::Mutex meb_mutex;
 #endif /* UNIV_HOTBACKUP */
@@ -5190,7 +5226,7 @@ NUM_RETRIES_ON_PARTIAL_IO times to read/write the complete data.
   MONITOR_ATOMIC_INC(MONITOR_OS_PENDING_WRITES);
 
   ssize_t n_bytes =
-      os_file_io(type, file, (void *)buf, n, offset, err, e_block);
+      os_file_io(type, file, (void *)buf, n, offset, err, e_block, os_err);
 
   os_n_pending_writes.fetch_sub(1);
   MONITOR_ATOMIC_DEC(MONITOR_OS_PENDING_WRITES);
@@ -5214,11 +5250,36 @@ NUM_RETRIES_ON_PARTIAL_IO times to read/write the complete data.
                                                 os_offset_t offset, ulint n,
                                                 const file::Block *e_block) {
   dberr_t err(DB_ERROR_UNSET);
+  /* Captured OS error of the last completed pwrite() attempt (
+  C3b). Local, not a new parameter of this function's own signature: this
+  is the diagnostic boundary for the out-parameter added below os0file.cc
+  (C10 - the public os_file_write_func() API is unchanged). */
+  int os_err = 0;
 
   ut_ad(type.validate());
   ut_ad(n > 0);
 
-  ssize_t n_bytes = os_file_pwrite(type, file, buf, n, offset, &err, e_block);
+  DBUG_EXECUTE_IF("os_write_page_ddl_bad_fd", if (strcmp(name, "(ddl)") == 0) {
+    /* Force a real pwrite(-1, ...) failure through the real capture path
+    instead of faking the outcome; the name
+    guard keeps this DBUG point inert for non-DDL callers regardless of the
+    flag's session/global scope. */
+    file = OS_FILE_CLOSED;
+  });
+
+  ssize_t n_bytes =
+      os_file_pwrite(type, file, buf, n, offset, &err, e_block, &os_err);
+
+  DBUG_EXECUTE_IF("os_write_page_clobber_errno", if (strcmp(name, "(ddl)") ==
+                                                       0) {
+    /* Proves stale-immunity: the diagnostic below must use the captured
+    os_err, not this clobbered global. Name-guarded like the sibling point
+    above: without it, GLOBAL scope (required for this point to reach
+    Parallel_reader worker threads, see the test) would zero errno after
+    EVERY os_file_write_page() call server-wide for the duration of the
+    test, not just DDL temp-file writes. */
+    errno = 0;
+  });
 
   if ((ulint)n_bytes != n && !os_has_said_disk_full) {
     ib::error(ER_IB_MSG_814) << "Write to file " << name << " failed at offset "
@@ -5228,16 +5289,16 @@ NUM_RETRIES_ON_PARTIAL_IO times to read/write the complete data.
                              << n_bytes
                              << " were written."
                                 " Operating system error number "
-                             << errno
+                             << os_err
                              << "."
                                 " Check that your OS and file system"
                                 " support files of this size."
                                 " Check also that the disk is not full"
                                 " or a disk quota exceeded.";
 
-    if (strerror(errno) != nullptr) {
-      ib::error(ER_IB_MSG_815)
-          << "Error number " << errno << " means '" << strerror(errno) << "'";
+    if (strerror(os_err) != nullptr) {
+      ib::error(ER_IB_MSG_815) << "Error number " << os_err << " means '"
+                               << strerror(os_err) << "'";
     }
 
     ib::info(ER_IB_MSG_816) << OPERATING_SYSTEM_ERROR_MSG;
@@ -5255,11 +5316,13 @@ NUM_RETRIES_ON_PARTIAL_IO times to read/write the complete data.
 @param[in]      offset          file offset from the start where to read
 @param[in]      n               number of bytes to read, starting from offset
 @param[out]     err             DB_SUCCESS or error code
+@param[out]     os_err          OS error code of the last completed syscall
+                                attempt; 0 if none failed.
 @return number of bytes read, -1 if error */
 [[nodiscard]] static ssize_t os_file_pread(IORequest &type, os_file_t file,
                                            void *buf, ulint n,
                                            os_offset_t offset, trx_t *trx,
-                                           dberr_t *err) {
+                                           dberr_t *err, int *os_err) {
 #ifdef UNIV_HOTBACKUP
   static meb::Mutex meb_mutex;
 
@@ -5275,7 +5338,8 @@ NUM_RETRIES_ON_PARTIAL_IO times to read/write the complete data.
   os_n_pending_reads.fetch_add(1);
   MONITOR_ATOMIC_INC(MONITOR_OS_PENDING_READS);
 
-  ssize_t n_bytes = os_file_io(type, file, buf, n, offset, err, nullptr);
+  ssize_t n_bytes =
+      os_file_io(type, file, buf, n, offset, err, nullptr, os_err);
 
   trx_stats::end_io_read(trx, start_time);
 
@@ -5300,6 +5364,13 @@ NUM_RETRIES_ON_PARTIAL_IO times to read/write the complete data.
     IORequest &type, const char *file_name, os_file_t file, void *buf,
     os_offset_t offset, ulint n, ulint *o, bool exit_on_err, trx_t *trx) {
   dberr_t err(DB_ERROR_UNSET);
+  /* Captured OS error of the last completed pread() attempt:
+  overwritten every retry-loop iteration below, so by the time ER_IB_MSG_818
+  reads it, it always reflects only the latest attempt, never a stale one
+  from an earlier, already-retried iteration. Local, not a new parameter of
+  this function's own signature (C10, same rationale as os_file_write_page()
+  above). */
+  int os_err = 0;
 
 #ifdef UNIV_HOTBACKUP
   static meb::Mutex meb_mutex;
@@ -5317,7 +5388,7 @@ NUM_RETRIES_ON_PARTIAL_IO times to read/write the complete data.
   for (;;) {
     ssize_t n_bytes;
 
-    n_bytes = os_file_pread(type, file, buf, n, offset, trx, &err);
+    n_bytes = os_file_pread(type, file, buf, n, offset, trx, &err, &os_err);
 
     if (o != nullptr) {
       *o = n_bytes;
@@ -5373,7 +5444,7 @@ NUM_RETRIES_ON_PARTIAL_IO times to read/write the complete data.
   }
 
   ib::fatal(UT_LOCATION_HERE, ER_IB_MSG_818)
-      << "Cannot read from file. OS error number " << errno << ".";
+      << "Cannot read from file. OS error number " << os_err << ".";
 
   return (err);
 }

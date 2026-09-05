@@ -25,6 +25,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
 *****************************************************************************/
 #include <gtest/gtest.h>
+#include <cerrno>
 #include <chrono>
 
 #include "os0file.h"
@@ -128,6 +129,78 @@ class os0file_t : public ::testing::Test {
   pfs_os_file_t test_file;
   static constexpr char TEST_FILE_NAME[] = "os0file-t-temp.txt";
 };
+
+/* SyncFileIO::os_error() must report the OS error code
+captured at the failing syscall, not whatever errno happens to hold at the
+time it is read - these tests exercise the class directly, below the
+os_file_io() retry loop. */
+
+TEST_F(os0file_t, sync_file_io_os_error_reports_failure_of_closed_fd) {
+  char buffer[16] = {};
+  IORequest write_request(IORequest::WRITE);
+  /* OS_FILE_CLOSED is an invalid handle by construction, so the write is
+  guaranteed to fail at the syscall - no real file needed for this case. */
+  SyncFileIO sync_file_io(OS_FILE_CLOSED, buffer, sizeof(buffer), 0);
+
+  auto n_bytes = sync_file_io.execute(write_request);
+
+  ASSERT_LT(n_bytes, 0);
+#ifndef _WIN32
+  EXPECT_EQ(sync_file_io.os_error(), EBADF);
+#else
+  /* The contract does not commit to a specific Windows GetLastError() value for
+  this case - only that a failure is captured at all. */
+  EXPECT_NE(sync_file_io.os_error(), 0);
+#endif
+}
+
+TEST_F(os0file_t, sync_file_io_os_error_survives_errno_reset) {
+  char buffer[16] = {};
+  IORequest write_request(IORequest::WRITE);
+  SyncFileIO sync_file_io(OS_FILE_CLOSED, buffer, sizeof(buffer), 0);
+
+  auto n_bytes = sync_file_io.execute(write_request);
+  ASSERT_LT(n_bytes, 0);
+
+#ifndef _WIN32
+  auto captured = sync_file_io.os_error();
+  ASSERT_EQ(captured, EBADF);
+  /* Simulate a syscall clobbering the global errno between the failure and
+  the point where a diagnostic would read it - the captured value must not
+  depend on the global at all (stale-immunity). */
+  errno = 0;
+  EXPECT_EQ(sync_file_io.os_error(), captured);
+#endif
+}
+
+TEST_F(os0file_t, sync_file_io_os_error_is_zero_on_success) {
+  static constexpr char TEST_DATA[] = "testdata42";
+  static constexpr size_t LEN = sizeof(TEST_DATA);
+  IORequest write_request(IORequest::WRITE);
+  SyncFileIO sync_file_io(test_file.m_file, const_cast<char *>(TEST_DATA), LEN,
+                          0);
+
+  auto n_bytes = sync_file_io.execute(write_request);
+
+  ASSERT_EQ(static_cast<size_t>(n_bytes), LEN);
+  EXPECT_EQ(sync_file_io.os_error(), 0);
+}
+
+TEST_F(os0file_t, sync_file_io_os_error_is_zero_on_short_read_without_failure) {
+  /* The file created by SetUp() is empty: a pread() past EOF returns a
+  short (zero-byte) result, which is not a syscall failure -
+  requires os_error() to report 0 here, not a stale/unrelated code. */
+  char buffer[16];
+  IORequest read_request(IORequest::READ);
+  read_request.disable_compression();
+  read_request.clear_encrypted();
+  SyncFileIO sync_file_io(test_file.m_file, buffer, sizeof(buffer), 0);
+
+  auto n_bytes = sync_file_io.execute(read_request);
+
+  ASSERT_EQ(n_bytes, 0);
+  EXPECT_EQ(sync_file_io.os_error(), 0);
+}
 
 TEST_F(os0file_t, hundred_10_byte_writes_reads_flushes_with_fsync) {
   srv_use_fdatasync = false;

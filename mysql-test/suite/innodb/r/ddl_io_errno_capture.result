@@ -1,0 +1,42 @@
+#
+# os_file_write_page() now prints the OS errno
+# captured at the failing pwrite() syscall (SyncFileIO::m_os_err)
+# instead of re-reading the global errno at print time. This test
+# forces a real EBADF via os_write_page_ddl_bad_fd (closes the fd of
+# the DDL temp file just above the real pwrite call) and clobbers the
+# global errno right after the failing pwrite returns via
+# os_write_page_clobber_errno - the printed errno must still be the
+# one captured at the syscall, not the clobbered/stale global one.
+#
+# restart:
+create table t480(a serial)engine=innodb;
+insert into t480
+values(),(),(),(),(),(),(),(),(),(),(),(),(),(),(),(),(),(),(),(),(),(),
+(),(),(),(),(),(),(),();
+insert into t480 select 0 from t480;
+insert into t480 select 0 from t480;
+insert into t480 select 0 from t480;
+insert into t480 select 0 from t480;
+create table t1(f1 int auto_increment not null,
+f2 char(200) not null, f3 char(200) not null,
+primary key(f1,f2,f3), key(f1))engine=innodb charset latin1;
+insert into t1 select NULL,'aaa','bbb' from t480;
+insert into t1 select NULL,'aaaa','bbbb' from t480;
+insert into t1 select NULL,'aaaaa','bbbbb' from t480;
+insert into t1 select NULL,'aaaaaa','bbbbbb' from t480;
+SET GLOBAL debug = '+d,os_write_page_ddl_bad_fd,os_write_page_clobber_errno';
+alter table t1 drop primary key,add primary key(f2,f1);
+ERROR HY000: Temporary file write failure.
+SET GLOBAL debug = '-d,os_write_page_ddl_bad_fd,os_write_page_clobber_errno';
+#
+# ER_IB_MSG_814 must show the errno captured at the real pwrite()
+# failure (EBADF=9 on Linux), not the errno=0 written by
+# os_write_page_clobber_errno right after the failing call returned.
+# A self-check: without the fault injection actually reaching the
+# persistor's real write, there is no ER_TEMP_FILE_WRITE_FAILURE
+# above and this line is never produced at all.
+#
+include/assert_grep.inc [ER_IB_MSG_814 prints the errno captured at the failing pwrite (EBADF=9), not the clobbered/stale global errno]
+drop table t1;
+drop table t480;
+# restart:

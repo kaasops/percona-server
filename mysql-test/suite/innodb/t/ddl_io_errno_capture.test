@@ -1,0 +1,93 @@
+--source include/have_debug.inc
+
+--echo #
+--echo # os_file_write_page() now prints the OS errno
+--echo # captured at the failing pwrite() syscall (SyncFileIO::m_os_err)
+--echo # instead of re-reading the global errno at print time. This test
+--echo # forces a real EBADF via os_write_page_ddl_bad_fd (closes the fd of
+--echo # the DDL temp file just above the real pwrite call) and clobbers the
+--echo # global errno right after the failing pwrite returns via
+--echo # os_write_page_clobber_errno - the printed errno must still be the
+--echo # one captured at the syscall, not the clobbered/stale global one.
+--echo #
+
+# Own restart: guarantees a clean error.log for the assert_grep below and
+# resets the os_has_said_disk_full latch, which otherwise silences
+# ER_IB_MSG_814/815/816 after the first disk-full-shaped diagnostic printed
+# by any earlier test in the run (software/mysql/common.md, MTR assert
+# discipline).
+--let $restart_parameters = restart:
+--source include/restart_mysqld.inc
+
+--disable_query_log
+CALL mtr.add_suppression("Retry attempts for .* partial data failed");
+CALL mtr.add_suppression("Write to file .* failed at offset");
+CALL mtr.add_suppression("Error number .* means");
+CALL mtr.add_suppression("Refer to your operating system documentation");
+--enable_query_log
+
+--let $assert_only_after = CURRENT_TEST: innodb.ddl_io_errno_capture
+
+# Same dataset as the ddl_write_failure/ddl_merge_read_failure blocks in
+# innodb-index-debug.test: large enough to force the real file-sort path
+# (persistor writing to the DDL temp file via ddl::pwrite()), avoiding the
+# insert_direct fast path that never touches os0file.cc at all - see
+# Step 9 and its inventory of
+# ddl::pwrite() callers.
+create table t480(a serial)engine=innodb;
+insert into t480
+values(),(),(),(),(),(),(),(),(),(),(),(),(),(),(),(),(),(),(),(),(),(),
+(),(),(),(),(),(),(),();
+insert into t480 select 0 from t480;
+insert into t480 select 0 from t480;
+insert into t480 select 0 from t480;
+insert into t480 select 0 from t480;
+
+create table t1(f1 int auto_increment not null,
+		f2 char(200) not null, f3 char(200) not null,
+		primary key(f1,f2,f3), key(f1))engine=innodb charset latin1;
+insert into t1 select NULL,'aaa','bbb' from t480;
+insert into t1 select NULL,'aaaa','bbbb' from t480;
+insert into t1 select NULL,'aaaaa','bbbbb' from t480;
+insert into t1 select NULL,'aaaaaa','bbbbbb' from t480;
+
+# GLOBAL, not SESSION: this ALTER rebuilds the clustered index (PK column
+# order changes), so Parallel_cursor::scan() cannot skip file sort and runs
+# a real multi-threaded Parallel_reader scan (innodb_parallel_read_threads
+# default > 1 on this host) - the persistor's pwrite() calls happen inside
+# spawned worker threads, not the client session's own thread. A worker
+# thread's first code_state() call seeds its DBUG stack from the shared
+# GLOBAL settings (mysys/dbug.cc), never from this session's SESSION debug
+# stack, so SESSION scope would only ever reach a write that happens to run
+# on the client thread itself - confirmed by direct instrumentation to be
+# unreliable (only 1 of 6+ writes) instead of the intended real path.
+# Precedent for GLOBAL scope on this same PK-rebuild path:
+# alter_table_update_primary_key.test ("+d,ddl_buf_add_two").
+SET GLOBAL debug = '+d,os_write_page_ddl_bad_fd,os_write_page_clobber_errno';
+--error ER_TEMP_FILE_WRITE_FAILURE
+alter table t1 drop primary key,add primary key(f2,f1);
+SET GLOBAL debug = '-d,os_write_page_ddl_bad_fd,os_write_page_clobber_errno';
+
+--echo #
+--echo # ER_IB_MSG_814 must show the errno captured at the real pwrite()
+--echo # failure (EBADF=9 on Linux), not the errno=0 written by
+--echo # os_write_page_clobber_errno right after the failing call returned.
+--echo # A self-check: without the fault injection actually reaching the
+--echo # persistor's real write, there is no ER_TEMP_FILE_WRITE_FAILURE
+--echo # above and this line is never produced at all.
+--echo #
+--let $assert_text = ER_IB_MSG_814 prints the errno captured at the failing pwrite (EBADF=9), not the clobbered/stale global errno
+--let $assert_file = $MYSQLTEST_VARDIR/log/mysqld.1.err
+--let $assert_select = Operating system error number
+--let $assert_match = Operating system error number 9\.
+--source include/assert_grep.inc
+
+drop table t1;
+drop table t480;
+
+# Cleanup restart: leaves os_has_said_disk_full false again for whichever
+# test runs next in the same server (this test intentionally tripped that
+# latch above; without this, later tests in the queue would silently lose
+# their own first ER_IB_MSG_814/815/816 diagnostic).
+--let $restart_parameters = restart:
+--source include/restart_mysqld.inc
