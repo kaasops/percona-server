@@ -51,6 +51,9 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include <stdlib.h>
 #include <sys/types.h>
 #include <zlib.h>
+#include <iomanip>
+#include <sstream>
+#include <string>
 
 #include "my_dbug.h"
 
@@ -58,6 +61,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "btr0cur.h"
 #include "buf0buf.h"
 #include "buf0dump.h"
+#include "cpu_topology.h"
 #include "current_thd.h"
 #include "data0data.h"
 #include "data0type.h"
@@ -77,6 +81,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "my_dbug.h"
 #include "my_psi_config.h"
+#include "mysql/components/services/log_builtins.h"
 #include "mysql/psi/mysql_stage.h"
 #include "mysqld.h"
 
@@ -1701,6 +1706,174 @@ dberr_t srv_start(bool create_new_db) {
   srv_start_has_been_called = true;
 
   srv_is_being_started = true;
+
+#ifdef UNIV_LINUX
+  /* Log CPU and NUMA topology at InnoDB startup. */
+  const Sql_machine_topology &machine = sql_machine_topology();
+
+  const Sql_cpu_topology &cpu = machine.cpu;
+  const Sql_numa_snapshot &numa = machine.numa;
+
+  /* SYSTEM_LEVEL, not ib::info()/INFORMATION_LEVEL: the default filter
+  drops INFORMATION-level records at the default log_error_verbosity=2
+  (log_builtins_filter.cc:318-325), which would make this topology dump
+  invisible on every default-verbosity run, including --initialize. The
+  filter's failsafe rule passes every SYSTEM/ERROR/WARNING record through
+  regardless of verbosity (log_builtins_filter.cc:307-314), so this is the
+  weakest level that is still unconditionally visible; precedent:
+  LogErr(SYSTEM_LEVEL, ER_IB_MSG_INNODB_START_INITIALIZE) in
+  ha_innodb.cc:13785. */
+  auto log_topology_line = [](const std::ostringstream &oss) {
+    const std::string line = oss.str();
+    LogErr(SYSTEM_LEVEL, ER_IB_MSG_CPU_CORES_INFO, line.c_str());
+  };
+
+  if (cpu.initialized) {
+    {
+      std::ostringstream oss;
+      oss << "CPU topology detected: sockets="
+          << static_cast<ulong>(cpu.sockets_count)
+          << ", physical cores=" << static_cast<ulong>(cpu.physical_cores)
+          << ", logical CPUs=" << static_cast<ulong>(cpu.logical_cpus)
+          << ", threads/core=" << static_cast<ulong>(cpu.threads_per_core)
+          << ", SMT=" << (cpu.has_smt() ? "on" : "off");
+      log_topology_line(oss);
+    }
+
+    for (const auto &socket : cpu.sockets) {
+      {
+        std::ostringstream oss;
+        oss << "\tsocket " << static_cast<ulong>(socket.socket_id) << ":";
+        log_topology_line(oss);
+      }
+
+      for (const auto &core : socket.cores) {
+        std::ostringstream cpus_str;
+
+        for (size_t i = 0; i < core.logical_cpu_ids.size(); ++i) {
+          if (i > 0) {
+            cpus_str << ",";
+          }
+          cpus_str << static_cast<ulong>(core.logical_cpu_ids[i]);
+        }
+
+        std::ostringstream oss;
+        oss << "\t\tcore " << static_cast<ulong>(core.core_id)
+            << ": threads=" << static_cast<ulong>(core.logical_cpu_ids.size())
+            << " [cpu_ids=" << cpus_str.str() << "]";
+        log_topology_line(oss);
+      }
+    }
+  }
+
+  if (numa.initialized && numa.nodes_count > 0) {
+    auto format_mem_with_units = [](uint64_t kb) -> std::string {
+      std::ostringstream oss;
+
+      if (kb >= (1024ULL * 1024ULL)) {
+        oss << static_cast<ulong>(kb) << " (" << std::fixed
+            << std::setprecision(2)
+            << (static_cast<double>(kb) / (1024.0 * 1024.0)) << " GiB)";
+      } else if (kb >= 1024ULL) {
+        oss << static_cast<ulong>(kb) << " (" << std::fixed
+            << std::setprecision(2) << (static_cast<double>(kb) / 1024.0)
+            << " MiB)";
+      } else {
+        oss << static_cast<ulong>(kb);
+      }
+
+      return oss.str();
+    };
+
+    auto format_distance =
+        [](const std::vector<uint32_t> &distance) -> std::string {
+      std::ostringstream oss;
+      oss << "[";
+
+      for (size_t i = 0; i < distance.size(); ++i) {
+        if (i > 0) {
+          oss << ",";
+        }
+        oss << static_cast<ulong>(distance[i]);
+      }
+
+      oss << "]";
+      return oss.str();
+    };
+
+    auto format_cpu_list =
+        [](const std::vector<uint32_t> &cpus) -> std::string {
+      std::ostringstream oss;
+      oss << "[";
+
+      for (size_t i = 0; i < cpus.size(); ++i) {
+        if (i > 0) {
+          oss << ",";
+        }
+        oss << static_cast<ulong>(cpus[i]);
+      }
+
+      oss << "]";
+      return oss.str();
+    };
+
+    uint64_t total_mem_kb = 0;
+    uint64_t free_mem_kb = 0;
+    size_t total_logical_cpus = 0;
+
+    for (const auto &node : numa.nodes) {
+      total_mem_kb += node.mem_total_kb;
+      free_mem_kb += node.mem_free_kb;
+      total_logical_cpus += node.logical_cpu_ids.size();
+    }
+
+    {
+      std::ostringstream oss;
+      oss << "NUMA topology detected: nodes="
+          << static_cast<ulong>(numa.nodes_count)
+          << ", logical CPUs=" << static_cast<ulong>(total_logical_cpus)
+          << ", MemTotal_kB=" << format_mem_with_units(total_mem_kb)
+          << ", MemFree_kB=" << format_mem_with_units(free_mem_kb);
+      log_topology_line(oss);
+    }
+
+    for (const auto &node : numa.nodes) {
+      {
+        std::ostringstream oss;
+        oss << "\tNUMA node " << static_cast<ulong>(node.node_id) << ":";
+        log_topology_line(oss);
+      }
+
+      {
+        std::ostringstream oss;
+        oss << "\t\tMemTotal_kB=" << format_mem_with_units(node.mem_total_kb);
+        log_topology_line(oss);
+      }
+
+      {
+        std::ostringstream oss;
+        oss << "\t\tMemFree_kB=" << format_mem_with_units(node.mem_free_kb);
+        log_topology_line(oss);
+      }
+
+      {
+        std::ostringstream oss;
+        if (!node.distance.empty()) {
+          oss << "\t\tDistance=" << format_distance(node.distance);
+        } else {
+          oss << "\t\tDistance=[]";
+        }
+        log_topology_line(oss);
+      }
+
+      {
+        std::ostringstream oss;
+        oss << "\t\tLogical CPUs=" << format_cpu_list(node.logical_cpu_ids);
+        log_topology_line(oss);
+      }
+    }
+  }
+#endif /* UNIV_LINUX */
 
 #ifdef HAVE_PSI_STAGE_INTERFACE
   /* Register performance schema stages before any real work has been

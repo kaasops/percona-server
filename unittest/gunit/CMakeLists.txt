@@ -198,6 +198,7 @@ SET(SERVER_TESTS
   compare_access_paths
   connect_joins
   copy_info
+  cpu_topology
   create_field
   dd_cache
   dd_column_statistics
