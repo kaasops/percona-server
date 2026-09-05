@@ -1,0 +1,5 @@
+SET GLOBAL innodb_monitor_reset = 'adaptive_hash_searches';
+SET GLOBAL innodb_monitor_reset = 'adaptive_hash_searches_btree';
+CREATE TABLE t1 (id INT PRIMARY KEY, v INT) ENGINE=InnoDB;
+include/assert.inc [adaptive_hash_searches_btree must have increased after 3000 equality lookups]
+DROP TABLE t1;

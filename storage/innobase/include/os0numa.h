@@ -49,7 +49,13 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #endif /* HAVE_LIBNUMA */
 
 #ifdef HAVE_SCHED_GETCPU
-#include <utmpx.h>
+/* <sched.h>, not <utmpx.h>: only sched_getcpu()'s declaration is needed here,
+and glibc provides it in <sched.h> with _GNU_SOURCE. <utmpx.h> declared it for
+historical reasons but also defines the macro EMPTY, which collides with
+enum undo_space_states in trx0types.h wherever both headers meet. The same
+substitution, with the same reason, is already recorded in
+storage/rocksdb/ib_ut0counter.h. */
+#include <sched.h>
 #endif /* HAVE_SCHED_GETCPU */
 
 #ifdef _WIN32

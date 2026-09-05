@@ -1,0 +1,73 @@
+# btr_cur_n_sea and btr_cur_n_non_sea (INFORMATION_SCHEMA.INNODB_METRICS
+# adaptive_hash_searches / adaptive_hash_searches_btree) are sharded
+# per-CPU (ib_counter_t<..., cpu_indexer_t>) instead of being plain
+# globals. This test only proves the aggregate is still correct end to
+# end - it cannot force different point lookups onto different CPUs
+# from a single mtr connection, so it does not exercise cross-shard
+# aggregation specifically. That part is exercised by reading the
+# runtime SHOW ENGINE INNODB STATUS "hash searches/s" line under real
+# concurrent load, done once by hand when this counter was sharded; a
+# deterministic multi-CPU mtr test is not worth the complexity here.
+
+# Both metrics are MONITOR_DEFAULT_ON -- do not SET GLOBAL
+# innodb_monitor_enable for them, that would only warn "already
+# enabled" and, worse, an unpaired disable at the end of the test
+# would turn off something this test never turned on, leaking a
+# global-state change into whatever test runs next.
+SET GLOBAL innodb_monitor_reset = 'adaptive_hash_searches';
+SET GLOBAL innodb_monitor_reset = 'adaptive_hash_searches_btree';
+
+CREATE TABLE t1 (id INT PRIMARY KEY, v INT) ENGINE=InnoDB;
+
+--disable_query_log
+let $i = 1;
+while ($i <= 2000) {
+  eval INSERT INTO t1 VALUES ($i, $i * 2);
+  inc $i;
+}
+--enable_query_log
+
+--let $before_sea = query_get_value(SELECT COUNT AS Value FROM INFORMATION_SCHEMA.INNODB_METRICS WHERE NAME = 'adaptive_hash_searches', Value, 1)
+--let $before_non_sea = query_get_value(SELECT COUNT AS Value FROM INFORMATION_SCHEMA.INNODB_METRICS WHERE NAME = 'adaptive_hash_searches_btree', Value, 1)
+
+# Enough repeated equality lookups on the same rows both to accumulate
+# B-tree searches before the adaptive hash index warms up, and to give
+# it a chance to warm up and start serving some of the later ones -
+# btr_cur_n_sea only ever increments on an actual AHI hit, so this loop
+# does not rely on that happening to prove the counters are alive; it
+# only asserts on btr_cur_n_non_sea, which every one of these lookups
+# increments regardless of AHI state.
+--disable_query_log
+let $i = 1;
+while ($i <= 3000) {
+  --let $id = `SELECT 1 + ($i MOD 2000)`
+  eval SELECT v FROM t1 WHERE id = $id INTO @discard;
+  inc $i;
+}
+--enable_query_log
+
+--let $after_sea = query_get_value(SELECT COUNT AS Value FROM INFORMATION_SCHEMA.INNODB_METRICS WHERE NAME = 'adaptive_hash_searches', Value, 1)
+--let $after_non_sea = query_get_value(SELECT COUNT AS Value FROM INFORMATION_SCHEMA.INNODB_METRICS WHERE NAME = 'adaptive_hash_searches_btree', Value, 1)
+
+# Neither value is echoed: both counters also move from background
+# server activity between runs (DD lookups, other InnoDB internals),
+# so the absolute numbers are not reproducible and do not belong in
+# the recorded result -- only the delta assert.inc checks below is.
+# btr_cur_n_non_sea must have moved: every equality lookup above takes
+# the B-tree path at least until (and unless) AHI kicks in, so a
+# sharded counter that silently dropped writes -- wrong CPU index,
+# shard array not summed on read, off-by-one in the indexer -- would
+# leave this at its reset value.
+--let $assert_text = adaptive_hash_searches_btree must have increased after 3000 equality lookups
+--let $assert_cond = $after_non_sea > $before_non_sea
+--source include/assert.inc
+
+# adaptive_hash_searches is not asserted to be nonzero: whether AHI
+# actually built and served a hit in time depends on
+# innodb_adaptive_hash_index_parts/timing this test does not control.
+# It is still queried above so a completely broken read path (e.g. a
+# build error in the sharded MONITOR_OVLD_ADAPTIVE_HASH_SEARCH case)
+# would have already failed the query itself.
+
+DROP TABLE t1;
+--source include/innodb_monitor_restore.inc

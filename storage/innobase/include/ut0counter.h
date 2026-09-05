@@ -39,6 +39,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "univ.i"
 
+#include "os0numa.h" /* os_getcpu(), HAVE_OS_GETCPU */
 #include "os0thread.h"
 #include "ut0cpu_cache.h"
 #include "ut0dbg.h"
@@ -107,6 +108,35 @@ struct single_indexer_t {
   static size_t get_rnd_index() UNIV_NOTHROW {
     static_assert(N == 1);
     return (1);
+  }
+};
+
+/** Use the id of the CPU running the current thread to index into the counter
+array. Unlike counter_indexer_t, which derives the index from RDTSC, this keeps
+one shard per CPU: threads on the same core share a shard instead of pulling
+two different cache lines, and a shard is not dragged between cores. Accuracy
+is not the point - a thread migrating between the read of the index and the
+increment merely lands in a neighbouring shard, and readers sum all shards.
+
+The type is declared unconditionally, and only its behaviour depends on
+HAVE_OS_GETCPU: that macro is added by storage/innobase/innodb.cmake for
+InnoDB's own targets, while headers declaring counters of this type (btr0cur.h)
+are also included by utilities built without those definitions. Guarding the
+declaration itself would make the type vanish there. */
+template <typename Type = ulint, int N = 1>
+struct cpu_indexer_t : public generic_indexer_t<Type, N> {
+  /** Default constructor/destructor should be OK. */
+
+  enum { fast = 1 };
+
+  /** @return the number of the CPU executing the current thread, or a
+  per-thread hash where the platform cannot report it. */
+  static size_t get_rnd_index() UNIV_NOTHROW {
+#ifdef HAVE_OS_GETCPU
+    return static_cast<size_t>(os_getcpu());
+#else
+    return ut::this_thread_hash;
+#endif /* HAVE_OS_GETCPU */
   }
 };
 
