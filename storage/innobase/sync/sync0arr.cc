@@ -420,10 +420,12 @@ void sync_array_cell_print(FILE *file, const sync_cell_t *cell) {
 
     const auto readers_count = rw_lock_get_reader_count(rwlock);
     fprintf(file, "number of readers " ULINTPF, readers_count);
+#ifdef UNIV_DEBUG
     if (readers_count == 1) {
       fprintf(file, " (thread id %s)",
               to_string(rwlock->reader_thread.recover_if_single()).c_str());
     }
+#endif /* UNIV_DEBUG */
     fprintf(file,
             ", waiters flag %d"
             ", lock_word: %lx\n"
@@ -541,16 +543,29 @@ bool sync_array_detect_rwlock_deadlock(sync_cell_t *cell, sync_array_t *arr,
   We can identify the only thread which has (wait) x-lock by looking at
   lock->writer_thread, unless the lock was passed to another thread which
   requires the lock->recursive to be false.
-  We don't track all s-locks, but if there is exactly one s-lock, then we can
-  identify its owner with lock->reader_thread.
   You might be worried about race-condition: could it happen that the holder we
   identify here, will soon release the latch, and thus we will report a "fake"
   deadlock? Not really, because the first thing sync_array_deadlock_step() will
   do is to check if the holder is itself waiting for something in the arr we
   keep latched - if it isn't waiting, we will ignore it, and if it is, then it's
-  not executing thus can't release the rw_lock we analyze here. */
+  not executing thus can't release the rw_lock we analyze here.
+
+  In release builds we deliberately do NOT also try to identify the single
+  s-lock holder here (there used to be a second heuristic doing that via
+  lock->reader_thread, mirroring the one above for x-lock/writer_thread).
+  Keeping that live at all times costs an atomic RMW on every single S-lock
+  acquire/release in the whole engine - block->lock alone is S-locked on
+  most page reads - to serve a diagnostic path that only ever fires while
+  already waiting on contended rw-latch. Losing it does not create an
+  undetected-hang risk: a deadlock that this path would have caught still
+  gets caught, just later and less precisely, by the general long-running
+  semaphore-wait monitor (srv_fatal_semaphore_wait_threshold) instead of
+  being pinpointed here immediately. Debug builds still get the precise,
+  immediate answer via lock->debug_list above. See the removal of
+  lock->reader_thread outside UNIV_DEBUG (sync0rw.h/.ic) for the full
+  rationale. */
   const std::thread::id none{};
-  std::thread::id suspects[2]{};
+  std::thread::id suspects[1]{};
   size_t suspects_cnt = 0;
   {
     if (lock->recursive.load()) {
@@ -571,24 +586,6 @@ bool sync_array_detect_rwlock_deadlock(sync_cell_t *cell, sync_array_t *arr,
       const auto thread = lock->writer_thread.load();
       if (lock->recursive.load() && thread != none &&
           std::forward<F>(conflicts)(RW_LOCK_X, thread == waiter)) {
-        suspects[suspects_cnt++] = thread;
-      }
-    }
-  }
-  {
-    if (rw_lock_get_reader_count(lock) == 1) {
-      /* You might be worried about a race-condition: could it happen that the
-      number of s-lockers has changed from 1 to say 3, and the XOR we recover in
-      the line below corresponds to some unrelated fourth thread?
-      For example 0x101 xor 0x110 xor 0x111 = 0x100.
-      This isn't a problem in practice, because conflicts(RW_LOCKS,..) is true
-      only if the waiter waits for RW_LOCK_X_WAIT, which means it already has
-      announced its presence via lock_word, so no more s-locks should be granted
-      to not starve it. Thus the number of readers can only decrease. We double
-      check it is still 1 after recovering the xor, so it can't be 0 nor torn.*/
-      const auto thread = lock->reader_thread.recover_if_single();
-      if (rw_lock_get_reader_count(lock) == 1 && thread != none &&
-          std::forward<F>(conflicts)(RW_LOCK_S, thread == waiter)) {
         suspects[suspects_cnt++] = thread;
       }
     }
