@@ -1,0 +1,28 @@
+###############################################################################
+# Variable Name: innodb_log_writer_threads_priority                          #
+# Scope: GLOBAL                                                              #
+# Access Type: Static (read only)                                            #
+# Data Type: numeric                                                         #
+# Default Value: 0                                                           #
+# Range: -19 - 19                                                            #
+#                                                                            #
+# Description: Nice value applied at startup to the log_writer,              #
+#              log_flusher, log_write_notifier and log_flush_notifier        #
+#              redo log threads.                                             #
+###############################################################################
+
+SELECT @@global.innodb_log_writer_threads_priority;
+
+--error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SET @@global.innodb_log_writer_threads_priority = -10;
+
+--error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SET @@session.innodb_log_writer_threads_priority = -10;
+
+--error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SET PERSIST innodb_log_writer_threads_priority = -10;
+
+SELECT @@global.innodb_log_writer_threads_priority;
+
+SELECT VARIABLE_VALUE FROM performance_schema.global_variables
+  WHERE VARIABLE_NAME='innodb_log_writer_threads_priority';

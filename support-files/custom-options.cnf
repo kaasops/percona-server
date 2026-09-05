@@ -91,3 +91,27 @@ loose-binlog_transaction_compression_min_size = 0
 #   core count is the point of this unit; only override for a measured
 #   reason on a specific host)
 loose-innodb_buffer_pool_parallel_init_threads = 0
+
+# DESCRIPTION: Nice value applied at thread start to the log_writer,
+#   log_flusher, log_write_notifier and log_flush_notifier redo log
+#   threads. If omitted, preserves the inherited nice value; explicit
+#   0 sets nice to 0. READONLY. Effective on Linux only and requires
+#   CAP_SYS_NICE (or a sufficient RLIMIT_NICE, e.g. via a systemd
+#   drop-in override) to lower the value below the process nice.
+# DEFAULT: 0 (when omitted, inherit; when explicitly set, nice 0)
+# RECOMMENDED: -15 -- the value this patchset ships with. Requires the
+#   systemd drop-in granting CAP_SYS_NICE/RLIMIT_NICE; without it the
+#   server logs a warning at startup and keeps the inherited priority.
+loose-innodb_log_writer_threads_priority = -15
+
+# DESCRIPTION: Nice value applied at thread start to the
+#   log_checkpointer and log_files_governor redo log threads. If omitted,
+#   preserves the inherited nice value; explicit 0 sets nice to 0. When
+#   both redo priorities are set, warns if this value is not lower than
+#   innodb_log_writer_threads_priority. Values are not changed.
+#   READONLY. Effective on Linux only, same
+#   CAP_SYS_NICE/RLIMIT_NICE requirement as above.
+# DEFAULT: 0 (when omitted, inherit; when explicitly set, nice 0)
+# RECOMMENDED: -16 -- the value this patchset ships with, one step
+#   ahead of innodb_log_writer_threads_priority as recommended above.
+loose-innodb_log_writer_threads_checkpoint_priority = -16

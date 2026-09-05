@@ -6194,6 +6194,11 @@ static int innobase_init_files(dict_init_mode_t dict_init_mode,
     return innodb_init_abort();
   }
 
+  srv_log_writer_threads_priority_is_set =
+      innodb_variable_is_set("innodb_log_writer_threads_priority");
+  srv_log_writer_threads_checkpoint_priority_is_set =
+      innodb_variable_is_set("innodb_log_writer_threads_checkpoint_priority");
+
   /* Start the InnoDB server. */
   err = srv_start(create);
 
@@ -23947,6 +23952,31 @@ static MYSQL_SYSVAR_BOOL(
     "of the redo log should be done by each thread individually (OFF).",
     nullptr, innodb_log_writer_threads_update, true);
 
+static MYSQL_SYSVAR_INT(
+    log_writer_threads_priority, srv_log_writer_threads_priority,
+    PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+    "Nice value applied at thread start to the log_writer, log_flusher,"
+    " log_write_notifier and log_flush_notifier redo log threads. If omitted,"
+    " preserves the inherited nice value; an explicit 0 sets nice to 0."
+    " Effective on Linux only and requires CAP_SYS_NICE (or a sufficient"
+    " RLIMIT_NICE, e.g. via a systemd drop-in override) to lower the"
+    " value below the process nice.",
+    nullptr, nullptr, 0, -19, 19, 0);
+
+static MYSQL_SYSVAR_INT(
+    log_writer_threads_checkpoint_priority,
+    srv_log_writer_threads_checkpoint_priority,
+    PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+    "Nice value applied at thread start to the log_checkpointer and"
+    " log_files_governor redo log threads. If omitted, preserves the inherited"
+    " nice value; an explicit 0 sets nice to 0. If both redo priorities are"
+    " set, warns when this value is not strictly lower (higher priority)"
+    " than innodb_log_writer_threads_priority; values are not changed. "
+    "Effective on Linux only"
+    " and requires CAP_SYS_NICE (or a sufficient RLIMIT_NICE, e.g. via a"
+    " systemd drop-in override).",
+    nullptr, nullptr, 0, -20, 19, 0);
+
 static MYSQL_SYSVAR_UINT(
     log_spin_cpu_abs_lwm, srv_log_spin_cpu_abs_lwm, PLUGIN_VAR_RQCMDARG,
     "Minimum value of cpu time for which spin-delay is used."
@@ -24658,6 +24688,8 @@ static SYS_VAR *innobase_system_variables[] = {
     MYSQL_SYSVAR(log_write_ahead_size),
     MYSQL_SYSVAR(log_group_home_dir),
     MYSQL_SYSVAR(log_writer_threads),
+    MYSQL_SYSVAR(log_writer_threads_priority),
+    MYSQL_SYSVAR(log_writer_threads_checkpoint_priority),
     MYSQL_SYSVAR(log_spin_cpu_abs_lwm),
     MYSQL_SYSVAR(log_spin_cpu_pct_hwm),
     MYSQL_SYSVAR(log_wait_for_flush_spin_hwm),

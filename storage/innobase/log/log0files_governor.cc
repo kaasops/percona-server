@@ -1363,6 +1363,14 @@ void log_files_governor(log_t *log_ptr) {
   ut_a(log_ptr != nullptr);
   log_t &log = *log_ptr;
 
+  /* log_files_governor is, like log_checkpointer, a rare holder of
+  log.writer_mutex that holds it for long, file-level critical sections
+  (rename/resize/remove of redo files), so it shares the checkpoint
+  group's priority instead of the writers' priority or the plain process
+  nice: a rare holder must be able to finish its critical section without
+  being preempted by everything queued behind it. */
+  log_thread_apply_priority(srv_log_writer_threads_checkpoint_priority);
+
   ut_d(log.m_files_governor_thd = create_internal_thd());
 
   // We need to initialize a temporary to work around a gcc12 bug.

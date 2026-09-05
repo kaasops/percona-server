@@ -1,0 +1,42 @@
+#
+# Scenario (0): negative control - both priority options are
+# omitted, so no "redo log thread priority:" line is
+# printed at all, and all six redo log threads keep whatever
+# nice value they inherited from the process (compared against
+# the observed nice of the main thread, not a hardcoded 0 - MTR
+# itself may not start mysqld at nice 0).
+#
+# restart:
+include/assert_grep.inc [scenario (0), step 0: area after this restart contains a completed start]
+include/assert_grep.inc [scenario (0): no redo log thread priority line while both options are omitted]
+#
+# Scenario (1): both sysvars set, no correction needed - exactly
+# 4 threads (writer, flusher, write_notifier, flush_notifier) get
+# the writers' nice, exactly 2 (checkpointer, files_governor) get
+# the checkpoint group's. Both values are above the nice observed
+# in scenario (0): raising a nice needs no privilege, lowering one
+# does, so a test that only raises runs as any user.
+#
+# restart
+include/assert_grep.inc [scenario (1): SYSTEM line reports the applied priorities]
+#
+# Scenario (2): checkpoint priority not strictly above writers' -
+# kept as configured, with a WARNING line, plus the
+# usual SYSTEM line (two "redo log thread priority:" lines total).
+#
+call mtr.add_suppression("redo log thread priority");
+# restart
+include/assert_grep.inc [scenario (2): WARNING line reports the priority ordering]
+include/assert_grep.inc [scenario (2): exactly one WARNING and one SYSTEM line, no more]
+#
+# Scenario (3): final restart back to default options - required
+# for the mutation gate, which needs the next test in the
+# queue to be able to reuse this server: while $restart_opts is
+# left set (a non-default my.cnf line still applied), MTR always
+# restarts the next queued test, and check_testcase() also does
+# not run for a server with $restart_opts set. The bare "restart:"
+# form (colon, nothing after) clears $restart_opts entirely - see
+# mysql-test-run.pl's parsing of the .expect file. Nothing is
+# asserted here on purpose.
+#
+# restart:

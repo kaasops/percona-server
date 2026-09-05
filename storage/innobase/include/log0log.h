@@ -287,6 +287,12 @@ This may not be called during read-only mode.
 @param[in,out]  log     redo log */
 void log_start_background_threads(log_t &log);
 
+/** Applies the configured nice value to the calling redo log thread.
+Linux only; a no-op elsewhere and when nice_value == 0. Failure is
+reported by os_thread_set_priority() and does not stop the thread.
+@param[in] nice_value  target nice value, or 0 to leave it untouched */
+void log_thread_apply_priority(int nice_value);
+
 /** Stops all the log background threads. This can be called only,
 when the threads are active. This should never be called concurrently.
 This may not be called in read-only mode. Note that is is impossible

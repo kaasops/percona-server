@@ -545,6 +545,14 @@ std::chrono::microseconds get_srv_log_wait_for_flush_timeout();
 for new data to write or flush without sleeping. */
 extern ulong srv_log_writer_spin_delay;
 
+/** Explicit nice value; the matching is_set flag controls application. */
+extern int srv_log_writer_threads_priority;
+extern bool srv_log_writer_threads_priority_is_set;
+
+/** Explicit nice value; the matching is_set flag controls application. */
+extern int srv_log_writer_threads_checkpoint_priority;
+extern bool srv_log_writer_threads_checkpoint_priority_is_set;
+
 /** Initial timeout used to wait on writer_event. */
 std::chrono::microseconds get_srv_log_writer_timeout();
 

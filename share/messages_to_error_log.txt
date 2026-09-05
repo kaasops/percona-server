@@ -13221,6 +13221,9 @@ ER_IB_MSG_BUFFER_POOL_INIT_COMPLETED
 ER_IB_MSG_BUFFER_POOL_INIT_FAILED
   eng "Buffer pool initialization failed after %d minutes %.3lf seconds"
 
+ER_IB_MSG_LOG_THREAD_PRIORITY
+  eng "%s"
+
 #
 # End of Percona Server 8.4 error log messages
 #

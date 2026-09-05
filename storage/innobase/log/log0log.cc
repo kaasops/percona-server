@@ -62,6 +62,13 @@ this program; if not, write to the Free Software Foundation, Inc.,
 /* std::memcpy */
 #include <cstring>
 
+/* std::ostringstream, used to build the ER_IB_MSG_LOG_THREAD_PRIORITY text */
+#include <sstream>
+#include <string>
+
+/* LogErr, SYSTEM_LEVEL, WARNING_LEVEL */
+#include <log.h>
+
 /* arch_log_sys, arch_wake_threads */
 #include "arch0arch.h"
 
@@ -908,8 +915,86 @@ void log_background_threads_inactive_validate() {
   ut_a(!log_flusher_is_active());
 }
 
+void log_thread_apply_priority(int nice_value) {
+#ifdef UNIV_LINUX
+  /* 0 is the default for both innodb_log_writer_threads_priority and
+  innodb_log_writer_threads_checkpoint_priority, meaning "leave scheduling
+  priority alone" - matches upstream. Skipping the syscall entirely also
+  avoids the pointless setpriority() that the release-build code behind
+  innodb_sched_priority_* performs on every purge/IO/master thread start
+  (os_thread_set_priority(tid, 19) there degenerates into
+  setpriority(..., 0)); and when the server process itself runs at a
+  positive nice, that no-op request would additionally fail with EACCES
+  and emit an ib::warn. */
+  if (nice_value == 0) {
+    return;
+  }
+
+  const auto relative = static_cast<ulint>(19 - nice_value);
+  const auto actual_priority =
+      os_thread_set_priority(os_thread_get_tid(), relative);
+  if (UNIV_UNLIKELY(actual_priority != relative)) {
+    /* os_thread_set_priority() has already reported the failure (thread
+    id, target nice, current nice, errno) - nothing to add here. The
+    comparison exists so that the [[nodiscard]] result is not dropped
+    silently. */
+  }
+#else  /* !UNIV_LINUX */
+  (void)nice_value;
+#endif /* UNIV_LINUX */
+}
+
+/** Validates the relation between the two redo log thread priority
+sysvars and reports the resulting scheduling configuration. Runs exactly
+once per process: both sysvars are PLUGIN_VAR_READONLY, so their values
+cannot change between the up to three log_start_background_threads()
+calls that a single server startup can make (srv0start.cc:2123, 2275,
+2418) - repeating the same log line on every call would make the
+functional test's line-count asserts non-deterministic. */
+static void log_threads_report_and_validate_priorities() {
+  static bool done = false;
+  if (done) {
+    return;
+  }
+  done = true;
+
+  if (!srv_log_writer_threads_priority_is_set &&
+      !srv_log_writer_threads_checkpoint_priority_is_set) {
+    /* Default configuration: no line at all, indistinguishable from
+    upstream. */
+    return;
+  }
+
+  const int writers = srv_log_writer_threads_priority;
+
+  if (srv_log_writer_threads_priority_is_set &&
+      srv_log_writer_threads_checkpoint_priority_is_set &&
+      srv_log_writer_threads_checkpoint_priority >= writers) {
+    const int requested = srv_log_writer_threads_checkpoint_priority;
+    std::ostringstream oss;
+    oss << "redo log thread priority: checkpoint group nice " << requested
+        << " is not above writers nice " << writers
+        << "; configured values are unchanged";
+    LogErr(WARNING_LEVEL, ER_IB_MSG_LOG_THREAD_PRIORITY, oss.str().c_str());
+  }
+
+  std::ostringstream oss;
+  oss << "redo log thread priority: writers nice "
+      << (srv_log_writer_threads_priority_is_set ? std::to_string(writers)
+                                                 : "inherited")
+      << ", checkpoint group nice "
+      << (srv_log_writer_threads_checkpoint_priority_is_set
+              ? std::to_string(srv_log_writer_threads_checkpoint_priority)
+              : "inherited")
+      << " (negative values require CAP_SYS_NICE or RLIMIT_NICE; grant via a"
+         " systemd drop-in override)";
+  LogErr(SYSTEM_LEVEL, ER_IB_MSG_LOG_THREAD_PRIORITY, oss.str().c_str());
+}
+
 void log_start_background_threads(log_t &log) {
   ib::info(ER_IB_MSG_1258) << "Log background threads are being started...";
+
+  log_threads_report_and_validate_priorities();
 
   log_background_threads_inactive_validate();
 

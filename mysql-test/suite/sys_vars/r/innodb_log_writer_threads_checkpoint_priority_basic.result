@@ -1,0 +1,16 @@
+SELECT @@global.innodb_log_writer_threads_checkpoint_priority;
+@@global.innodb_log_writer_threads_checkpoint_priority
+0
+SET @@global.innodb_log_writer_threads_checkpoint_priority = -10;
+ERROR HY000: Variable 'innodb_log_writer_threads_checkpoint_priority' is a read only variable
+SET @@session.innodb_log_writer_threads_checkpoint_priority = -10;
+ERROR HY000: Variable 'innodb_log_writer_threads_checkpoint_priority' is a read only variable
+SET PERSIST innodb_log_writer_threads_checkpoint_priority = -10;
+ERROR HY000: Variable 'innodb_log_writer_threads_checkpoint_priority' is a read only variable
+SELECT @@global.innodb_log_writer_threads_checkpoint_priority;
+@@global.innodb_log_writer_threads_checkpoint_priority
+0
+SELECT VARIABLE_VALUE FROM performance_schema.global_variables
+WHERE VARIABLE_NAME='innodb_log_writer_threads_checkpoint_priority';
+VARIABLE_VALUE
+0

@@ -1,0 +1,28 @@
+###############################################################################
+# Variable Name: innodb_log_writer_threads_checkpoint_priority               #
+# Scope: GLOBAL                                                              #
+# Access Type: Static (read only)                                            #
+# Data Type: numeric                                                         #
+# Default Value: 0                                                           #
+# Range: -20 - 19                                                            #
+#                                                                            #
+# Description: Nice value applied at startup to the log_checkpointer and     #
+#              log_files_governor redo log threads. Must be lower (higher    #
+#              priority) than innodb_log_writer_threads_priority.            #
+###############################################################################
+
+SELECT @@global.innodb_log_writer_threads_checkpoint_priority;
+
+--error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SET @@global.innodb_log_writer_threads_checkpoint_priority = -10;
+
+--error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SET @@session.innodb_log_writer_threads_checkpoint_priority = -10;
+
+--error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SET PERSIST innodb_log_writer_threads_checkpoint_priority = -10;
+
+SELECT @@global.innodb_log_writer_threads_checkpoint_priority;
+
+SELECT VARIABLE_VALUE FROM performance_schema.global_variables
+  WHERE VARIABLE_NAME='innodb_log_writer_threads_checkpoint_priority';

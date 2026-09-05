@@ -919,6 +919,8 @@ void log_checkpointer(log_t *log_ptr) {
 
   log_t &log = *log_ptr;
 
+  log_thread_apply_priority(srv_log_writer_threads_checkpoint_priority);
+
   ut_d(log.m_checkpointer_thd = create_internal_thd());
 
   static const uint64_t log_busy_checkpoint_interval =

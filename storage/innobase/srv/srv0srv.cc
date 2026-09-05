@@ -339,6 +339,14 @@ std::chrono::microseconds get_srv_log_wait_for_flush_timeout() {
 for new data to write or flush without sleeping. */
 ulong srv_log_writer_spin_delay = INNODB_LOG_WRITER_SPIN_DELAY_DEFAULT;
 
+/** Explicit nice value; the matching is_set flag controls application. */
+int srv_log_writer_threads_priority = 0;
+bool srv_log_writer_threads_priority_is_set = false;
+
+/** Explicit nice value; the matching is_set flag controls application. */
+int srv_log_writer_threads_checkpoint_priority = 0;
+bool srv_log_writer_threads_checkpoint_priority_is_set = false;
+
 /** Initial timeout used to wait on writer_event. */
 ulong srv_log_writer_timeout = INNODB_LOG_WRITER_TIMEOUT_DEFAULT;
 
