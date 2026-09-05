@@ -1,0 +1,37 @@
+#
+# Step 0: the PFS memory key for table cache segments is registered
+# exactly once. Guards every query below against a silent 0 from a
+# typo'd instrument name - a typo here would otherwise make every
+# subsequent assertion vacuously true instead of failing loudly.
+#
+SELECT COUNT(*) AS segment_key_registered_once
+FROM performance_schema.setup_instruments
+WHERE NAME = 'memory/sql/Table_cache::segment';
+segment_key_registered_once
+1
+#
+# PFS memory accounting for the segment key: one allocation per
+# resolved table cache instance, total bytes an exact multiple of the
+# instance count (each segment maps the same size), nothing freed
+# (segments live for the server's lifetime). No hardcoded page size or
+# byte count here - a host with a different getconf PAGE_SIZE must not
+# make this test fail silently or need updating.
+#
+SELECT COUNT_ALLOC = @@GLOBAL.table_open_cache_instances
+AS count_alloc_matches_instances,
+SUM_NUMBER_OF_BYTES_ALLOC % COUNT_ALLOC = 0
+AS bytes_alloc_is_multiple_of_count,
+COUNT_FREE = 0 AS nothing_freed
+FROM performance_schema.memory_summary_global_by_event_name
+WHERE EVENT_NAME = 'memory/sql/Table_cache::segment';
+count_alloc_matches_instances	bytes_alloc_is_multiple_of_count	nothing_freed
+1	1	1
+#
+# [DEC-24]: the unconditional startup line (ER_TABLE_CACHE_SEGMENTS,
+# MY-048132) was logged at this server's own startup.
+#
+SELECT COUNT(*) >= 1 AS segments_startup_line_logged
+FROM performance_schema.error_log
+WHERE error_code = 'MY-048132';
+segments_startup_line_logged
+1

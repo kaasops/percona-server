@@ -485,6 +485,11 @@ bool table_def_init(void) {
   end_of_unused_share.prev = &oldest_unused_share;
 
   if (table_cache_manager.init()) {
+    /* Contract of the ut_malloc_page_withkey()/ut_free_page() bridge
+    (storage/innobase/include/ut0page_alloc.h): on an mmap failure InnoDB
+    logs its own warning (ER_IB_MSG_856), but the caller must still report
+    its own failure - InnoDB's warning is not a substitute for it. */
+    LogErr(ERROR_LEVEL, ER_TABLE_CACHE_INIT_FAILED);
     mysql_cond_destroy(&COND_open);
     mysql_mutex_destroy(&LOCK_open);
     return true;

@@ -25,6 +25,7 @@
 #include <sys/types.h>
 
 #include "lex_string.h"
+#include "my_config.h"  // CPU_PAGE_SIZE
 #include "my_inttypes.h"
 #include "sql/cpu_topology.h"
 #include "sql/mysqld_thd_manager.h"

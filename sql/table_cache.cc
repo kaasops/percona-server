@@ -28,8 +28,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <new>  // placement new for segment construction in init()
+#include <vector>
 
 #include "my_compiler.h"
+#include "my_config.h"  // CPU_PAGE_SIZE
 #include "my_dbug.h"
 #include "my_macros.h"
 #include "mysql/components/services/bits/psi_bits.h"
@@ -37,7 +40,10 @@
 #include "mysql/my_loglevel.h"
 #include "mysqld_error.h"
 #include "sql/cpu_topology.h"
-#include "sql/sql_test.h"  // lock_descriptions[]
+#include "sql/current_thd.h"
+#include "sql/psi_memory_key.h"  // key_memory_table_cache_segment
+#include "sql/sql_test.h"        // lock_descriptions[]
+#include "storage/innobase/include/ut0page_alloc.h"
 #include "thr_lock.h"
 #include "thr_mutex.h"
 
@@ -45,6 +51,17 @@
   Container for all table cache instances in the system.
 */
 Table_cache_manager table_cache_manager;
+
+/* Each segment is placed on its own page-aligned allocation instead of
+being embedded in Table_cache_manager::m_table_cache (a prerequisite for
+the NUMA placement a later step adds), which only pays off memory-wise if
+one Table_cache still fits the single data page the bridge allocator
+reserves per segment - this guards that assumption at compile time rather
+than letting it silently regress into a second page per segment. */
+static_assert(sizeof(Table_cache) <= CPU_PAGE_SIZE,
+              "Table_cache must fit in one CPU_PAGE_SIZE page - each "
+              "instance is now allocated as its own page-aligned segment "
+              "via ut_malloc_page_withkey().");
 
 #ifdef HAVE_PSI_INTERFACE
 PSI_mutex_key Table_cache::m_lock_key;
@@ -55,11 +72,15 @@ PSI_mutex_info Table_cache::m_mutex_keys[] = {
 /**
   Initialize instance of table cache.
 
+  @param index  This instance's slot index in
+                Table_cache_manager::m_table_cache. @sa index().
+
   @retval false - success.
   @retval true  - failure.
 */
 
-bool Table_cache::init() {
+bool Table_cache::init(uint index) {
+  m_index = index;
   mysql_mutex_init(m_lock_key, &m_lock, MY_MUTEX_INIT_FAST);
   m_unused_tables = nullptr;
   m_table_count = 0;
@@ -209,22 +230,85 @@ void Table_cache::print_tables() {
 /**
   Initialize all instances of table cache to be used by server.
 
+  Each instance is now a separate page-aligned segment obtained through
+  the ut_malloc_page_withkey()/ut_free_page() bridge
+  (storage/innobase/include/ut0page_alloc.h) instead of an element of a
+  statically embedded array - see the ownership-invariant comment on
+  m_table_cache for what a non-null slot guarantees.
+
   @retval false - success.
   @retval true  - failure.
 */
 
 bool Table_cache_manager::init() {
   Table_cache::init_psi_keys();
+
+#ifndef NDEBUG
+  /* A prior cycle that init()'d without a matching destroy()/
+  teardown_slots() (e.g. a gunit fixture that early-returned past its
+  TearDown()) would otherwise be papered over by silently re-populating
+  already-non-null slots, corrupting whatever the leftover Table_cache
+  objects still reference. Fail loudly instead. */
+  for (uint i = 0; i < MAX_TABLE_CACHES; i++) {
+    assert(m_table_cache[i] == nullptr);
+  }
+#endif
+
   for (uint i = 0; i < table_cache_instances; i++) {
-    if (m_table_cache[i].init()) {
-      /* Unwind the slots that succeeded (0..i-1), not slot i itself -
-      its own init() is what just failed. */
-      for (uint j = 0; j < i; j++) m_table_cache[j].destroy();
+    void *seg;
+    if (static_cast<int>(i) == m_fail_segment_alloc_at_index_for_tests) {
+      // Test-only injection point, @sa set_segment_alloc_failure_for_tests():
+      // take exactly the branch a real allocator failure would.
+      seg = nullptr;
+    } else {
+      seg = ut_malloc_page_withkey(key_memory_table_cache_segment,
+                                   sizeof(Table_cache));
+    }
+    if (seg == nullptr) {
+      teardown_slots();
       return true;
     }
+
+    /* Value-initialization: byte-deterministic object state (including
+    padding) ahead of Table_cache::init() below, which is what actually
+    assigns every member the class relies on - this placement-new form
+    carries no functional weight of its own. */
+    Table_cache *c = new (seg) Table_cache();
+    if (c->init(i)) {
+      c->~Table_cache();
+      ut_free_page(seg);
+      teardown_slots();
+      return true;
+    }
+    m_table_cache[i] = c;
   }
 
   return false;
+}
+
+/**
+  @sa the teardown_slots() declaration in table_cache.h for the contract.
+*/
+void Table_cache_manager::teardown_slots() {
+  for (uint i = 0; i < MAX_TABLE_CACHES; i++) {
+    if (m_table_cache[i] == nullptr) continue;
+    m_table_cache[i]->destroy();
+    m_table_cache[i]->~Table_cache();
+    ut_free_page(m_table_cache[i]);
+    m_table_cache[i] = nullptr;
+  }
+}
+
+/**
+  Test-only: @sa the segments_alive_for_tests() declaration in
+  table_cache.h for the contract.
+*/
+uint Table_cache_manager::segments_alive_for_tests() const {
+  uint alive = 0;
+  for (uint i = 0; i < MAX_TABLE_CACHES; i++) {
+    if (m_table_cache[i] != nullptr) alive++;
+  }
+  return alive;
 }
 
 /**
@@ -313,11 +397,13 @@ uint Table_cache_manager::cache_index_for_thread(THD *thd) const {
   return static_cast<uint>(thd->thread_id() % instances);
 }
 
-/** Destroy all instances of table cache which were used by server. */
+/**
+  Destroy all instances of table cache which were used by server.
+  @sa teardown_slots() - the single owner of the destroy/free sequence,
+  shared with init()'s unwind-on-failure path.
+*/
 
-void Table_cache_manager::destroy() {
-  for (uint i = 0; i < table_cache_instances; i++) m_table_cache[i].destroy();
-}
+void Table_cache_manager::destroy() { teardown_slots(); }
 
 /**
   Get total number of used and unused TABLE objects in all table caches.
@@ -330,7 +416,7 @@ uint Table_cache_manager::cached_tables() {
   uint result = 0;
 
   for (uint i = 0; i < table_cache_instances; i++)
-    result += m_table_cache[i].cached_tables();
+    result += m_table_cache[i]->cached_tables();
 
   return result;
 }
@@ -344,7 +430,7 @@ uint Table_cache_manager::loaded_triggers_tables() const {
   uint result = 0;
 
   for (uint i = 0; i < table_cache_instances; i++)
-    result += m_table_cache[i].loaded_triggers_tables();
+    result += m_table_cache[i]->loaded_triggers_tables();
 
   return result;
 }
@@ -355,7 +441,7 @@ uint Table_cache_manager::loaded_triggers_tables() const {
 */
 
 void Table_cache_manager::lock_all_and_tdc() {
-  for (uint i = 0; i < table_cache_instances; i++) m_table_cache[i].lock();
+  for (uint i = 0; i < table_cache_instances; i++) m_table_cache[i]->lock();
 
   mysql_mutex_lock(&LOCK_open);
 }
@@ -368,7 +454,7 @@ void Table_cache_manager::lock_all_and_tdc() {
 void Table_cache_manager::unlock_all_and_tdc() {
   mysql_mutex_unlock(&LOCK_open);
 
-  for (uint i = 0; i < table_cache_instances; i++) m_table_cache[i].unlock();
+  for (uint i = 0; i < table_cache_instances; i++) m_table_cache[i]->unlock();
 }
 
 /**
@@ -377,7 +463,7 @@ void Table_cache_manager::unlock_all_and_tdc() {
 
 void Table_cache_manager::assert_owner_all() {
   for (uint i = 0; i < table_cache_instances; i++)
-    m_table_cache[i].assert_owner();
+    m_table_cache[i]->assert_owner();
 }
 
 /**
@@ -464,10 +550,10 @@ void Table_cache_manager::free_table(THD *thd [[maybe_unused]],
       }
 
       if (has_free_tables_slim)
-        remove_and_close_free_tables(m_table_cache[i],
+        remove_and_close_free_tables(*m_table_cache[i],
                                      cache_el[i]->free_tables_slim);
       if (has_free_tables_full_triggers)
-        remove_and_close_free_tables(m_table_cache[i],
+        remove_and_close_free_tables(*m_table_cache[i],
                                      cache_el[i]->free_tables_full_triggers);
     }
   }
@@ -479,7 +565,7 @@ void Table_cache_manager::free_all_unused_tables() {
   assert_owner_all_and_tdc();
 
   for (uint i = 0; i < table_cache_instances; i++)
-    m_table_cache[i].free_all_unused_tables();
+    m_table_cache[i]->free_all_unused_tables();
 }
 
 #ifndef NDEBUG
@@ -493,6 +579,6 @@ void Table_cache_manager::print_tables() {
       "Lock");
 
   for (uint i = 0; i < table_cache_instances; i++)
-    m_table_cache[i].print_tables();
+    m_table_cache[i]->print_tables();
 }
 #endif

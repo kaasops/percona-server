@@ -13227,24 +13227,13 @@ ER_IB_MSG_LOG_THREAD_PRIORITY
 ER_TABLE_CACHE_INSTANCES_CAPPED
   eng "table_open_cache_instances capped from %lu to %lu: limited to the number of detected physical CPU cores (%lu)"
 
+ER_TABLE_CACHE_SEGMENTS
+  eng "%s"
+
 #
 # End of Percona Server 8.4 error log messages
 #
 
-################################################################################
-# Error numbers 50000 to 51999 are reserved. Please do not use them for
-# other error messages.
-################################################################################
-reserved-error-section 50000 51999
+ER_TABLE_CACHE_INIT_FAILED
+  eng "Table cache initialization failed: could not allocate page-aligned cache segments"
 
-
-# DO NOT append error messages here at the end.
-#
-#   If you came here to add a message, please read the FAQ in
-#   errmsg_readme.txt to see where it should go.
-#
-#   Messages the server sends to the error log and messages
-#   the server sends to its clients go to different places.
-#   Messages for different server versions go to different places.
-#   Messages that are built into the client library (libmysql/C-API)
-#   go into yet a different place.

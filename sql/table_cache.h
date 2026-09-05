@@ -166,6 +166,14 @@ class Table_cache {
   */
   std::atomic<uint> m_table_triggers_count;
 
+  /** This instance's slot index in Table_cache_manager::m_table_cache,
+    written once by init(). Defaults to 0 so the gunit stack-allocated
+    fixtures that construct a bare Table_cache and call init() with no
+    argument (CacheCreateAndDestroy, CacheLockAndUnlock) get a
+    well-defined value even though they are never placed in the manager's
+    array. */
+  uint m_index{0};
+
 #ifdef HAVE_PSI_INTERFACE
   static PSI_mutex_key m_lock_key;
   static PSI_mutex_info m_mutex_keys[];
@@ -183,9 +191,23 @@ class Table_cache {
   inline void free_unused_tables_if_necessary(THD *thd);
 
  public:
-  bool init();
+  /**
+    Initialize this instance of table cache.
+
+    @param index  This instance's slot index in
+                   Table_cache_manager::m_table_cache - stamped into
+                   m_index and readable back via index(). Defaults to 0 so
+                   the gunit stack-allocated single-instance tests
+                   (CacheCreateAndDestroy, CacheLockAndUnlock) keep calling
+                   init() with no argument.
+  */
+  bool init(uint index = 0);
   void destroy();
   static void init_psi_keys();
+
+  /** This instance's slot index in Table_cache_manager::m_table_cache,
+    as stamped by init(). @sa Table_cache_manager::cache_index(). */
+  uint index() const noexcept { return m_index; }
 
   /** Acquire lock on table cache instance. */
   void lock() { mysql_mutex_lock(&m_lock); }
@@ -287,9 +309,30 @@ class Table_cache_manager {
   bool init();
   void destroy();
 
+  /**
+    Test-only: make the segment allocation for slot fail_at_index inside
+    the next init() call(s) behave as if ut_malloc_page_withkey() had
+    returned nullptr, exercising init()'s unwind path without needing to
+    actually exhaust address space. -1 disables the injection. Sticky
+    across calls (not reset by init() or destroy()) so a test can arm it,
+    observe the failed init(), disarm it, and observe a clean re-init as
+    two distinguishable outcomes.
+  */
+  void set_segment_alloc_failure_for_tests(int fail_at_index) {
+    m_fail_segment_alloc_at_index_for_tests = fail_at_index;
+  }
+
+  /**
+    Test-only: count of non-null (fully initialized, @sa the ownership
+    invariant on m_table_cache) slots across the whole MAX_TABLE_CACHES
+    array - the same span teardown_slots() walks. Catches both a slot
+    left dangling by an init() unwind that didn't run and a double init().
+  */
+  uint segments_alive_for_tests() const;
+
   /** Get instance of table cache to be used by particular connection. */
   Table_cache *get_cache(THD *thd) {
-    return &m_table_cache[cache_index_for_thread(thd)];
+    return m_table_cache[cache_index_for_thread(thd)];
   }
 
   /**
@@ -300,13 +343,15 @@ class Table_cache_manager {
   Table_cache *cache_by_index(uint idx) {
     assert(idx != TABLE::NO_TABLE_CACHE_INDEX);
     assert(idx < table_cache_instances);
-    return &m_table_cache[idx];
+    // Debug-only: catches a caller reaching a slot before init() (or
+    // after a failed one) populated it; release relies on the same
+    // precondition as today - callers only run after a successful init().
+    assert(m_table_cache[idx] != nullptr);
+    return m_table_cache[idx];
   }
 
   /** Get index for the table cache in container. */
-  uint cache_index(Table_cache *cache) const {
-    return static_cast<uint>(cache - &m_table_cache[0]);
-  }
+  uint cache_index(Table_cache *cache) const { return cache->index(); }
 
   uint cached_tables();
 
@@ -342,10 +387,34 @@ class Table_cache_manager {
   uint cache_index_for_thread(THD *thd) const;
 
   /**
-    An array of Table_cache instances.
-    Only the first table_cache_instances elements in it are used.
+    Single owner of the destroy/free sequence for every currently-alive
+    slot: walks the whole MAX_TABLE_CACHES array (not just
+    table_cache_instances - gunit fixtures mutate that global between
+    init() and destroy(), see TableCacheCpuShardConnectionTest) and
+    skips nullptr slots. Shared by init()'s unwind-on-failure path and by
+    destroy(), so there is exactly one place that frees a segment.
   */
-  Table_cache m_table_cache[MAX_TABLE_CACHES];
+  void teardown_slots();
+
+  /** @sa set_segment_alloc_failure_for_tests(). -1 = injection disabled. */
+  int m_fail_segment_alloc_at_index_for_tests{-1};
+
+  /**
+    An array of pointers to page-aligned Table_cache segments, allocated
+    through the ut_malloc_page_withkey()/ut_free_page() bridge
+    (storage/innobase/include/ut0page_alloc.h) instead of being embedded
+    in this array, so each segment lands on its own page rather than
+    sharing one with its neighbors (a prerequisite for the NUMA placement
+    a later step adds).
+    Only the first table_cache_instances elements in it are used.
+    Ownership invariant: a non-null slot means the segment is fully
+    initialized (allocated, constructed, and Table_cache::init()
+    succeeded) - a slot is written only after all three have completed,
+    and is nulled out immediately by teardown_slots() as its last step
+    for that slot, so partially-constructed state is never visible
+    through this array.
+  */
+  Table_cache *m_table_cache[MAX_TABLE_CACHES] = {};
 };
 
 extern Table_cache_manager table_cache_manager;

@@ -8123,6 +8123,19 @@ static int init_server_components() {
   if (table_def_init() || hostname_cache_init(host_cache_size))
     unireg_abort(MYSQLD_ABORT_EXIT);
 
+  /* [DEC-24]: unconditional startup line, same guard as the block above -
+  segments only exist once table_def_init() (and, inside it,
+  table_cache_manager.init()) has actually allocated them, so this can't
+  be folded into the earlier guarded block. */
+  if (!is_help_or_validate_option()) {
+    const std::string msg =
+        std::to_string(table_cache_instances) + " segment(s), " +
+        std::to_string(2 * static_cast<ulong>(CPU_PAGE_SIZE)) +
+        " bytes per segment (data page + allocator metadata page), PFS key "
+        "memory/sql/Table_cache::segment";
+    LogErr(SYSTEM_LEVEL, ER_TABLE_CACHE_SEGMENTS, msg.c_str());
+  }
+
   /*
     This load function has to be called after the opt_plugin_dir variable
     is initialized else it will fail to load.

@@ -157,6 +157,7 @@ PSI_memory_key key_memory_userstat_user_stats;
 PSI_memory_key key_memory_userstat_thread_stats;
 PSI_memory_key key_memory_userstat_client_stats;
 PSI_memory_key key_memory_thread_pool_connection;
+PSI_memory_key key_memory_table_cache_segment;
 
 #ifdef HAVE_PSI_INTERFACE
 
@@ -396,6 +397,8 @@ static PSI_memory_info all_server_memory[] = {
      PSI_FLAG_ONLY_GLOBAL_STAT, 0, PSI_DOCUMENT_ME},
     {&key_memory_thread_pool_connection, "thread_pool_connection", 0, 0,
      PSI_DOCUMENT_ME},
+    {&key_memory_table_cache_segment, "Table_cache::segment",
+     PSI_FLAG_ONLY_GLOBAL_STAT, 0, PSI_DOCUMENT_ME},
 
     {&key_memory_rm_table_foreach_root, "rm_table::foreach_root",
      PSI_FLAG_THREAD, 0,
