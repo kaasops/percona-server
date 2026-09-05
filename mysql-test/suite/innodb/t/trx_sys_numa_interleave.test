@@ -1,0 +1,39 @@
+# trx_sys is interleaved across NUMA nodes unconditionally at startup (not
+# gated by innodb_numa_interleave, which governs a different structure -
+# buffer pool chunks). Whether this host's real topology has more than one
+# node is host-dependent, so the debug point forces the interleave attempt
+# regardless of the actual node count - mbind() with a one-node mask is
+# still a valid, harmless call, which is what makes the success path
+# exercisable on any libnuma-enabled build, not just multi-node hardware.
+--source include/linux.inc
+--source include/have_numa.inc
+--source include/have_debug.inc
+
+--let $error_log = $MYSQLTEST_VARDIR/log/mysqld.1.err
+--let error_log = $error_log
+
+--let $restart_parameters = restart: --debug=d,trx_sys_force_numa_interleave
+--source include/restart_mysqld.inc
+
+--let $grep_file = $error_log
+--let $grep_pattern = trx_sys interleaved across
+--let $wait_timeout = 30
+--source include/wait_for_pattern_in_file.inc
+
+--perl
+  my $log = $ENV{error_log};
+  open(FILE, "<", $log) or die("Unable to open $log: $!\n");
+  my $line;
+  while (<FILE>) { $line = $1 if (/trx_sys interleaved across (.*)/); }
+  close(FILE);
+  if (!defined $line) {
+    print "FAIL: no trx_sys interleave line found\n";
+  } elsif ($line !~ /^\d+ NUMA node\(s\), \d+ bytes$/) {
+    print "FAIL: interleave line has unexpected shape: $line\n";
+  } else {
+    print "PASS: trx_sys interleave line names a node count and a byte size\n";
+  }
+EOF
+
+--let $restart_parameters = restart:
+--source include/restart_mysqld.inc

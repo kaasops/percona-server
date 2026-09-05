@@ -32,7 +32,19 @@ this program; if not, write to the Free Software Foundation, Inc.,
  *******************************************************/
 
 #include <sys/types.h>
+#include <cstring>
 #include <new>
+
+/* my_config.h is not force-included by this translation unit's own prior
+   includes at this point, and HAVE_LIBNUMA is defined there -- without this
+   include the #ifdef HAVE_LIBNUMA branch below is silently compiled out
+   (same gotcha already documented in sql/cpu_topology.cc). */
+#include "my_config.h"
+
+#ifdef HAVE_LIBNUMA
+#include <numa.h>
+#include <numaif.h>
+#endif /* HAVE_LIBNUMA */
 
 #include "current_thd.h"
 #include "ha_prototypes.h"
@@ -594,8 +606,57 @@ purge_pq_t *trx_sys_init_at_db_start(void) {
 void trx_sys_create(void) {
   ut_ad(trx_sys == nullptr);
 
-  trx_sys = static_cast<trx_sys_t *>(
-      ut::zalloc_withkey(UT_NEW_THIS_FILE_PSI_KEY, sizeof(*trx_sys)));
+  /* Page-aligned (not ut::zalloc_withkey): trx_sys->shards (256 entries,
+  several pages) is a symmetric, all-nodes-touch-it structure, unlike the
+  per-instance buffer pool -- MPOL_INTERLEAVE below needs a page-aligned
+  range to bind, and page alignment costs nothing here (allocated once,
+  at startup). */
+  void *trx_sys_mem =
+      ut::malloc_page_withkey(UT_NEW_THIS_FILE_PSI_KEY, sizeof(trx_sys_t));
+  memset(trx_sys_mem, 0, sizeof(trx_sys_t));
+  trx_sys = static_cast<trx_sys_t *>(trx_sys_mem);
+
+#ifdef HAVE_LIBNUMA
+  /* Unconditional: not gated by innodb_numa_interleave (that policy is
+  about per-instance buffer pool chunks, a different structure with a
+  different access pattern) or by any topology mode -- trx_sys is
+  symmetrically touched by every thread on every node regardless of
+  which shard a given transaction lands on (trx_id % TRX_SHARDS_N does
+  not correlate with the caller's node), so interleaving it is correct
+  independently of how finely NUMA placement is otherwise configured.
+  The only condition is technical: libnuma available and more than one
+  node to spread across -- on a single-node host this is a silent
+  no-op, not a degraded mode. */
+  struct bitmask *trx_sys_numa_nodes = numa_get_mems_allowed();
+
+  /* should_interleave is a separate bool, not the raw weight check inline
+  below, so a test can force the interleave attempt on single-node
+  hardware too (mbind() with a one-node mask is still a valid, harmless
+  call) -- the natural multi-node condition is what production runs on,
+  the override only exists so the success path is exercisable regardless
+  of which machine runs the test suite. */
+  bool should_interleave = numa_bitmask_weight(trx_sys_numa_nodes) > 1;
+  DBUG_EXECUTE_IF("trx_sys_force_numa_interleave", should_interleave = true;);
+
+  if (should_interleave) {
+    const auto low_level_info = ut::page_low_level_info(trx_sys);
+    int st = mbind(low_level_info.base_ptr, low_level_info.allocation_size,
+                   MPOL_INTERLEAVE, trx_sys_numa_nodes->maskp,
+                   trx_sys_numa_nodes->size, MPOL_MF_MOVE);
+    if (st == 0) {
+      LogErr(SYSTEM_LEVEL, ER_IB_MSG_TRX_SYS_NUMA_INTERLEAVE,
+             ("trx_sys interleaved across " +
+              std::to_string(numa_bitmask_weight(trx_sys_numa_nodes)) +
+              " NUMA node(s), " +
+              std::to_string(low_level_info.allocation_size) + " bytes")
+                 .c_str());
+    } else {
+      ib::warn() << "Failed to interleave trx_sys across NUMA nodes: "
+                 << strerror(errno);
+    }
+  }
+  numa_bitmask_free(trx_sys_numa_nodes);
+#endif /* HAVE_LIBNUMA */
 
   mutex_create(LATCH_ID_TRX_SYS, &trx_sys->mutex);
   mutex_create(LATCH_ID_TRX_SYS_SERIALISATION, &trx_sys->serialisation_mutex);
@@ -690,7 +751,7 @@ void trx_sys_close(void) {
 
   trx_sys->rw_trx_ids.~trx_ids_t();
 
-  ut::free(trx_sys);
+  ut::free_page(trx_sys);
 
   trx_sys = nullptr;
 }

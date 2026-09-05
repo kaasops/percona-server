@@ -13237,3 +13237,6 @@ ER_TABLE_CACHE_SEGMENTS
 ER_TABLE_CACHE_INIT_FAILED
   eng "Table cache initialization failed: could not allocate page-aligned cache segments"
 
+ER_IB_MSG_TRX_SYS_NUMA_INTERLEAVE
+  eng "%s"
+
