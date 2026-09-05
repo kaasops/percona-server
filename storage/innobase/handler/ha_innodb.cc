@@ -5425,7 +5425,10 @@ static int innodb_init_params() {
       srv_n_page_cleaners > srv_buf_pool_instances) {
     /* More Page Cleaners than the Buffer Pool instances will cause the excess
     Page Cleaners to be idle, as Page Clearer Coordinator creates exactly
-    srv_buf_pool_instances flushing tasks */
+    srv_buf_pool_instances flushing tasks. In range by construction: the
+    sysvar's own max is MAX_BUFFER_POOLS (the same constant
+    srv_buf_pool_instances is asserted against above), so this can never
+    exceed it. */
     srv_n_page_cleaners = srv_buf_pool_instances;
   }
 
@@ -23380,9 +23383,13 @@ static MYSQL_SYSVAR_STR(log_group_home_dir, srv_log_group_home_dir,
 /* Default value is updated in innodb_init_params to number of bp instances */
 static MYSQL_SYSVAR_ULONG(page_cleaners, srv_n_page_cleaners,
                           PLUGIN_VAR_OPCMDARG | PLUGIN_VAR_READONLY,
-                          "Page cleaner threads can be from 1 to 64. Default "
-                          "is number of buffer pool instances.",
-                          nullptr, nullptr, 1, 1, 64, 0);
+                          "Page cleaner threads can be from 1 to 256 "
+                          "(MAX_BUFFER_POOLS); more cleaners than buffer "
+                          "pool instances are clamped down to the instance "
+                          "count at startup, since a cleaner beyond the "
+                          "instance count can never have a slot to serve. "
+                          "Default is number of buffer pool instances.",
+                          nullptr, nullptr, 1, 1, MAX_BUFFER_POOLS, 0);
 
 static MYSQL_SYSVAR_DOUBLE(max_dirty_pages_pct, srv_max_buf_pool_modified_pct,
                            PLUGIN_VAR_RQCMDARG,

@@ -1,0 +1,25 @@
+#
+# [INT02] Raise the innodb_page_cleaners ceiling to the buffer pool
+# instance limit (MAX_BUFFER_POOLS, 256).
+#
+# Covers only the raised ceiling itself: with --innodb-page-cleaners=100
+# (above the old 64-cap, well below the new 256 one), my_getopt must not
+# print its "value adjusted" truncation warning at startup - confirmed by
+# negative control (built with the old max=64, the same option value did
+# print "option 'innodb-page-cleaners': unsigned value 100 adjusted to
+# 64.", MY-000081).
+#
+# The value the page cleaner threads actually end up using is a separate,
+# always-silent internal clamp down to the number of buffer pool
+# instances (see the comment on that assignment in
+# innobase_init_params()) - it depends on this host's core count and the
+# default buffer pool size (mtr's default buffer pool is under 1 GiB, so
+# one instance), which is exactly why it is not printed in this .result:
+# doing so would make the file host-dependent.
+#
+
+--let $assert_text = no my_getopt truncation warning for --innodb-page-cleaners=100 (below the raised 256 ceiling)
+--let $assert_file = $MYSQLTEST_VARDIR/log/mysqld.1.err
+--let $assert_select = innodb-page-cleaners.*adjusted
+--let $assert_count = 0
+--source include/assert_grep.inc
