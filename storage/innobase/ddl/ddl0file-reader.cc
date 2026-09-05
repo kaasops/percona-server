@@ -133,7 +133,7 @@ dberr_t File_reader::seek() noexcept {
                         m_range.first, m_crypt_buffer.first, m_space_id);
 
   if (err == DB_IO_ERROR) {
-    err = DB_TEMP_FILE_WRITE_FAIL;
+    err = DB_TEMP_FILE_READ_FAIL;
   }
 
   if (err == DB_SUCCESS) {

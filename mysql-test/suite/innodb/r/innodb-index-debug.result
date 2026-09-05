@@ -56,15 +56,15 @@ ERROR HY000: Temporary file write failure.
 SET DEBUG = '-d,ddl_write_failure';
 #
 # Error during merge file read in alter operation produces a
-# readable diagnostic (ER_TEMP_FILE_WRITE_FAILURE).
+# readable diagnostic (ER_TEMP_FILE_READ_FAILURE).
 #
 CALL mtr.add_suppression("DDL temp file read failed");
 SET SESSION innodb_ddl_threads = 1;
 SET SESSION innodb_ddl_buffer_size = 65536;
-SET DEBUG = '+d,ddl_read_failure';
+SET DEBUG = '+d,ddl_merge_read_failure';
 alter table t1 drop primary key,add primary key(f2,f1);
-ERROR HY000: Temporary file write failure.
-SET DEBUG = '-d,ddl_read_failure';
+ERROR HY000: Temporary file read failure.
+SET DEBUG = '-d,ddl_merge_read_failure';
 SET SESSION innodb_ddl_threads = DEFAULT;
 SET SESSION innodb_ddl_buffer_size = DEFAULT;
 Pattern "DDL temp file read failed" found

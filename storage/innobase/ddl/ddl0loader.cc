@@ -407,7 +407,7 @@ dberr_t Loader::scan_and_build_indexes() noexcept {
   Sync_points sync_points{};
 
   SYNC_POINT_ADD(thd, "ddl_tmpfile_fail");
-  SYNC_POINT_ADD(thd, "ddl_read_failure");
+  SYNC_POINT_ADD(thd, "ddl_merge_read_failure");
   SYNC_POINT_ADD(thd, "ddl_write_failure");
   SYNC_POINT_ADD(thd, "ddl_merge_write_failure");
   SYNC_POINT_ADD(thd, "ddl_ins_spatial_fail");

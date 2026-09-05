@@ -206,6 +206,8 @@ enum dberr_t {
   DB_DATA_NOT_SORTED,
   /** The record size is too big for LOAD BULK DATA operation. */
   DB_BULK_TOO_BIG_RECORD,
+  /** Temp file read failure */
+  DB_TEMP_FILE_READ_FAIL,
 
   /* The following are partial failure codes */
 

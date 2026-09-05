@@ -10545,6 +10545,13 @@ ER_DYNAMIC_ROLE
 
 ER_LOG_NAME_NOT_MATCHING_SEC_LOG_PATH_CLIENT
   eng "The --secure-file-path is configured, %s must be set accordingly."
+
+# Appended at the end of our 7000 range: the symbolic name is stable across
+# rebases, the number is not. A same-named upstream code yields a duplicate
+# #define; that breaks the build only under maintainer mode (-Werror).
+ER_TEMP_FILE_READ_FAILURE
+  eng "Temporary file read failure."
+
 #
 # End of Percona Server 8.0 client messages
 #

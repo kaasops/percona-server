@@ -489,6 +489,8 @@ const char *ut_strerr(dberr_t num) {
       return "Data is not sorted.";
     case DB_BULK_TOO_BIG_RECORD:
       return "Row is too big for LOAD BULK DATA operation.";
+    case DB_TEMP_FILE_READ_FAIL:
+      return ("Temp file read failure");
     case DB_ERROR_UNSET:;
       /* Fall through. */
 

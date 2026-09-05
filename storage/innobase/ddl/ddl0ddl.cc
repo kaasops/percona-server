@@ -105,7 +105,7 @@ dberr_t pread(os_fd_t fd, void *ptr, size_t len, os_offset_t offset,
   posix_fadvise(fd, offset, len, POSIX_FADV_DONTNEED);
 #endif /* POSIX_FADV_DONTNEED */
 
-  IF_ENABLED("ddl_read_failure", err = DB_IO_ERROR;)
+  IF_ENABLED("ddl_merge_read_failure", err = DB_IO_ERROR;)
 
   /* For encrypted tables, decrypt data after reading and copy data */
   if (err == DB_SUCCESS && log_tmp_is_encrypted()) {
