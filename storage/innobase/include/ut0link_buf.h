@@ -283,9 +283,81 @@ inline void Link_buf<Position>::add_link_advance_tail(Position from,
 
   ut_ad(position <= from);
 
+  /* Tail-advance invariant (owner-branch sweep below).
+
+  Which branch is taken is decided purely by whether THIS call is the one
+  that read m_tail == from just above - not by any role assigned to a
+  thread: a concurrent add_link_advance_tail() racing on a different,
+  non-overlapping position takes the same decision independently based on
+  its own read.
+
+  Owner-branch sweep: instead of storing just `to` (this call's own
+  link), the branch below walks forward over every already-published,
+  contiguous link starting at `to`, exactly the same way the second loop
+  of advance_tail_until() already walks forward over multiple links using
+  next_position() with memory_order_relaxed and finishes with the same
+  m_tail.store(..., memory_order_release). This is therefore not a new
+  class of memory ordering: the relaxed reads here have the identical
+  shape and the identical safety argument as that existing loop. The
+  acq_rel compare_exchange_strong() on the first slot inside
+  advance_tail_until() arbitrates between competitors racing to be the
+  one allowed to advance the tail; it is not what makes published data
+  visible. No such arbitration is needed on this branch by construction:
+  the slot at `from` has not been published by anyone else (this call
+  owns it), and any concurrent advance_tail_until() call stops as soon as
+  it observes a not-yet-advanced next link, so it cannot race the sweep
+  for the same span.
+
+  Visibility of the log buffer bytes a link stands for is carried by a
+  contract external to Link_buf, not by anything internal to this sweep:
+  the writer's std::atomic_thread_fence(memory_order_release) issued
+  before log.recent_written.add_link_advance_tail() in
+  log_buffer_write_completed() (log0buf.cc), together with the acquire
+  loads used by tail() and has_space() on the consumer side. Honest
+  formal remainder: the C++ memory model does not, by itself, give
+  happens-before from a publisher's writes to a reader of the tail
+  through a chain of relaxed reads performed by a third thread; that gap
+  already exists in HEAD, in the very same second loop of
+  advance_tail_until() and in every unconditional advance_tail() call made
+  by the checkpointer or by waiting user threads. The external fence
+  above is the documented answer to that gap, and this patch neither
+  weakens nor relies on anything beyond it.
+
+  Boundedness: the sweep below is intentionally unbounded, not capped by
+  srv_log_write_max_size or by any other length limit. In the whole of
+  the InnoDB source, srv_log_write_max_size is read in exactly one place:
+  it stops the log writer's own log_advance_ready_for_write_lsn()
+  traversal (log0buf.cc) - it is a limiter of that one caller's loop, not
+  a structural invariant of recent_written or recent_closed. The state a
+  length cap would guard against - ready_lsn running far ahead of
+  write_lsn - is already reachable in HEAD without this patch: waiting
+  user threads already call recent_written.advance_tail() unconditionally
+  on their own wait paths (log0write.cc), as do background paths
+  (log_buffer_sync_in_background() and the buffer pool flush path in
+  buf0flu.cc); recent_closed is advanced the same way by the checkpointer
+  (log_update_available_for_checkpoint_lsn() in log0chkp.cc) and by other
+  waiting/background paths in log0buf.cc and log0log.cc. Sweeping without
+  a cap here only shifts how often that already-reachable state occurs,
+  it does not create a new one.
+
+  Non-owner branch (below): unconditional, matching HEAD - every publish
+  attempts advance_tail_until() with the default max_retry. A sampled
+  variant of this branch (a CAS attempted with low probability instead of
+  on every publish) was measured against an INT02 bench-gate under a
+  forced stuck state and rejected for missing the closed p99 thresholds
+  by a wide margin at both the target profile and the worst scanned
+  point, so only the owner-branch sweep above ships from that gate. */
   if (position == from) {
+    position = to;
+    while (true) {
+      Position next;
+      if (next_position(position, next)) {
+        break;
+      }
+      position = next;
+    }
     /* can advance m_tail directly and exclusively, and it is unlock */
-    m_tail.store(to, std::memory_order_release);
+    m_tail.store(position, std::memory_order_release);
   } else {
     auto index = slot_index(from);
     auto &slot = m_links[index];

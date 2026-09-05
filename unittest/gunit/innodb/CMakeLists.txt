@@ -49,6 +49,7 @@ SET(TESTS
   sync0rw
   ut0bitset
   ut0crc32
+  ut0link_buf
   ut0lock_free_hash
   ut0math
   ut0mem
