@@ -644,6 +644,77 @@ struct alignas(ut::INNODB_CACHE_LINE_SIZE) log_t {
   This is never set from true to false after log_start(). */
   std::atomic_bool m_allow_checkpoints;
 
+  /** Cached hint for the fast path of log_free_check() (see
+  log_free_check_is_required_fast() in log0chkp.h). Deliberately narrower
+  in scope than the exact check it shortcuts: it is set by reserving
+  threads in log_buffer_reserve() and recomputed from ground truth (a
+  fresh log_get_lsn() read) on every limit update in
+  log_update_limits_low(), including the extra-margin branch (set before
+  free_check_limit_lsn is zeroed there) and the lagging-consumer branch
+  (covered by the same unconditional recompute right after
+  free_check_limit_lsn is stored). Must NOT be read as ground truth by
+  anything other than log_free_check(): log_free_check_is_required() and
+  its three direct callers (btr0load.cc, ddl0rtree.cc,
+  log0files_governor.cc) are left untouched and keep comparing against
+  log.sn directly.
+
+  Correctness argument (kept next to the field, not only in the commit
+  message, because it does not follow from the code alone):
+
+  (a) Staleness window. A stale-false episode can only arise across a
+  limit update: the updater's store(false), computed from a log_get_lsn()
+  snapshot taken before some reservations already in flight, can be
+  ordered after their store(true) in the hint's modification order. The
+  episode is closed by the *first* subsequent reservation that itself
+  crosses the (new) limit: its load of the hint - having observed false -
+  is, by read-write coherence, ordered after that false in modification
+  order, so its own store(true) follows. Lsn only advances via
+  reservations, so there is no way to cross the limit "quietly" past the
+  hint. The overrun is bounded by: reservations whose fetch_add landed
+  strictly after the log_get_lsn() snapshot the updater took right after
+  its store(limit_lsn) (the fresh read used to recompute the hint itself,
+  not the earlier current_lsn snapshot taken before the store and used
+  only for the lagging-consumer decision) (not "in flight at the moment
+  the limit changed" - a materially narrower set), plus at most one
+  LOG_CHECKPOINT_FREE_PER_THREAD * UNIV_PAGE_SIZE quantum per thread that
+  managed to pass log_free_check() on the stale false. Honest comparison
+  with concurrency_margin: at innodb_thread_concurrency = N > 0, the
+  margin already provisions one such round for
+  (N + LOG_BACKGROUND_THREADS_USING_RW_MTRS) threads; this hint can in
+  the worst case add a *second* round that the margin does not provision
+  for. At the default innodb_thread_concurrency = 0,
+  log_concurrency_margin() already gives no such guarantee (see the NOTE
+  comment at the top of log_concurrency_margin() in log0chkp.cc) - the
+  hint widens an already-unguaranteed window, it does not create a new
+  class of failure where none existed. The second line of defense is the
+  extra-margin branch below, where the hint is set to true before the
+  limit is zeroed.
+
+  (b) SN_LOCKED branch: unchanged by this hint. Under the x-lock, the
+  updater's ground truth is under-counted by whatever reservations are
+  added while the lock is held; this self-heals because reserving
+  threads set their own hint after returning from
+  log_buffer_s_lock_wait().
+
+  (c) Memory order - what is load-bearing and what is not. The pair that
+  matters is seq_cst on all four ends of the Dekker-like race: the
+  reserving thread's fetch_add of log.sn and its load() of
+  free_check_limit_lsn, and the updater's store() of the limit and its
+  log_get_lsn() read of sn. The load of free_check_limit_lsn in the
+  reserving thread must specifically be seq_cst on the branch that
+  decides whether to store(true). Every store of this hint itself is
+  relaxed. The operand order in "!hint && end_lsn > limit" is a perf
+  choice, not a correctness requirement: when hint is already true the
+  store is skipped and the pair is irrelevant for that reservation;
+  swapping the operands is safe (both are pure reads).
+
+  (d) This correctness argument is carried by review, not by test runs:
+  weakening any of the seq_cst ends to relaxed is invisible to the unit
+  tests next to this field, to mtr, and to TSAN alike - store-buffering
+  does not form a data race and is not caught by a happens-before
+  detector. */
+  std::atomic_bool free_check_is_required{false};
+
   /** Maximum lsn up to which there is free space in the redo log.
   Threads check this limit and compare to current lsn, when they
   are outside mini-transactions and hold no latches. The formula used

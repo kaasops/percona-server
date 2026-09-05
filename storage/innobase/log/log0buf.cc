@@ -899,6 +899,18 @@ Log_handle log_buffer_reserve(log_t &log, size_t len) {
   handle.start_lsn = log_translate_sn_to_lsn(start_sn);
   handle.end_lsn = log_translate_sn_to_lsn(end_sn);
 
+  /* Set the free_check_is_required hint if this reservation crosses the
+  free check limit. This forms a seq_cst pair with the limit update in
+  log_update_limits_low(): the load of free_check_limit_lsn here uses the
+  default seq_cst .load() (do not relax it) so that this store of the
+  hint and the store of the limit there cannot both be missed by their
+  respective counterparts - see the correctness argument next to
+  log_t::free_check_is_required in log0sys.h. */
+  if (!log.free_check_is_required.load(std::memory_order_relaxed) &&
+      handle.end_lsn > log.free_check_limit_lsn.load()) {
+    log.free_check_is_required.store(true, std::memory_order_relaxed);
+  }
+
   if (unlikely(end_sn > log.buf_limit_sn.load())) {
     log_wait_for_space_after_reserving(log, handle);
   }

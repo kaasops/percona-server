@@ -1120,7 +1120,10 @@ void log_update_limits_low(log_t &log) {
   log_update_concurrency_margin(log);
 
   if (log.m_writer_inside_extra_margin) {
-    /* Stop all new incoming user threads at safe place. */
+    /* Stop all new incoming user threads at safe place. Set the hint
+    before zeroing the limit, so that no reserving thread can observe a
+    stale false between the two stores. */
+    log.free_check_is_required.store(true, std::memory_order_relaxed);
     log.free_check_limit_lsn.store(0);
     return;
   }
@@ -1133,6 +1136,15 @@ void log_update_limits_low(log_t &log) {
   const lsn_t limit_lsn = oldest_needed_lsn + log_capacity;
 
   log.free_check_limit_lsn.store(limit_lsn);
+
+  /* Recompute the free_check_is_required hint from ground truth: use a
+  fresh log_get_lsn(log) call here rather than the current_lsn captured
+  above, because that snapshot predates the limit_lsn update just made
+  and could reintroduce a stale-false window. This also covers the
+  lagging-consumer branch below - the recompute above already used the
+  final limit_lsn. */
+  log.free_check_is_required.store(log_get_lsn(log) > limit_lsn,
+                                   std::memory_order_relaxed);
 
   /* During the server start, we do not own the limits mutex and the only
   consumer here is checkpointer thread. We can't call consumption_requested()

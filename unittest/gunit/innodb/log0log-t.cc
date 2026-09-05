@@ -743,3 +743,218 @@ TEST(log0log, log_users) { test_single("log_users"); }
 TEST(log0log, log_closer) { test_single("log_closer"); }
 
 TEST(log0log, log_checkpointer) { test_single("log_checkpointer"); }
+
+/**************************************************/ /**
+
+ @name Tests for the free_check_is_required hint
+
+ *******************************************************/
+
+/** @{ */
+
+/** RAII guard running the minimal teardown for the free_check_is_required
+hint tests below in its destructor, regardless of how the enclosing
+TEST() function exits - including a mid-test return triggered by a
+failing ASSERT_*. A plain helper function called at the end of the test
+body is not enough for that: ASSERT_* returns from the test body
+immediately on failure, skipping any cleanup written after it, which
+would leave background threads, log_sys and fil initialized and crash
+the *next* test in the same process (found while checking that a
+mutation removing the extra-margin hint store makes t2 fail below - the
+crash showed up one test later, in t3's log_test_init(), not in t2).
+Mirrors the non-Log_test part of log_test_close() (stop background
+threads, close log_sys, close fil) followed by log_test_general_close(),
+but skips log_test_recovery() and the Log_test page-count comparison:
+these tests never write MLOG_TEST records through the Log_test harness,
+so that comparison would just fail on an unrelated page count instead of
+testing anything about the hint. */
+class Log_hint_test_teardown_guard {
+ public:
+  ~Log_hint_test_teardown_guard() {
+    log_t &log = *log_sys;
+
+    srv_shutdown_state = SRV_SHUTDOWN_FLUSH_PHASE;
+
+    log_stop_background_threads(log);
+
+    log_sys_close();
+
+    fil_close_all_files();
+    fil_close();
+
+    log_test_general_close();
+  }
+};
+
+/** RAII guard for the files_mutex + limits_mutex pair held by t1/t2
+below (log_update_limits_low() requires both). In each test, construct
+this guard *after* Log_hint_test_teardown_guard, so that C++'s reverse
+order of destruction releases the mutexes before the log system is torn
+down. */
+class Log_files_and_limits_mutex_guard {
+ public:
+  explicit Log_files_and_limits_mutex_guard(log_t &log) : m_log(log) {
+    log_files_mutex_enter(m_log);
+    log_limits_mutex_enter(m_log);
+  }
+  ~Log_files_and_limits_mutex_guard() {
+    log_limits_mutex_exit(m_log);
+    log_files_mutex_exit(m_log);
+  }
+
+ private:
+  log_t &m_log;
+};
+
+/** RAII guard for the limits_mutex alone, held by t3 below. Same
+ordering requirement relative to Log_hint_test_teardown_guard as
+Log_files_and_limits_mutex_guard above. */
+class Log_limits_mutex_guard {
+ public:
+  explicit Log_limits_mutex_guard(log_t &log) : m_log(log) {
+    log_limits_mutex_enter(m_log);
+  }
+  ~Log_limits_mutex_guard() { log_limits_mutex_exit(m_log); }
+
+ private:
+  log_t &m_log;
+};
+
+/** t1: resync on a healthy limit (design doc U19-A, test t1).
+Catches mutation m2 (recompute of the hint removed from the non-extra-
+margin path of log_update_limits_low()): with m2, a hint forced true
+before the call would stay true, since nothing would recompute it from
+ground truth. */
+TEST(log0log, free_check_hint_resync_on_healthy_limit) {
+  log_test.reset(new Log_test);
+  ASSERT_TRUE(log_test_init());
+  log_t &log = *log_sys;
+
+  Log_hint_test_teardown_guard teardown;
+  Log_files_and_limits_mutex_guard mutexes(log);
+
+  /* Precondition: hint forced stuck true, as if it had gone stale while
+  lsn was still above some earlier limit. log_update_limits_low() always
+  recomputes limit_lsn from ground truth (oldest needed lsn + capacity),
+  so on this freshly started, otherwise idle log the recomputed limit is
+  expected to land far above the current lsn - the "lsn < limit"
+  precondition from the design is obtained this way, by construction,
+  rather than by forcing free_check_limit_lsn directly (which
+  log_update_limits_low() would just overwrite). */
+  log.free_check_is_required.store(true, std::memory_order_relaxed);
+
+  log_update_limits_low(log);
+
+  /* Asserted before the guards release the mutexes at scope exit: this
+  rules out any interleaving from the background checkpointer thread,
+  which takes the same two mutexes to call log_update_limits_low()
+  itself. */
+  ASSERT_LT(log_get_lsn(log), log.free_check_limit_lsn.load());
+  ASSERT_FALSE(log.free_check_is_required.load(std::memory_order_relaxed));
+}
+
+/** t2: hint set first in the extra-margin branch (design doc U19-A,
+test t2). Catches mutation m1 (hint store removed from the extra-margin
+branch of log_update_limits_low()): with m1, the hint would stay false
+while the limit is already zeroed - exactly the gap this branch exists
+to close, since it must stop new incoming user threads at a safe place
+before the limit itself reaches zero. */
+TEST(log0log, free_check_hint_set_first_in_extra_margin) {
+  log_test.reset(new Log_test);
+  ASSERT_TRUE(log_test_init());
+  log_t &log = *log_sys;
+
+  Log_hint_test_teardown_guard teardown;
+  Log_files_and_limits_mutex_guard mutexes(log);
+
+  /* Precondition: hint false, as it would be in the healthy state this
+  branch is meant to interrupt. Explicit precondition (not implicit in
+  test order): this is what a raw TEST(log0log, ...) macro cannot give
+  us for free, unlike a fixture with SetUp(). */
+  log.free_check_is_required.store(false, std::memory_order_relaxed);
+  log.m_writer_inside_extra_margin = true;
+
+  log_update_limits_low(log);
+
+  /* Both stores made by this branch are asserted before the guards
+  release the mutexes at scope exit, for the same reason as in t1
+  above. */
+  ASSERT_TRUE(log.free_check_is_required.load(std::memory_order_relaxed));
+  ASSERT_EQ(log.free_check_limit_lsn.load(), 0);
+
+  /* Restore, and confirm the hint gets recomputed back to the healthy
+  value rather than staying stuck true from the branch above. */
+  log.m_writer_inside_extra_margin = false;
+  log_update_limits_low(log);
+  ASSERT_FALSE(log.free_check_is_required.load(std::memory_order_relaxed));
+}
+
+/** t3: hint set by the reserving thread (design doc U19-A, test t3).
+Catches mutation m3 (hint store removed from log_buffer_reserve()): with
+m3, a reservation crossing the limit would never set the hint, and
+log_free_check() would never wait no matter how far lsn outgrows the
+limit. */
+TEST(log0log, free_check_hint_set_by_reserving_thread) {
+  log_test.reset(new Log_test);
+  ASSERT_TRUE(log_test_init());
+  log_t &log = *log_sys;
+
+  Log_hint_test_teardown_guard teardown;
+
+  /* Only the limits mutex is held here, and held across the harness
+  write below - by design: none of log_buffer_reserve(),
+  log_buffer_write(), log_buffer_write_completed(),
+  log_wait_for_space_in_log_recent_closed() or log_buffer_close() may
+  need the limits mutex directly, or this test would hang instead of
+  passing. This is exercised, not assumed: none of them appear in
+  log0buf.cc together with log_limits_mutex_enter/log_limits_mutex_own
+  (grepped in this session). This does not by itself rule out a
+  transitive wait: log_buffer_write_completed() can block in
+  recent_written.has_space(), which only clears once the log_writer
+  thread has advanced the tail, and the writer's own extra-margin branch
+  (log_writer_enter_extra_margin(), log_writer_exit_extra_margin() in
+  log0write.cc) does take the limits mutex; the checkpointer thread also takes
+  files+limits together in log_update_limits_low(). The reason this test
+  does not hang on either of them is not "harness never needs the
+  mutex" in general, but that this specific harness write is a single
+  64-byte reservation on a log freshly started with an 8 MiB capacity
+  (srv_redo_log_capacity_used in log_test_general_init()) and a 16 KiB
+  srv_log_recent_written_size: it never gets close to
+  recent_written.has_space() returning false, so
+  log_buffer_write_completed() never actually waits for the writer
+  thread's progress, regardless of what the writer may be blocked on. */
+  Log_limits_mutex_guard mutex(log);
+
+  /* Precondition: limit already below current lsn, so the reservation
+  made below is guaranteed to cross it; hint forced false so the
+  transition being tested is observable. */
+  log.free_check_limit_lsn.store(log_get_lsn(log) - OS_FILE_LOG_BLOCK_SIZE);
+  log.free_check_is_required.store(false, std::memory_order_relaxed);
+
+  /* A real reservation, written and confirmed like any other redo
+  caller would (rather than just log_buffer_reserve()+log_buffer_close()
+  with nothing in between): otherwise the background checkpointer and
+  writer threads, still running throughout this test, see a confirmed
+  gap between write_lsn and the dirty-page-added lsn and assert on it
+  when the harness later stops them (found by running this test before
+  this fix - the shorter form crashed with an unrelated InnoDB
+  assertion, not with a hint mismatch). Record content is never read
+  back (this test does not run recovery), so it is left zeroed. */
+  constexpr size_t rec_len = 64;
+  byte record[rec_len] = {};
+  const auto handle = log_buffer_reserve(log, rec_len);
+  const lsn_t end_lsn =
+      log_buffer_write(log, record, rec_len, handle.start_lsn);
+  ut_a(end_lsn == handle.end_lsn);
+  if (handle.start_lsn / OS_FILE_LOG_BLOCK_SIZE !=
+      end_lsn / OS_FILE_LOG_BLOCK_SIZE) {
+    log_buffer_set_first_record_group(log, end_lsn);
+  }
+  log_buffer_write_completed(log, handle.start_lsn, end_lsn);
+  log_wait_for_space_in_log_recent_closed(log, handle.start_lsn);
+  log_buffer_close(log, handle);
+
+  ASSERT_TRUE(log.free_check_is_required.load(std::memory_order_relaxed));
+}
+
+/** @} */

@@ -268,6 +268,25 @@ inline bool log_free_check_is_required() {
   return log_free_check_is_required(*log_sys);
 }
 
+/** Fast-path check for log_free_check() only: reads the cached hint
+(log_t::free_check_is_required) instead of comparing current lsn against
+free_check_limit_lsn, avoiding a load of log.sn - the hottest atomic in
+the log subsystem - on every one of the 37 call sites of
+log_free_check(). Not a general-purpose replacement for
+log_free_check_is_required(): the hint may lag ground truth (see the
+correctness argument next to log_t::free_check_is_required in
+log0sys.h), so no other caller may treat it as ground truth. The three
+direct callers of log_free_check_is_required() (btr0load.cc,
+ddl0rtree.cc, log0files_governor.cc) keep using the exact comparison.
+@param[in]  log   redo log
+@return true iff log_free_check should be executed (may be stale) */
+inline bool log_free_check_is_required_fast(const log_t &log) {
+  if (srv_read_only_mode) {
+    return false;
+  }
+  return log.free_check_is_required.load(std::memory_order_relaxed);
+}
+
 #ifdef UNIV_DEBUG
 /** Performs debug checks to validate some of the assumptions. */
 void log_free_check_validate();
@@ -282,7 +301,7 @@ inline void log_free_check(log_t &log) {
   /** We prefer to wait now for the space in log file, because now
   are not holding any latches of dirty pages. */
 
-  if (log_free_check_is_required(log)) {
+  if (log_free_check_is_required_fast(log)) {
     /* We need to wait, because the concurrency margin could be violated
     if we let all threads to go forward after making this check now.
 
