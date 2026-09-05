@@ -48,6 +48,7 @@ SET(TESTS
   srv0conc
   sync0rw
   ut0bitset
+  ut0counter
   ut0crc32
   ut0link_buf
   ut0lock_free_hash

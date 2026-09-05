@@ -281,19 +281,33 @@ using Function = std::function<void(const Type)>;
 /** Relaxed order by default. */
 constexpr auto Memory_order = std::memory_order_relaxed;
 
-template <size_t COUNT = 128>
+/* Memory order is a template parameter, not a runtime field. That makes the
+order part of the counter's type: instances with different orders cannot be
+mixed in copy()/add() by accident - the compiler rejects it, where the runtime
+field allowed copy() to silently combine a source and a destination that
+disagreed on order. It also removes what the runtime field actually cost,
+measured on the built server (GCC 14.2, -O2, LTO, x86-64 - the only production
+target): the emitted strength of a store no longer depends on what the
+compiler picks for a non-constant order (GCC emitted seq_cst XCHG where a
+compile-time relaxed store produces a plain MOV - clear()/copy()), and the
+4-byte field cost 8 bytes per instance after padding (sizeof(Shards<512>):
+32776 with it, 32768 without). Loads and RMW ops compile identically either
+way on x86-64, so the hot path neither gains nor loses. For relaxed
+instantiations the store in clear()/copy() also weakens from the seq_cst the
+runtime field could pick to a compile-time relaxed store, which is safe at
+every call site: it either runs before the counter is shared across threads
+(happens-before via thread creation) or only ever fed an approximately-correct
+monitoring statistic that never carried a synchronization contract. Revisit if
+the build matrix grows to include another compiler or a weaker memory model.
+Usage in the tree: exactly one instance (mtr_t::Logging) needs a non-default
+order, fixed in its type in mtr0mtr.h; under the runtime field that order was
+set exactly once, in Logging::init(), at server startup - the flexibility was
+never used. All other instantiations keep the relaxed default and never
+change it. */
+template <size_t COUNT = 128, std::memory_order M_ORDER = Memory_order>
 struct Shards {
   /* Shard array. */
   std::array<Shard, COUNT> m_arr{};
-
-  /* Memory order for the shards. */
-  std::memory_order m_memory_order{Memory_order};
-
-  /** Override default memory order.
-  @param[in]    memory_order    memory order */
-  void set_order(std::memory_order memory_order) {
-    m_memory_order = memory_order;
-  }
 };
 
 /** Increment the counter for a shard by n.
@@ -301,12 +315,11 @@ struct Shards {
 @param[in] id                   Shard key.
 @param[in] n                    Number to add.
 @return previous value. */
-template <size_t COUNT>
-inline Type add(Shards<COUNT> &shards, size_t id, size_t n) {
+template <size_t COUNT, std::memory_order M_ORDER>
+inline Type add(Shards<COUNT, M_ORDER> &shards, size_t id, size_t n) {
   auto &shard_arr = shards.m_arr;
-  auto order = shards.m_memory_order;
 
-  return (shard_arr[id % shard_arr.size()].m_n.fetch_add(n, order));
+  return (shard_arr[id % shard_arr.size()].m_n.fetch_add(n, M_ORDER));
 }
 
 /** Decrement the counter for a shard by n.
@@ -314,21 +327,20 @@ inline Type add(Shards<COUNT> &shards, size_t id, size_t n) {
 @param[in] id                   Shard key.
 @param[in] n                    Number to add.
 @return previous value. */
-template <size_t COUNT>
-inline Type sub(Shards<COUNT> &shards, size_t id, size_t n) {
+template <size_t COUNT, std::memory_order M_ORDER>
+inline Type sub(Shards<COUNT, M_ORDER> &shards, size_t id, size_t n) {
   ut_ad(get(shards, id) >= n);
 
   auto &shard_arr = shards.m_arr;
-  auto order = shards.m_memory_order;
-  return (shard_arr[id % shard_arr.size()].m_n.fetch_sub(n, order));
+  return (shard_arr[id % shard_arr.size()].m_n.fetch_sub(n, M_ORDER));
 }
 
 /** Increment the counter of a shard by 1.
 @param[in,out]  shards          Sharded counter to increment.
 @param[in] id                   Shard key.
 @return previous value. */
-template <size_t COUNT>
-inline Type inc(Shards<COUNT> &shards, size_t id) {
+template <size_t COUNT, std::memory_order M_ORDER>
+inline Type inc(Shards<COUNT, M_ORDER> &shards, size_t id) {
   return (add(shards, id, 1));
 }
 
@@ -339,8 +351,8 @@ the objects change, while keying by the CPU keeps each CPU on one cache line.
 Accuracy is unaffected - readers sum all shards.
 @param[in,out]  shards          Sharded counter to increment.
 @return previous value. */
-template <size_t COUNT>
-inline Type inc_by_cpu(Shards<COUNT> &shards) {
+template <size_t COUNT, std::memory_order M_ORDER>
+inline Type inc_by_cpu(Shards<COUNT, M_ORDER> &shards) {
   return (add(shards, cpu_indexer_t<>::get_rnd_index(), 1));
 }
 
@@ -348,8 +360,8 @@ inline Type inc_by_cpu(Shards<COUNT> &shards) {
 @param[in,out]  shards          Sharded counter to decrement.
 @param[in] id                   Shard key.
 @return previous value. */
-template <size_t COUNT>
-inline Type dec(Shards<COUNT> &shards, size_t id) {
+template <size_t COUNT, std::memory_order M_ORDER>
+inline Type dec(Shards<COUNT, M_ORDER> &shards, size_t id) {
   return (sub(shards, id, 1));
 }
 
@@ -357,20 +369,20 @@ inline Type dec(Shards<COUNT> &shards, size_t id) {
 @param[in,out]  shards          Sharded counter to increment.
 @param[in] id                   Shard key.
 @return current value. */
-template <size_t COUNT>
-inline Type get(const Shards<COUNT> &shards, size_t id) noexcept {
+template <size_t COUNT, std::memory_order M_ORDER>
+inline Type get(const Shards<COUNT, M_ORDER> &shards, size_t id) noexcept {
   auto &shard_arr = shards.m_arr;
-  auto order = shards.m_memory_order;
 
-  return (shard_arr[id % shard_arr.size()].m_n.load(order));
+  return (shard_arr[id % shard_arr.size()].m_n.load(M_ORDER));
 }
 
 /** Iterate over the shards.
 @param[in] shards               Shards to iterate over
 @param[in] f                    Callback function
 */
-template <size_t COUNT>
-inline void for_each(const Shards<COUNT> &shards, Function &&f) noexcept {
+template <size_t COUNT, std::memory_order M_ORDER>
+inline void for_each(const Shards<COUNT, M_ORDER> &shards,
+                     Function &&f) noexcept {
   for (const auto &shard : shards.m_arr) {
     f(shard.m_n);
   }
@@ -379,8 +391,8 @@ inline void for_each(const Shards<COUNT> &shards, Function &&f) noexcept {
 /** Get the total value of all shards.
 @param[in] shards               Shards to sum.
 @return total value. */
-template <size_t COUNT>
-inline Type total(const Shards<COUNT> &shards) noexcept {
+template <size_t COUNT, std::memory_order M_ORDER>
+inline Type total(const Shards<COUNT, M_ORDER> &shards) noexcept {
   Type n = 0;
 
   for_each(shards, [&](const Type count) { n += count; });
@@ -390,32 +402,33 @@ inline Type total(const Shards<COUNT> &shards) noexcept {
 
 /** Clear the counter - reset to 0.
 @param[in,out] shards          Shards to clear. */
-template <size_t COUNT>
-inline void clear(Shards<COUNT> &shards) noexcept {
+template <size_t COUNT, std::memory_order M_ORDER>
+inline void clear(Shards<COUNT, M_ORDER> &shards) noexcept {
   for (auto &shard : shards.m_arr) {
-    shard.m_n.store(0, shards.m_memory_order);
+    shard.m_n.store(0, M_ORDER);
   }
 }
 
 /** Copy the counters, overwrite destination.
 @param[in,out] dst              Destination shard
 @param[in]     src              Source shard. */
-template <size_t COUNT>
-inline void copy(Shards<COUNT> &dst, const Shards<COUNT> &src) noexcept {
+template <size_t COUNT, std::memory_order M_ORDER>
+inline void copy(Shards<COUNT, M_ORDER> &dst,
+                 const Shards<COUNT, M_ORDER> &src) noexcept {
   size_t i{0};
-  for_each(src, [&](const Type count) {
-    dst.m_arr[i++].m_n.store(count, dst.m_memory_order);
-  });
+  for_each(src,
+           [&](const Type count) { dst.m_arr[i++].m_n.store(count, M_ORDER); });
 }
 
 /** Accumulate the counters, add source to destination.
 @param[in,out] dst              Destination shard
 @param[in]     src              Source shard. */
-template <size_t COUNT>
-inline void add(Shards<COUNT> &dst, const Shards<COUNT> &src) noexcept {
+template <size_t COUNT, std::memory_order M_ORDER>
+inline void add(Shards<COUNT, M_ORDER> &dst,
+                const Shards<COUNT, M_ORDER> &src) noexcept {
   size_t i{0};
   for_each(src, [&](const Type count) {
-    dst.m_arr[i++].m_n.fetch_add(count, dst.m_memory_order);
+    dst.m_arr[i++].m_n.fetch_add(count, M_ORDER);
   });
 }
 }  // namespace Counter

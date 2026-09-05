@@ -252,14 +252,6 @@ struct mtr_t {
     /** Initialize logging state at server start up. */
     void init() {
       m_state.store(ENABLED);
-      /* We use sharded counter and force sequentially consistent counting
-      which is the general default for c++ atomic operation. If we try to
-      optimize it further specific to current operations, we could use
-      Release-Acquire ordering i.e. std::memory_order_release during counting
-      and std::memory_order_acquire while checking for the count. However,
-      sharding looks to be good enough for now and we should go for non default
-      memory ordering only with some visible proof for improvement. */
-      m_count_nologging_mtr.set_order(std::memory_order_seq_cst);
       Counter::clear(m_count_nologging_mtr);
     }
 
@@ -323,6 +315,15 @@ struct mtr_t {
     dirty pages generated at much faster rate. */
     static constexpr uint32_t NOLOG_MAX_FLUSH_LOOP = 5;
 
+    /* We use a sharded counter and force sequentially consistent counting,
+    which is the general default for a c++ atomic operation. If we try to
+    optimize it further specific to current operations, we could use
+    Release-Acquire ordering i.e. std::memory_order_release during counting
+    and std::memory_order_acquire while checking for the count. However,
+    sharding looks to be good enough for now and we should go for non default
+    memory ordering only with some visible proof for improvement. */
+    using Shards = Counter::Shards<128, std::memory_order_seq_cst>;
+
    private:
     /** Wait till all no-logging mtrs are finished.
     @return mysql error code. */
@@ -331,8 +332,6 @@ struct mtr_t {
    private:
     /** Global redo logging state. */
     std::atomic<State> m_state;
-
-    using Shards = Counter::Shards<128>;
 
     /** Number of no logging mtrs currently running. */
     Shards m_count_nologging_mtr;
