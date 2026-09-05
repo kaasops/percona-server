@@ -172,6 +172,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "row0quiesce.h"
 #include "row0sel.h"
 #include "row0upd.h"
+#include "sql/cpu_topology.h"
 #include "sql/plugin_table.h"
 #include "srv0mon.h"
 #include "srv0srv.h"
@@ -4959,6 +4960,51 @@ static void innodb_buffer_pool_size_init() {
     srv_buf_pool_instances = srv_buf_pool_instances_org;
   };
 #endif /* UNIV_DEBUG */
+
+  /* Unconditional cap: innodb_buffer_pool_instances never exceeds the
+  number of physical CPU cores, regardless of how the value above was
+  derived (default heuristic, UNIV_DEBUG override, or an explicit
+  my.cnf/command-line/SET value). This is deliberate product policy, not
+  a fallback: the limit always applies, on the default path and on an
+  explicitly configured value alike. No sysvar gates it; the only way to
+  see the pre-cap value is to read the log line below. */
+  {
+    const Sql_cpu_topology &cpu_topology = sql_machine_topology().cpu;
+
+    /* A topology snapshot that failed to build (allocation failure while
+    walking sysfs - Sql_cpu_topology::clear()) reports initialized=false
+    and effective_cpu_capacity()==0. Treating 0 as "0 physical cores"
+    would collapse srv_buf_pool_instances to 1 via std::min() below for
+    every configuration, including the default one - skip the cap
+    entirely instead, so a topology-detection failure degrades to
+    pre-patch behavior (no cap) rather than crippling every startup. */
+    bool topology_available =
+        cpu_topology.initialized && cpu_topology.effective_cpu_capacity() > 0;
+    DBUG_EXECUTE_IF("bp_topology_unavailable", topology_available = false;);
+
+    if (topology_available) {
+      const ulong phys_cores =
+          static_cast<ulong>(cpu_topology.effective_cpu_capacity());
+
+      if (srv_buf_pool_instances > phys_cores) {
+        const ulong previous_instances = srv_buf_pool_instances;
+        srv_buf_pool_instances = phys_cores;
+        LogErr(SYSTEM_LEVEL, ER_IB_MSG_BP_INSTANCES_CAPPED, previous_instances,
+               srv_buf_pool_instances, phys_cores);
+      }
+    } else {
+      LogErr(SYSTEM_LEVEL, ER_IB_MSG_CPU_CORES_INFO,
+             "CPU topology unavailable, buffer pool instance cap skipped");
+    }
+  }
+
+  /* Must hold in release builds too, not only under UNIV_DEBUG: a
+  violation here means the cap above (or one of the branches feeding it)
+  produced something out of range, and continuing would divide by zero
+  further down in buf_pool_size_align() instead of failing loudly at the
+  actual source of the bad value. */
+  ut_a(srv_buf_pool_instances >= 1);
+  ut_a(srv_buf_pool_instances <= MAX_BUFFER_POOLS);
 
   srv_buf_pool_chunk_unit = buf_pool_adjust_chunk_unit(srv_buf_pool_chunk_unit);
   srv_buf_pool_size = buf_pool_size_align(srv_buf_pool_size);

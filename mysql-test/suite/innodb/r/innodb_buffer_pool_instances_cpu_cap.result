@@ -1,0 +1,60 @@
+call mtr.add_suppression("Doublewrite (load|open or create) file .* size .* is not a multiple of the configured page size");
+call mtr.add_suppression("Setting thread .* nice to 0 failed");
+call mtr.add_suppression("Failed to set (I/O thread|purge coordinator thread) priority");
+#
+# Set up ~32 separate tablespaces. buf_pool_get() (buf0buf.ic) picks
+# the buffer pool instance for a page by hashing (space_id, page_no
+# >> 6), not by round-robin counter - so the instance spread below
+# comes from having many distinct space_ids, not from many pages per
+# table.
+#
+#
+# Scenario 1: with the cap skipped (guard branch forced by debug
+# point), an explicit instance count above the old ceiling (64) and
+# above any real host's physical core count is honored as-is, and
+# pages from the 32 tablespaces reach instance IDs well beyond 63 -
+# i.e. the raised ceiling (256) is not just a compile-time constant,
+# it is functionally reachable.
+#
+# restart: --debug=d,bp_topology_unavailable --innodb-buffer-pool-instances=200 --innodb-buffer-pool-size=1G
+include/wait_for_pattern_in_file.inc [CPU topology unavailable, buffer pool instance cap skipped]
+guard-branch instance count matches the request: 200
+# Guard branch: topology snapshot forced unavailable -> cap skipped,
+# a diagnostic line is printed instead (SYSTEM level, visible at the
+# default log-error-verbosity), and the instance count above is
+# exactly the requested value, not reduced.
+include/assert_grep.inc [topology-unavailable diagnostic line is present exactly once]
+# Pages from 32 distinct tablespaces are expected to reach instance
+# IDs at or above half of the requested count (verified analytically
+# for this test's actual space_id range when it was written, for
+# several different starting space_id offsets - not a tight
+# guarantee for an arbitrary space_id set, but the probability of a
+# false negative here, if that analysis were ever wrong for a
+# different space_id range, is itself astronomically small).
+pool id spread reaches the upper half of the instance range
+#
+# Scenario 2: explicit instance count above the physical core count,
+# topology available (no debug point) - the cap fires, reducing it
+# to this host's actual physical core count, with a log line naming
+# old/new/core-count, and the effective sysvar is self-consistent
+# with what the log line says. Neither number is assumed here - both
+# come from the server's own output.
+#
+# restart: --innodb-buffer-pool-instances=200 --innodb-buffer-pool-size=1G
+actual_instances read back from the server after requesting 200 instances
+PASS: capped-instances log line is self-consistent with the effective sysvar
+#
+# Scenario 3: default start is unaffected by this unit - same
+# instance count across two consecutive plain-default restarts (not
+# compared against scenario 2's explicit-request-capped state, which
+# is a different configuration entirely), and no capped-instances
+# line appears in the log (there is at most one, from scenario 2,
+# for the whole test - checked below).
+#
+# restart:
+# restart:
+default instance count unchanged across restart: 1
+include/assert_grep.inc [capped-instances line occurs at most once (from scenario 2, if the cap fired there) after a default-config restart]
+#
+# Cleanup
+#

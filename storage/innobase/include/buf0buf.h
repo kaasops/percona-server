@@ -103,7 +103,7 @@ enum class Cache_hint {
 /** @} */
 
 /** Number of bits to representing a buffer pool ID */
-constexpr ulint MAX_BUFFER_POOLS_BITS = 6;
+constexpr ulint MAX_BUFFER_POOLS_BITS = 8;
 
 /** The maximum number of buffer pools that can be defined */
 constexpr ulint MAX_BUFFER_POOLS = (1 << MAX_BUFFER_POOLS_BITS);
@@ -1618,8 +1618,8 @@ class buf_page_t {
   /** Index number of the buffer pool that this block belongs to */
   uint8_t buf_pool_index;
 
-  static_assert(MAX_BUFFER_POOLS <= 64,
-                "MAX_BUFFER_POOLS > 64; redefine buf_pool_index");
+  static_assert(MAX_BUFFER_POOLS <= 256,
+                "MAX_BUFFER_POOLS > 256; redefine buf_pool_index");
 
   /** @} */
 #ifndef UNIV_HOTBACKUP

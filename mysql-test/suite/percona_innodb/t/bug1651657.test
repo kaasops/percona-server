@@ -1,6 +1,19 @@
 --source include/have_multiple_buffer_pools.inc
 --source include/big_test.inc
 
+# The -master.opt for this test requests exactly 54 instances so that
+# buffer_pool_size / page_size / instances lands just under the backoff
+# eligibility threshold (BUF_LRU_MIN_LEN * 5, ha_innodb.cc) - the whole
+# point of the test is that specific arithmetic, not the instance count
+# as such. This tree unconditionally caps innodb_buffer_pool_instances to
+# the number of physical CPU cores, which on any host with fewer than 54
+# of them would silently replace 54 with a different number and change
+# that arithmetic. The -master.opt also passes the debug point that skips
+# the cap (same one used by innodb_buffer_pool_instances_cpu_cap.test),
+# which only has an effect in a debug build - known limitation, this test
+# now requires one.
+--source include/have_debug.inc
+
 --let $assert_text= Small buffer pool instances should use legacy
 --let $assert_cond= @@innodb_empty_free_list_algorithm = "legacy"
 --source include/assert.inc

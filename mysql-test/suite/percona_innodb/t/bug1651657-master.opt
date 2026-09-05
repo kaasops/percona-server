@@ -1,1 +1,1 @@
---innodb-buffer-pool-size=1026M --innodb-buffer-pool-instances=54 --innodb-empty-free-list-algorithm=backoff
+--innodb-buffer-pool-size=1026M --innodb-buffer-pool-instances=54 --innodb-empty-free-list-algorithm=backoff --debug=d,bp_topology_unavailable

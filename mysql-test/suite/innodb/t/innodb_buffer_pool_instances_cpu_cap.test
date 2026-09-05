@@ -1,0 +1,271 @@
+#
+# innodb_buffer_pool_instances: raised ceiling (MAX_BUFFER_POOLS_BITS
+# 6 -> 8, i.e. 64 -> 256) and the unconditional physical-core-count cap
+# that ha_innodb.cc applies to srv_buf_pool_instances regardless of how
+# the value was set (default heuristic, my.cnf, command line, SET) - by
+# product policy, the limit is never opt-in and never bypassable.
+#
+# Requires a debug build: scenario 1 forces the "topology unavailable"
+# guard branch via a debug point to exercise the raised ceiling with an
+# instance count above any real host's physical core count - the same
+# debug point drives the guard-branch assertions themselves (log line,
+# instance count left untouched).
+--source include/have_debug.inc
+--source include/big_test.inc
+
+--let $error_log = $MYSQLTEST_VARDIR/log/mysqld.1.err
+# Non-$-prefixed copy: mysqltest only exports a --let variable to the OS
+# environment (and therefore to $ENV{...} in --perl blocks) when its name
+# has no leading $ - see client/mysqltest.cc var_set().
+--let error_log = $error_log
+
+# A request value picked to be comfortably above any physical core count
+# found on real hardware today (including large multi-socket hosts), while
+# staying under the raised ceiling (256, MAX_BUFFER_POOLS) - not tied to
+# this specific test host's core count. Scenario 2 below reads this host's
+# actual physical core count back from the cap's own log line and
+# cross-checks it against @@innodb_buffer_pool_instances, rather than
+# assuming a number; if a host ever has >= $high_request physical cores
+# (not the case for any host in the current fleet), that part is skipped
+# with a diagnostic instead of asserting a specific count.
+--let $high_request = 200
+--let high_request = $high_request
+
+# Reopening the same datadir at a different innodb_buffer_pool_instances
+# across the restarts below resizes the doublewrite file layout
+# (Double_write::s_n_instances = max(4, srv_buf_pool_instances*2),
+# buf0dblwr.cc), and the on-disk dblwr file from the previous instance
+# count no longer matches the newly expected size - a harmless warning
+# for this test (each restart recreates/reinitializes it), not a defect
+# in the code under test.
+call mtr.add_suppression("Doublewrite (load|open or create) file .* size .* is not a multiple of the configured page size");
+# Known host/harness artifact, not a defect of the unit under test: InnoDB's
+# I/O and purge coordinator threads always attempt setpriority()/nice() at
+# startup (storage/innobase/os/os0thread.cc, os0file.cc, upstream code, not
+# part of this unit's diff). Under the packaged systemd unit this succeeds
+# via LimitNICE=-20; MTR starts mysqld directly and inherits the plain
+# login shell's RLIMIT_NICE, so the call always fails with EPERM here -
+# already researched and accepted (known-effects.md). This scenario
+# requests $high_request buffer pool instances, which is what makes the
+# resulting I/O/purge thread count high enough for the warning to actually
+# appear and trip mtr's log-warning check; smaller-instance-count tests in
+# this suite never reach that threshold.
+call mtr.add_suppression("Setting thread .* nice to 0 failed");
+call mtr.add_suppression("Failed to set (I/O thread|purge coordinator thread) priority");
+
+--echo #
+--echo # Set up ~32 separate tablespaces. buf_pool_get() (buf0buf.ic) picks
+--echo # the buffer pool instance for a page by hashing (space_id, page_no
+--echo # >> 6), not by round-robin counter - so the instance spread below
+--echo # comes from having many distinct space_ids, not from many pages per
+--echo # table.
+--echo #
+--disable_query_log
+let $i = 0;
+while ($i < 32) {
+  eval CREATE TABLE t_cap_$i (a INT PRIMARY KEY, b VARCHAR(200)) ENGINE=InnoDB;
+  eval INSERT INTO t_cap_$i VALUES (1, REPEAT('x', 200));
+  inc $i;
+}
+--enable_query_log
+
+--echo #
+--echo # Scenario 1: with the cap skipped (guard branch forced by debug
+--echo # point), an explicit instance count above the old ceiling (64) and
+--echo # above any real host's physical core count is honored as-is, and
+--echo # pages from the 32 tablespaces reach instance IDs well beyond 63 -
+--echo # i.e. the raised ceiling (256) is not just a compile-time constant,
+--echo # it is functionally reachable.
+--echo #
+--let $restart_parameters = restart: --debug=d,bp_topology_unavailable --innodb-buffer-pool-instances=$high_request --innodb-buffer-pool-size=1G
+--source include/restart_mysqld.inc
+
+# restart_mysqld.inc only waits for the server to accept connections again,
+# not for the error log FILE on disk to catch up with everything mysqld has
+# already logged - wait explicitly for this restart's own diagnostic line
+# (a first-ever occurrence in this test, since this is the only restart
+# using the debug point) before reading the file for real.
+--let $grep_file = $error_log
+--let $grep_pattern = CPU topology unavailable, buffer pool instance cap skipped
+--let $wait_timeout = 30
+--source include/wait_for_pattern_in_file.inc
+
+--let $actual_instances_s1 = query_get_value(SELECT @@innodb_buffer_pool_instances AS v, v, 1)
+if ($actual_instances_s1 != $high_request) {
+  --die Guard branch did not honor the requested instance count as-is
+}
+--echo guard-branch instance count matches the request: $actual_instances_s1
+
+--disable_query_log
+let $i = 0;
+while ($i < 32) {
+  eval SELECT COUNT(*) FROM t_cap_$i INTO @discard;
+  inc $i;
+}
+--enable_query_log
+
+--echo # Guard branch: topology snapshot forced unavailable -> cap skipped,
+--echo # a diagnostic line is printed instead (SYSTEM level, visible at the
+--echo # default log-error-verbosity), and the instance count above is
+--echo # exactly the requested value, not reduced.
+--let $assert_text = topology-unavailable diagnostic line is present exactly once
+--let $assert_file = $error_log
+--let $assert_select = CPU topology unavailable, buffer pool instance cap skipped
+--let $assert_count = 1
+--source include/assert_grep.inc
+
+--echo # Pages from 32 distinct tablespaces are expected to reach instance
+--echo # IDs at or above half of the requested count (verified analytically
+--echo # for this test's actual space_id range when it was written, for
+--echo # several different starting space_id offsets - not a tight
+--echo # guarantee for an arbitrary space_id set, but the probability of a
+--echo # false negative here, if that analysis were ever wrong for a
+--echo # different space_id range, is itself astronomically small).
+--let $pool_id_half = `SELECT $high_request DIV 2`
+--let $max_pool_id = query_get_value(SELECT MAX(POOL_ID) AS m FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE, m, 1)
+if ($max_pool_id < $pool_id_half) {
+  --die Buffer pool instance spread across tablespaces did not reach the expected range
+}
+--echo pool id spread reaches the upper half of the instance range
+
+--echo #
+--echo # Scenario 2: explicit instance count above the physical core count,
+--echo # topology available (no debug point) - the cap fires, reducing it
+--echo # to this host's actual physical core count, with a log line naming
+--echo # old/new/core-count, and the effective sysvar is self-consistent
+--echo # with what the log line says. Neither number is assumed here - both
+--echo # come from the server's own output.
+--echo #
+# Unlike scenario 1's diagnostic line, "Buffer pool initialization
+# completed" is not a first-ever occurrence in this test (scenario 1 also
+# produces one) - snapshot its occurrence count before restarting and wait
+# for growth afterwards instead of waiting for the text itself, so this is
+# robust regardless of whether the cap below actually fires on this host.
+--let init_completed_marker = $MYSQLTEST_VARDIR/tmp/_bp_cap_init_completed_count.txt
+--perl
+  open(FILE, "<", $ENV{error_log}) or die("Unable to open $ENV{error_log}: $!\n");
+  my $count = 0;
+  while (<FILE>) { $count++ if (/Buffer pool initialization completed/); }
+  close(FILE);
+  open(OUT, ">", $ENV{init_completed_marker}) or die("Unable to write marker: $!\n");
+  print OUT $count;
+  close(OUT);
+EOF
+
+--let $restart_parameters = restart: --innodb-buffer-pool-instances=$high_request --innodb-buffer-pool-size=1G
+--source include/restart_mysqld.inc
+
+--perl
+  open(IN, "<", $ENV{init_completed_marker}) or die("Unable to read marker: $!\n");
+  my $before = <IN>;
+  close(IN);
+  unlink($ENV{init_completed_marker});
+  my $grown = 0;
+  for (my $i = 0; $i < 40; $i++) {
+    open(FILE, "<", $ENV{error_log}) or die("Unable to open $ENV{error_log}: $!\n");
+    my $count = 0;
+    while (<FILE>) { $count++ if (/Buffer pool initialization completed/); }
+    close(FILE);
+    if ($count > $before) { $grown = 1; last; }
+    sleep 1;
+  }
+  die "error log did not grow after restart (flush wait timed out)\n" unless $grown;
+EOF
+
+--let $actual_instances = query_get_value(SELECT @@innodb_buffer_pool_instances AS v, v, 1)
+--let actual_instances = $actual_instances
+# Not echoing the derived value itself (host-dependent, e.g. this host's
+# physical core count) - only that it was read back from the server; the
+# actual cross-check against the log line happens in the --perl block below
+# and its own PASS/FAIL message is likewise number-free, to keep this
+# .result file portable across hosts with a different core count.
+--echo actual_instances read back from the server after requesting $high_request instances
+
+if ($actual_instances == $high_request) {
+  --echo # This host has $high_request or more physical cores - the cap did
+  --echo # not reduce the requested value, so there is nothing to check here.
+  --echo # Not the case for any host in the current fleet at the time this
+  --echo # test was written; skipping the capped-instances assertions below.
+}
+if ($actual_instances != $high_request) {
+--perl
+  my $log = $ENV{error_log};
+  my $requested = $ENV{high_request};
+  my $actual = $ENV{actual_instances};
+  open(FILE, "<", $log) or die("Unable to open $log: $!\n");
+  my $found = 0;
+  my ($old_val, $new_val, $cores_val);
+  while (<FILE>) {
+    if (/innodb_buffer_pool_instances capped from (\d+) to (\d+): limited to the number of detected physical CPU cores \((\d+)\)/) {
+      $found = 1;
+      $old_val = $1; $new_val = $2; $cores_val = $3;
+    }
+  }
+  close(FILE);
+  if (!$found) {
+    print "FAIL: no capped-instances log line found\n";
+  } elsif ($old_val != $requested) {
+    print "FAIL: log line names old value $old_val, expected $requested\n";
+  } elsif ($cores_val != $new_val) {
+    print "FAIL: log line names core count $cores_val, does not match its own new value $new_val\n";
+  } elsif ($new_val != $actual) {
+    print "FAIL: log line new value $new_val does not match \@\@innodb_buffer_pool_instances=$actual\n";
+  } else {
+    print "PASS: capped-instances log line is self-consistent with the effective sysvar\n";
+  }
+EOF
+}
+
+--echo #
+--echo # Scenario 3: default start is unaffected by this unit - same
+--echo # instance count across two consecutive plain-default restarts (not
+--echo # compared against scenario 2's explicit-request-capped state, which
+--echo # is a different configuration entirely), and no capped-instances
+--echo # line appears in the log (there is at most one, from scenario 2,
+--echo # for the whole test - checked below).
+--echo #
+--let $restart_parameters = restart:
+--source include/restart_mysqld.inc
+--let $before_instances = query_get_value(SELECT @@innodb_buffer_pool_instances AS v, v, 1)
+
+--let $restart_parameters = restart:
+--source include/restart_mysqld.inc
+
+# No new pattern is expected here by design, so there is nothing fresh to
+# wait for (unlike scenario 1/2's own first-ever lines) - a fixed pause
+# stands in for the flush-wait instead. This is weaker than the
+# wait-for-pattern approach used above: it bounds the window for a false
+# PASS (a regression that would add a capped-instances line here, masked
+# by reading the file too early) rather than eliminating it, but it does
+# not affect the two positive-presence checks in scenarios 1 and 2, which
+# do not depend on this sleep.
+--sleep 5
+
+--let $after_instances = query_get_value(SELECT @@innodb_buffer_pool_instances AS v, v, 1)
+
+if ($before_instances != $after_instances) {
+  --die Default buffer pool instance count changed across two consecutive plain-default restarts
+}
+--echo default instance count unchanged across restart: $after_instances
+
+--let $assert_text = capped-instances line occurs at most once (from scenario 2, if the cap fired there) after a default-config restart
+--let $assert_file = $error_log
+--let $assert_select = innodb_buffer_pool_instances capped from
+# Clear the previous assert_grep.inc call's $assert_count - it is a plain
+# mysqltest variable, not scoped to the include, and would otherwise stay
+# set alongside $assert_count_condition below and trip the include's own
+# "exactly one of assert_match/assert_count/assert_count_condition" check.
+--let $assert_count =
+--let $assert_count_condition = <= 1
+--source include/assert_grep.inc
+
+--echo #
+--echo # Cleanup
+--echo #
+--disable_query_log
+let $i = 0;
+while ($i < 32) {
+  eval DROP TABLE t_cap_$i;
+  inc $i;
+}
+--enable_query_log

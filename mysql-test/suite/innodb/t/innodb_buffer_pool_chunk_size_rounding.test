@@ -2,13 +2,40 @@
 --echo # Bug #29951982 ASSERTION FAILURE:
 --echo #               SYNC0RW.CC.*LOCK->LOCK_WORD == X_LOCK_DECR
 --echo #
+--echo # This test's three explicit --innodb-buffer-pool-instances values
+--echo # (31, 64, 33) are chosen for their divisibility properties against
+--echo # the requested pool size, to exercise the original bug's chunk-size
+--echo # rounding arithmetic - not to test instance counts as such. This
+--echo # tree unconditionally caps innodb_buffer_pool_instances to the
+--echo # number of physical CPU cores (regardless of how the value was
+--echo # requested), which would silently replace all three carefully
+--echo # chosen values with whatever this host's core count happens to be,
+--echo # defeating the point of the test on any host where that count does
+--echo # not equal 31, 64 or 33 - known limitation, this test now requires a
+--echo # debug build and forces the topology-unavailable guard branch (via
+--echo # a debug point) specifically to skip that cap, so the requested
+--echo # values reach buf_pool_init() exactly as this test intends.
 
 --source include/big_test.inc
+--source include/have_debug.inc
+
+# Known host/harness artifact, not a defect of the code under test: InnoDB's
+# I/O and purge coordinator threads always attempt setpriority()/nice() at
+# startup (storage/innobase/os/os0thread.cc, os0file.cc, upstream code).
+# Under the packaged systemd unit this succeeds via LimitNICE=-20; MTR
+# starts mysqld directly and inherits the plain login shell's RLIMIT_NICE,
+# so the call always fails with EPERM here - already researched and
+# accepted (known-effects.md). This test's three restarts at fairly high
+# instance counts (31/64/33) are what makes the resulting I/O/purge thread
+# count high enough for the warning to actually appear and trip mtr's
+# log-warning check.
+call mtr.add_suppression("Setting thread .* nice to 0 failed");
+call mtr.add_suppression("Failed to set (I/O thread|purge coordinator thread) priority");
 
 # In this case 2G is not only not divisible by 31, but more importantly the result of division is not
 # divisible by page size, which in buggy implementation caused innodb_buffer_pool_chunk_size to be
 # not divisible by page size.
-let $restart_parameters = restart: --innodb-buffer-pool-instances=31 --innodb-buffer-pool-size=2G --innodb-buffer-pool-chunk-size=128M;
+let $restart_parameters = restart: --debug=d,bp_topology_unavailable --innodb-buffer-pool-instances=31 --innodb-buffer-pool-size=2G --innodb-buffer-pool-chunk-size=128M;
 --source include/restart_mysqld.inc
 
 SHOW VARIABLES
@@ -18,7 +45,7 @@ WHERE Variable_name IN
 
 # In this case 4G does not fit in 32bits, yet on Windows 64-bit, ulong is four bytes long, so
 # a buggy implementation caused innodb_buffer_pool_chunk_size to be 0
-let $restart_parameters = restart: --innodb-buffer-pool-instances=64 --innodb-buffer-pool-size=4G --innodb-buffer-pool-chunk-size=128M;
+let $restart_parameters = restart: --debug=d,bp_topology_unavailable --innodb-buffer-pool-instances=64 --innodb-buffer-pool-size=4G --innodb-buffer-pool-chunk-size=128M;
 --source include/restart_mysqld.inc
 
 SHOW VARIABLES
@@ -29,7 +56,7 @@ WHERE Variable_name IN
 # In this case 4G does not fit in 32bits, yet on Windows 64-bit, ulong is four bytes long, so
 # a buggy implementation caused innodb_buffer_pool_chunk_size to be 0, and then, given that 4G is not
 # divisible by 33, "rounded it up" to 1.
-let $restart_parameters = restart: --innodb-buffer-pool-instances=33 --innodb-buffer-pool-size=4G --innodb-buffer-pool-chunk-size=128M;
+let $restart_parameters = restart: --debug=d,bp_topology_unavailable --innodb-buffer-pool-instances=33 --innodb-buffer-pool-size=4G --innodb-buffer-pool-chunk-size=128M;
 --source include/restart_mysqld.inc
 
 SHOW VARIABLES

@@ -13212,6 +13212,9 @@ ER_LOG_REPLICA_TRANSLATED_DEPRECATED_PRIVILEGE
 ER_IB_MSG_CPU_CORES_INFO
   eng "%s"
 
+ER_IB_MSG_BP_INSTANCES_CAPPED
+  eng "innodb_buffer_pool_instances capped from %lu to %lu: limited to the number of detected physical CPU cores (%lu)"
+
 #
 # End of Percona Server 8.4 error log messages
 #

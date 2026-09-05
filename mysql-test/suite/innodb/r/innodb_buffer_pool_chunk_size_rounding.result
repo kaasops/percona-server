@@ -2,7 +2,22 @@
 # Bug #29951982 ASSERTION FAILURE:
 #               SYNC0RW.CC.*LOCK->LOCK_WORD == X_LOCK_DECR
 #
-# restart: --innodb-buffer-pool-instances=31 --innodb-buffer-pool-size=2G --innodb-buffer-pool-chunk-size=128M
+# This test's three explicit --innodb-buffer-pool-instances values
+# (31, 64, 33) are chosen for their divisibility properties against
+# the requested pool size, to exercise the original bug's chunk-size
+# rounding arithmetic - not to test instance counts as such. This
+# tree unconditionally caps innodb_buffer_pool_instances to the
+# number of physical CPU cores (regardless of how the value was
+# requested), which would silently replace all three carefully
+# chosen values with whatever this host's core count happens to be,
+# defeating the point of the test on any host where that count does
+# not equal 31, 64 or 33 - known limitation, this test now requires a
+# debug build and forces the topology-unavailable guard branch (via
+# a debug point) specifically to skip that cap, so the requested
+# values reach buf_pool_init() exactly as this test intends.
+call mtr.add_suppression("Setting thread .* nice to 0 failed");
+call mtr.add_suppression("Failed to set (I/O thread|purge coordinator thread) priority");
+# restart: --debug=d,bp_topology_unavailable --innodb-buffer-pool-instances=31 --innodb-buffer-pool-size=2G --innodb-buffer-pool-chunk-size=128M
 SHOW VARIABLES
 WHERE Variable_name IN
 ("innodb_buffer_pool_chunk_size","innodb_buffer_pool_instances","innodb_buffer_pool_size");
@@ -10,7 +25,7 @@ Variable_name	Value
 innodb_buffer_pool_chunk_size	70254592
 innodb_buffer_pool_instances	31
 innodb_buffer_pool_size	2177892352
-# restart: --innodb-buffer-pool-instances=64 --innodb-buffer-pool-size=4G --innodb-buffer-pool-chunk-size=128M
+# restart: --debug=d,bp_topology_unavailable --innodb-buffer-pool-instances=64 --innodb-buffer-pool-size=4G --innodb-buffer-pool-chunk-size=128M
 SHOW VARIABLES
 WHERE Variable_name IN
 ("innodb_buffer_pool_chunk_size","innodb_buffer_pool_instances","innodb_buffer_pool_size");
@@ -18,7 +33,7 @@ Variable_name	Value
 innodb_buffer_pool_chunk_size	67108864
 innodb_buffer_pool_instances	64
 innodb_buffer_pool_size	4294967296
-# restart: --innodb-buffer-pool-instances=33 --innodb-buffer-pool-size=4G --innodb-buffer-pool-chunk-size=128M
+# restart: --debug=d,bp_topology_unavailable --innodb-buffer-pool-instances=33 --innodb-buffer-pool-size=4G --innodb-buffer-pool-chunk-size=128M
 SHOW VARIABLES
 WHERE Variable_name IN
 ("innodb_buffer_pool_chunk_size","innodb_buffer_pool_instances","innodb_buffer_pool_size");
