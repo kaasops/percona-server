@@ -258,6 +258,30 @@ ELSE()
    ADD_DEFINITIONS(-DMUTEX_SYS)
 ENDIF()
 
+# __attribute__((target("..."))) blocks inlining, so avoid it where possible:
+# build the CRC32 instructions into the baseline via compile options instead,
+# and let the CRC32 helper functions be plain inline functions.
+IF(MY_COMPILER_IS_GNU_OR_CLANG)
+  IF(CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|x86_64)$")
+    IF(CMAKE_CXX_COMPILER_ID MATCHES "GNU"
+       OR (CMAKE_CXX_COMPILER_ID MATCHES "Clang"
+           AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 14))
+      # With -mcrc32 -mpclmul, __builtin_ia32_crc32*() and the PCLMUL
+      # intrinsics are available without a target attribute, so the
+      # functions that use them can be inlined normally.
+      ADD_COMPILE_OPTIONS("-mcrc32" "-mpclmul")
+      ADD_DEFINITIONS(-DCRC32_NOT_NEED_TARGET_ATTR)
+    ENDIF()
+  ELSEIF(NOT APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+    IF(CMAKE_CXX_COMPILER_ID MATCHES "Clang"
+       AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 16)
+      # With -mcrc, __crc32c*() is available without a target attribute.
+      ADD_COMPILE_OPTIONS("-mcrc")
+      ADD_DEFINITIONS(-DCRC32_NOT_NEED_TARGET_ATTR)
+    ENDIF()
+  ENDIF()
+ENDIF()
+
 # Include directories under innobase
 INCLUDE_DIRECTORIES(${CMAKE_SOURCE_DIR}/storage/innobase/
                     ${CMAKE_SOURCE_DIR}/storage/innobase/include

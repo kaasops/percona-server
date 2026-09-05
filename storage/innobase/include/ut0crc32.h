@@ -184,14 +184,20 @@ extern bool ut_poly_mul_cpu_enabled;
 @param[in]      crc     base CRC32 value
 @param[in]      data    8 bytes data to be processed
 @return updated CRC32 value */
-#ifdef CRC32_x86_64
+#ifdef CRC32_NOT_NEED_TARGET_ATTR
+MY_ATTRIBUTE((always_inline))
+#elif defined(CRC32_x86_64)
 MY_ATTRIBUTE((target("sse4.2")))
 #elif defined(CRC32_ARM64_DEFAULT)
 MY_ATTRIBUTE((target("+crc")))
-#endif /* CRC32_x86_64 */
+#endif /* CRC32_NOT_NEED_TARGET_ATTR */
 static inline uint64_t crc32_update_uint64(uint64_t crc, uint64_t data) {
 #ifdef CRC32_x86_64
+#ifdef CRC32_NOT_NEED_TARGET_ATTR
+  return __builtin_ia32_crc32di(crc, data);
+#else
   return _mm_crc32_u64(crc, data);
+#endif /* CRC32_NOT_NEED_TARGET_ATTR */
 #elif defined(CRC32_ARM64)
   return (uint64_t)__crc32cd((uint32_t)crc, data);
 #endif /* CRC32_x86_64 */
@@ -200,6 +206,9 @@ static inline uint64_t crc32_update_uint64(uint64_t crc, uint64_t data) {
 /** Hashes a 64-bit integer with CRC32 instructions of the architecture.
 @param[in]	value	64-bit integer
 @return hashed value */
+#ifdef CRC32_NOT_NEED_TARGET_ATTR
+MY_ATTRIBUTE((always_inline))
+#endif
 static inline uint64_t crc32_hash_uint64(uint64_t value) {
   ut_ad(ut_crc32_cpu_enabled);
   value *= 0xb5eb6fbadd39bf9b;
