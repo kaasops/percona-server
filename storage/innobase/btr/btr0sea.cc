@@ -996,7 +996,7 @@ bool btr_search_guess_on_hash(const dtuple_t *tuple, ulint mode,
   {
     buf_pool_t *buf_pool = buf_pool_from_bpage(&block->page);
 
-    Counter::inc(buf_pool->stat.m_n_page_gets, block->page.id.page_no());
+    Counter::inc_by_cpu(buf_pool->stat.m_n_page_gets);
   }
 
   return true;

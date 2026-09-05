@@ -51,6 +51,14 @@ this program; if not, write to the Free Software Foundation, Inc.,
 /** Default number of slots to use in ib_counter_t */
 constexpr uint32_t IB_N_SLOTS = 64;
 
+/** Number of slots for counters indexed by the CPU running the thread. Sized
+so that every logical CPU of the largest machine we run on keeps a slot of its
+own: two sockets and 128 CPUs today, four sockets later. Oracle sizes the
+lock_sys shard mutexes by the same reasoning (lock_sys_t::SHARDS_COUNT). Slots
+cost a cache line each, so the headroom is paid in kilobytes, while a shared
+slot costs coherency traffic on every increment. */
+constexpr uint32_t IB_N_CPU_SLOTS = 512;
+
 /** Get the offset into the counter array. */
 template <typename Type, int N>
 struct generic_indexer_t {
@@ -322,6 +330,18 @@ inline Type sub(Shards<COUNT> &shards, size_t id, size_t n) {
 template <size_t COUNT>
 inline Type inc(Shards<COUNT> &shards, size_t id) {
   return (add(shards, id, 1));
+}
+
+/** Increment the shard belonging to the CPU that runs this thread. Use this
+where the counter is a plain event count and the key would otherwise come from
+the object being counted: keying by the object walks the whole shard array as
+the objects change, while keying by the CPU keeps each CPU on one cache line.
+Accuracy is unaffected - readers sum all shards.
+@param[in,out]  shards          Sharded counter to increment.
+@return previous value. */
+template <size_t COUNT>
+inline Type inc_by_cpu(Shards<COUNT> &shards) {
+  return (add(shards, cpu_indexer_t<>::get_rnd_index(), 1));
 }
 
 /** Decrement the counter of a shard by 1.

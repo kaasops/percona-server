@@ -125,10 +125,10 @@ throughput clearly from about 100000. */
 constexpr uint32_t BTR_CUR_FINE_HISTORY_LENGTH = 100000;
 
 /** Number of searches down the B-tree in btr_cur_search_to_nth_level(). */
-ib_counter_t<ulint, IB_N_SLOTS, cpu_indexer_t> btr_cur_n_non_sea;
+ib_counter_t<ulint, IB_N_CPU_SLOTS, cpu_indexer_t> btr_cur_n_non_sea;
 /** Number of successful adaptive hash index lookups in
 btr_cur_search_to_nth_level(). */
-ib_counter_t<ulint, IB_N_SLOTS, cpu_indexer_t> btr_cur_n_sea;
+ib_counter_t<ulint, IB_N_CPU_SLOTS, cpu_indexer_t> btr_cur_n_sea;
 /** Old value of btr_cur_n_non_sea.  Copied by
 srv_refresh_innodb_monitor_stats().  Referenced by
 srv_printf_innodb_monitor(). */

@@ -3596,7 +3596,7 @@ buf_page_t *buf_page_get_zip(const page_id_t &page_id,
   trx_t *trx = innobase_get_trx_for_slow_log();
   buf_pool_t *buf_pool = buf_pool_get(page_id);
 
-  Counter::inc(buf_pool->stat.m_n_page_gets, page_id.page_no());
+  Counter::inc_by_cpu(buf_pool->stat.m_n_page_gets);
 
   for (;;) {
   lookup:
@@ -4595,7 +4595,7 @@ template <typename T>
 buf_block_t *Buf_fetch<T>::single_page() {
   buf_block_t *block;
 
-  Counter::inc(m_buf_pool->stat.m_n_page_gets, m_page_id.page_no());
+  Counter::inc_by_cpu(m_buf_pool->stat.m_n_page_gets);
 
   for (;;) {
     if (static_cast<T *>(this)->get(block) == DB_NOT_FOUND) {
@@ -4914,7 +4914,7 @@ bool buf_page_optimistic_get(ulint rw_latch, buf_block_t *block,
 
   {
     auto buf_pool = buf_pool_from_block(block);
-    Counter::inc(buf_pool->stat.m_n_page_gets, block->page.id.page_no());
+    Counter::inc_by_cpu(buf_pool->stat.m_n_page_gets);
   }
 
   trx_stats::inc_page_get(trx, block->page.id.hash());
@@ -5010,7 +5010,7 @@ bool buf_page_get_known_nowait(ulint rw_latch, buf_block_t *block,
   ut_a((hint == Cache_hint::KEEP_OLD) || ibuf_count_get(block->page.id) == 0);
 #endif /* UNIV_IBUF_COUNT_DEBUG */
 
-  Counter::inc(buf_pool->stat.m_n_page_gets, block->page.id.page_no());
+  Counter::inc_by_cpu(buf_pool->stat.m_n_page_gets);
 
   auto *const trx = innobase_get_trx_for_slow_log();
   trx_stats::inc_page_get(trx, block->page.id.hash());
@@ -5083,7 +5083,7 @@ const buf_block_t *buf_page_try_get(const page_id_t &page_id,
 
   buf_block_dbg_add_level(block, SYNC_NO_ORDER_CHECK);
 
-  Counter::inc(buf_pool->stat.m_n_page_gets, block->page.id.page_no());
+  Counter::inc_by_cpu(buf_pool->stat.m_n_page_gets);
 
 #ifdef UNIV_IBUF_COUNT_DEBUG
   ut_a(ibuf_count_get(block->page.id) == 0);
