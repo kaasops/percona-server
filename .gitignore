@@ -34,3 +34,6 @@ scalability_jobs_*
 .settings/
 .idea
 
+build-debug/
+build-release/
+build-tsan/

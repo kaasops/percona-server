@@ -1,0 +1,14 @@
+# Options introduced by our patches that do not exist in a vanilla
+# Percona Server release, plus upstream options we investigated and
+# have specific operational guidance for even though we did not change
+# their code or default. Include this file from my.cnf (!include) to
+# apply them; every option is listed with its shipped default and the
+# loose- prefix so a plain vanilla server still starts if this file is
+# used against it.
+#
+# Each entry:
+#   DESCRIPTION: what the option does
+#   DEFAULT:     value that applies if left unset (also the value below)
+#   RECOMMENDED: guidance if it differs from the default
+
+[mysqld]
