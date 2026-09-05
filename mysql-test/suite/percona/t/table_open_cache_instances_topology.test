@@ -1,0 +1,316 @@
+#
+# table_open_cache_instances: raised ceiling (MAX_TABLE_CACHES 64 -> 256)
+# and the unconditional physical-core-count cap that
+# Table_cache_manager::resolve_instance_count() applies before
+# table_def_init(), regardless of how the value was set (default, my.cnf,
+# command line) - by product policy the cap is never opt-in and never
+# bypassable, but it never touches an explicit value that is already at or
+# below the cap either.
+#
+# Requires a debug build: every scenario but (j) forces a specific branch
+# via a DBUG_EXECUTE_IF point (table_cache_fake_topology_61 /
+# table_cache_topology_unavailable), so results do not depend on this
+# host's actual physical core count.
+--source include/have_debug.inc
+
+--let $error_log = $MYSQLTEST_VARDIR/log/mysqld.1.err
+# Non-$-prefixed copy: mysqltest only exports a --let variable to the OS
+# environment (and therefore to $ENV{...} in --perl blocks) when its name
+# has no leading $ - see client/mysqltest.cc var_set().
+--let error_log = $error_log
+
+--echo #
+--echo # Scenario (d), part 1: CPU topology snapshot forced unavailable
+--echo # (guard branch, same DBUG point family as the buffer-pool-instances
+--echo # cap), option not set - the cap is skipped entirely and the
+--echo # unmodified default (16) comes through, same as pre-patch behavior.
+--echo #
+--let $restart_parameters = restart: --debug=d,table_cache_topology_unavailable
+--source include/restart_mysqld.inc
+
+--let $tci_d1 = query_get_value(SELECT @@GLOBAL.table_open_cache_instances AS v, v, 1)
+if ($tci_d1 != 16) {
+  --die Scenario (d) part 1: expected the unmodified default (16) with topology unavailable, got $tci_d1
+}
+--echo scenario (d) part 1: default (16) unaffected when topology is unavailable
+
+--echo #
+--echo # Scenario (a): fake 61-physical-core topology injected, option not
+--echo # set - the default (16) is not raised to meet the (higher, fake)
+--echo # core count: this cap only ever lowers, never raises.
+--echo #
+--let $restart_parameters = restart: --debug=d,table_cache_fake_topology_61
+--source include/restart_mysqld.inc
+
+--let $tci_a = query_get_value(SELECT @@GLOBAL.table_open_cache_instances AS v, v, 1)
+if ($tci_a != 16) {
+  --die Scenario (a): expected the unmodified default (16), got $tci_a
+}
+--echo scenario (a): default (16) unaffected by a higher (fake) core count
+
+--let $assert_text = scenario (a): no capped-instances log line for the unmodified default
+--let $assert_file = $error_log
+--let $assert_select = table_open_cache_instances capped from
+# Scoped to lines logged since THIS restart's own startup: mtr's initial
+# server bring-up (before this test's first restart) already runs with
+# real, uninjected topology, and on a host with fewer than 16 physical
+# cores that boot logs a real capped-instances line of its own - a
+# file-wide count would wrongly count that unrelated line here.
+--let $assert_only_after = starting as process
+--let $assert_count = 0
+--source include/assert_grep.inc
+
+--echo #
+--echo # Scenario (v): fake 61-physical-core topology injected, explicit
+--echo # value (32) below the (fake) cap - the ceiling is a ceiling, not a
+--echo # correction: an explicit value at or below it passes through
+--echo # untouched. Without the injection a host with fewer than 32
+--echo # physical cores would have reduced 32 to its own core count -
+--echo # the injection is what makes this scenario meaningful on any host.
+--echo #
+--let $restart_parameters = restart: --debug=d,table_cache_fake_topology_61 --table-open-cache-instances=32
+--source include/restart_mysqld.inc
+
+--let $tci_v = query_get_value(SELECT @@GLOBAL.table_open_cache_instances AS v, v, 1)
+if ($tci_v != 32) {
+  --die Scenario (v): expected the explicit value (32) untouched, got $tci_v
+}
+--echo scenario (v): explicit value (32) below the cap passes through untouched
+
+--echo #
+--echo # Scenario (g-antiregression): same explicit value (32) as scenario
+--echo # (v), but with table_open_cache set very low (100) - a small
+--echo # table_open_cache must not, by itself, reduce the instance count.
+--echo # A capacity clamp keyed off table_open_cache would have computed
+--echo # 32 -> 12 here.
+--echo #
+--let $restart_parameters = restart: --debug=d,table_cache_fake_topology_61 --table-open-cache-instances=32 --table-open-cache=100
+--source include/restart_mysqld.inc
+
+--let $tci_g = query_get_value(SELECT @@GLOBAL.table_open_cache_instances AS v, v, 1)
+if ($tci_g != 32) {
+  --die Scenario (g-antiregression): expected the explicit value (32) untouched by a small table_open_cache, got $tci_g
+}
+--echo scenario (g-antiregression): a small table_open_cache does not reduce the instance count
+
+--let $assert_text = scenario (g-antiregression): no capped-instances log line
+--let $assert_file = $error_log
+--let $assert_select = table_open_cache_instances capped from
+--let $assert_only_after = starting as process
+--let $assert_count = 0
+--source include/assert_grep.inc
+
+--echo #
+--echo # Scenario (b-canary): fake 61-physical-core topology injected,
+--echo # explicit value (256, the raised ceiling) above the (fake) cap - the
+--echo # cap fires, reducing it to the injected core count, with a log line
+--echo # naming old/new/core-count. 61 is deliberately not a real core count
+--echo # of any host in the fleet, including the 64-physical-core target
+--echo # machine - a double canary: this scenario cannot pass by accident on
+--echo # a real host, and the log line's own text (not just the numbers) is
+--echo # checked, distinguishing "cap fired via the injection" from any
+--echo # coincidental number match.
+--echo #
+--let $restart_parameters = restart: --debug=d,table_cache_fake_topology_61 --table-open-cache-instances=256
+--source include/restart_mysqld.inc
+
+--let $tci_b = query_get_value(SELECT @@GLOBAL.table_open_cache_instances AS v, v, 1)
+if ($tci_b != 61) {
+  --die Scenario (b-canary): expected the injected cap (61), got $tci_b
+}
+--echo scenario (b-canary): explicit value (256) above the injected cap (61) is capped
+
+--perl
+  my $log = $ENV{error_log};
+  open(FILE, "<", $log) or die("Unable to open $log: $!\n");
+  my $found = 0;
+  while (<FILE>) {
+    if (/table_open_cache_instances capped from 256 to 61: limited to the number of detected physical CPU cores \(61\)/) {
+      $found = 1;
+    }
+  }
+  close(FILE);
+  if ($found) {
+    print "PASS: capped-instances log line names 256 -> 61 (61 physical cores)\n";
+  } else {
+    print "FAIL: no capped-instances log line naming 256 -> 61 (61 physical cores) found\n";
+  }
+EOF
+
+--let $assert_text = scenario (b-canary): capped-instances log line occurs exactly once
+--let $assert_file = $error_log
+--let $assert_select = table_open_cache_instances capped from
+--let $assert_only_after = starting as process
+--let $assert_count = 1
+--source include/assert_grep.inc
+
+--echo #
+--echo # Scenario (d), part 2: CPU topology snapshot forced unavailable,
+--echo # explicit value (256, the raised ceiling) - the cap is skipped
+--echo # (deliberately no injected core count to cap against), so the raised
+--echo # ceiling is functionally reachable, not just a compile-time constant.
+--echo # No capped-instances line is expected from this restart.
+--echo #
+--let $restart_parameters = restart: --debug=d,table_cache_topology_unavailable --table-open-cache-instances=256
+--source include/restart_mysqld.inc
+
+--let $tci_d2 = query_get_value(SELECT @@GLOBAL.table_open_cache_instances AS v, v, 1)
+if ($tci_d2 != 256) {
+  --die Scenario (d) part 2: expected the raised ceiling (256) with topology unavailable, got $tci_d2
+}
+--echo scenario (d) part 2: raised ceiling (256) reachable when topology is unavailable
+
+--let $assert_text = scenario (d) part 2: no capped-instances log line
+--let $assert_file = $error_log
+--let $assert_select = table_open_cache_instances capped from
+--let $assert_only_after = starting as process
+--let $assert_count = 0
+--source include/assert_grep.inc
+
+--echo #
+--echo # Scenario (e): fake 61-physical-core topology injected, explicit
+--echo # value (61) exactly at the (fake) cap - open the same table from
+--echo # enough distinct connections to reach every shard
+--echo # (Table_cache_manager::get_cache() picks the shard by
+--echo # thd->thread_id() % table_cache_instances, not by table hash, so
+--echo # touching all 61 shards needs distinct connections, not just
+--echo # distinct tables), then FLUSH TABLES (locks every shard via
+--echo # lock_all_and_tdc()) and SHOW OPEN TABLES (Table_cache_iterator,
+--echo # walks every shard's cache_element up to table_cache_instances).
+--echo # Under a debug/SAFE_MUTEX build this crashes immediately on any
+--echo # shard whose mutex was never init()-ed - exactly what a wrong
+--echo # instance count reaching table_cache_manager.init(), or the
+--echo # separately-fixed [j] error-path typo, could leave behind.
+--echo #
+--let $restart_parameters = restart: --debug=d,table_cache_fake_topology_61 --table-open-cache-instances=61
+--source include/restart_mysqld.inc
+
+--let $tci_e = query_get_value(SELECT @@GLOBAL.table_open_cache_instances AS v, v, 1)
+if ($tci_e != 61) {
+  --die Scenario (e): expected the injected cap (61) exactly, got $tci_e
+}
+
+CREATE TABLE t_e_shards (a INT) ENGINE=InnoDB;
+
+--disable_query_log
+--disable_result_log
+let $i = 0;
+# 90, comfortably more than the 61 shards: guards against a handful of
+# thread ids being consumed by other internal server connections/threads
+# between iterations of this loop, which would otherwise leave gaps in the
+# id sequence this relies on to reach every shard.
+while ($i < 90) {
+  --connect (conn_e_$i, localhost, root,,,,)
+  SELECT * FROM t_e_shards;
+  inc $i;
+}
+--enable_result_log
+--enable_query_log
+
+--connection default
+FLUSH TABLES;
+SHOW OPEN TABLES LIKE 't_e_shards';
+
+--disable_query_log
+let $i = 0;
+while ($i < 90) {
+  --disconnect conn_e_$i
+  inc $i;
+}
+--enable_query_log
+--connection default
+
+DROP TABLE t_e_shards;
+--echo scenario (e): FLUSH TABLES / SHOW OPEN TABLES touched every shard without a debug-build mutex assertion
+
+--echo #
+--echo # Scenario (j): no injections, real CPU topology - cross-check
+--echo # against this host's own /sys/devices/system/cpu topology, read
+--echo # independently of the server (same methodology as
+--echo # sql/cpu_topology.cc's sysfs walk: distinct (physical_package_id,
+--echo # core_id) pairs among online CPUs). Precondition: skipped when this
+--echo # process is restricted to a CPU subset (taskset/cgroup cpuset) -
+--echo # the server's own topology snapshot filters by the process affinity
+--echo # mask (cpu_topology.cc:529-530,883-889), which this simple sysfs
+--echo # walk does not; comparing nproc (affinity-aware) against the raw
+--echo # online-CPU count from sysfs (not affinity-aware) detects that case.
+--echo #
+--let $restart_parameters = restart:
+--source include/restart_mysqld.inc
+
+--let $phys_cores_file = $MYSQLTEST_VARDIR/tmp/_tci_j_phys_cores.txt
+--let $online_count_file = $MYSQLTEST_VARDIR/tmp/_tci_j_online_count.txt
+--let $nproc_file = $MYSQLTEST_VARDIR/tmp/_tci_j_nproc.txt
+# Non-$-prefixed copies, same reason as $error_log/error_log above: these
+# need to reach $ENV{...} inside the --perl block below.
+--let phys_cores_file = $phys_cores_file
+--let online_count_file = $online_count_file
+--let nproc_file = $nproc_file
+--perl
+  use strict;
+  opendir(my $dh, "/sys/devices/system/cpu") or die "Cannot open sysfs cpu dir: $!\n";
+  my @cpu_dirs = grep { /^cpu\d+$/ } readdir($dh);
+  closedir($dh);
+
+  my %cores;
+  my $online_count = 0;
+  foreach my $d (@cpu_dirs) {
+    my $base = "/sys/devices/system/cpu/$d";
+    my $online = 1;
+    if (open(my $fh, "<", "$base/online")) {
+      my $v = <$fh>; chomp $v; $online = $v + 0; close($fh);
+    }
+    next unless $online;
+    $online_count++;
+    my ($cpu_id) = $d =~ /^cpu(\d+)$/;
+    my $socket = 0;
+    if (open(my $fh, "<", "$base/topology/physical_package_id")) {
+      my $v = <$fh>; chomp $v; $socket = $v + 0; close($fh);
+    }
+    my $core = $cpu_id;
+    if (open(my $fh, "<", "$base/topology/core_id")) {
+      my $v = <$fh>; chomp $v; $core = $v + 0; close($fh);
+    }
+    $cores{"$socket:$core"} = 1;
+  }
+  my $phys_cores = scalar(keys %cores);
+  my $nproc = `nproc`; chomp $nproc; $nproc += 0;
+
+  open(my $out1, ">", $ENV{phys_cores_file}) or die "Unable to write marker: $!\n";
+  print $out1 $phys_cores;
+  close($out1);
+  open(my $out2, ">", $ENV{online_count_file}) or die "Unable to write marker: $!\n";
+  print $out2 $online_count;
+  close($out2);
+  open(my $out3, ">", $ENV{nproc_file}) or die "Unable to write marker: $!\n";
+  print $out3 $nproc;
+  close($out3);
+EOF
+
+--let $phys_cores = `SELECT LOAD_FILE('$phys_cores_file')`
+--let $online_count = `SELECT LOAD_FILE('$online_count_file')`
+--let $nproc = `SELECT LOAD_FILE('$nproc_file')`
+--remove_file $phys_cores_file
+--remove_file $online_count_file
+--remove_file $nproc_file
+
+# This scenario only (not the rest of the file) is skipped when the
+# process is restricted to a CPU subset: --skip would abort the whole
+# test here, discarding scenarios (d)-(e) already verified above. The
+# single --echo below (unconditional, outside both branches) is what
+# makes the .result identical regardless of which branch runs - a
+# branch-dependent --echo here would make the recorded .result match
+# only the branch it was recorded under, and mismatch (not "skipped")
+# on a differently-restricted host.
+--echo scenario (j): cross-check against /sys topology; skipped when affinity-restricted
+if ($online_count == $nproc) {
+  --let $tci_expected_j = $phys_cores
+  if ($phys_cores > 16) {
+    --let $tci_expected_j = 16
+  }
+
+  --let $tci_j = query_get_value(SELECT @@GLOBAL.table_open_cache_instances AS v, v, 1)
+  if ($tci_j != $tci_expected_j) {
+    --die Scenario (j): expected min(16, phys_cores=$phys_cores) = $tci_expected_j, got $tci_j
+  }
+}

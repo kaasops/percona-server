@@ -26,10 +26,16 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <algorithm>
+
 #include "my_compiler.h"
 #include "my_dbug.h"
 #include "my_macros.h"
 #include "mysql/components/services/bits/psi_bits.h"
+#include "mysql/components/services/log_builtins.h"
+#include "mysql/my_loglevel.h"
+#include "mysqld_error.h"
+#include "sql/cpu_topology.h"
 #include "sql/sql_test.h"  // lock_descriptions[]
 #include "thr_lock.h"
 #include "thr_mutex.h"
@@ -218,6 +224,64 @@ bool Table_cache_manager::init() {
   }
 
   return false;
+}
+
+/**
+  Pure cap formula. @sa Table_cache_manager::compute_effective_instance_count()
+  in table_cache.h for the contract; kept free of global reads so unit tests
+  can drive it directly.
+*/
+
+ulong Table_cache_manager::compute_effective_instance_count(
+    ulong requested, bool topology_ok, ulong phys_cores) {
+  /* cap = topology_ok ? phys_cores : no cap (min(requested, cap) reduces to
+  just "requested" when there is no cap to apply). */
+  return std::clamp<ulong>(
+      topology_ok ? std::min<ulong>(requested, phys_cores) : requested, 1,
+      MAX_TABLE_CACHES);
+}
+
+/**
+  Resolve the effective number of table cache instances.
+  @sa Table_cache_manager::resolve_instance_count() in table_cache.h for
+  the full contract.
+*/
+
+void Table_cache_manager::resolve_instance_count() {
+  const ulong requested = table_cache_instances;
+
+  const Sql_cpu_topology &cpu_topology = sql_machine_topology().cpu;
+
+  /* Same guard as the buffer-pool-instances cap (ha_innodb.cc): a
+  topology snapshot that failed to build reports initialized=false and
+  effective_cpu_capacity()==0 - treat that as "cap unavailable" rather
+  than as "0 physical cores", which would otherwise collapse every
+  configuration (including the default one) down to 1 instance. */
+  bool topology_ok =
+      cpu_topology.initialized && cpu_topology.effective_cpu_capacity() > 0;
+  DBUG_EXECUTE_IF("table_cache_topology_unavailable", topology_ok = false;);
+
+  ulong phys_cores = static_cast<ulong>(cpu_topology.effective_cpu_capacity());
+  /* Fixed value deliberately not matching any real host in the fleet,
+  including the 64-physical-core target machine: lets mtr exercise the
+  cap's arithmetic (request vs. cap, log line content) deterministically,
+  without the test depending on - or being invalidated by - the actual
+  core count of whatever host runs it. */
+  DBUG_EXECUTE_IF("table_cache_fake_topology_61", phys_cores = 61;);
+
+  const ulong effective =
+      compute_effective_instance_count(requested, topology_ok, phys_cores);
+
+  if (effective < requested) {
+    LogErr(SYSTEM_LEVEL, ER_TABLE_CACHE_INSTANCES_CAPPED, requested, effective,
+           phys_cores);
+  }
+
+  table_cache_instances = effective;
+  table_cache_size_per_instance =
+      table_cache_per_instance_limit(table_cache_size, effective);
+  table_cache_triggers_per_instance =
+      table_cache_per_instance_limit(table_cache_triggers, effective);
 }
 
 /** Destroy all instances of table cache which were used by server. */

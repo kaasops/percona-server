@@ -28,6 +28,7 @@
 #include <stddef.h>
 #include <sys/types.h>
 
+#include <algorithm>
 #include <atomic>
 #include <memory>
 #include <string>
@@ -52,9 +53,33 @@
 
 class Table_cache_element;
 
-extern ulong table_cache_size_per_instance, table_cache_instances,
-    table_cache_triggers, table_cache_triggers_per_instance;
+extern ulong table_cache_size, table_cache_size_per_instance,
+    table_cache_instances, table_cache_triggers,
+    table_cache_triggers_per_instance;
 extern struct aggregated_stats global_aggregated_stats;
+
+/**
+  Compute the per-instance soft limit for a table-cache-family GLOBAL_VAR
+  (table_open_cache/table_open_cache_triggers) given the current number of
+  instances.
+
+  The division truncates to 0 whenever the total is smaller than the
+  instance count - e.g. table_open_cache set very low at runtime while
+  table_open_cache_instances stays at a larger value picked at startup. A
+  per-instance limit of 0 does not mean "unlimited": it means every TABLE
+  is closed the instant it is released, i.e. the cache is disabled for
+  that shard. That is upstream behaviour and it is kept deliberately -
+  table_open_cache is documented as a soft limit over all instances, and
+  flooring the per-instance share at 1 would silently raise the real
+  minimum to one TABLE per instance and make a small table_open_cache
+  stop evicting at all (percona.bug95923 relies on eviction at
+  table_open_cache=1). Only the divisor is guarded, against instances=0.
+  Used by both the startup instance-count resolver and the runtime
+  ON_UPDATE hooks of table_open_cache/table_open_cache_triggers.
+*/
+inline ulong table_cache_per_instance_limit(ulong total, ulong instances) {
+  return total / std::max<ulong>(1, instances);
+}
 
 /**
   Cache for open TABLE objects.
@@ -205,10 +230,59 @@ class Table_cache {
 class Table_cache_manager {
  public:
   /** Maximum supported number of table cache instances. */
-  static const int MAX_TABLE_CACHES = 64;
+  static const int MAX_TABLE_CACHES = 256;
 
   /** Default number of table cache instances */
   static const int DEFAULT_MAX_TABLE_CACHES = 16;
+
+  /**
+    Resolve the effective number of table cache instances from the value
+    table_open_cache_instances got after command-line/option-file parsing
+    (DEFAULT 16, or an explicit 1..MAX_TABLE_CACHES), capping it by the
+    machine's physical CPU core count, and write the result back to
+    table_cache_instances - the only writer, called exactly once, before
+    table_def_init() creates the first TABLE_SHARE (whose
+    cache_element[] array is sized off table_cache_instances at that
+    point, sql/table.cc).
+
+    effective = clamp(min(requested, cap), 1, MAX_TABLE_CACHES)
+    cap       = topology_ok ? phys_cores : no cap (topology unavailable
+                degrades to the pre-cap request, same policy as the
+                buffer-pool-instances cap in ha_innodb.cc)
+
+    The cap is unconditional product policy, not opt-in: it applies the
+    same way to the default and to an explicitly configured value, and
+    every time it actually lowers the value it is logged
+    (ER_TABLE_CACHE_INSTANCES_CAPPED, SYSTEM_LEVEL). An explicit value at
+    or below the cap is never touched - this is a ceiling, not a
+    correction of the admin's choice.
+
+    Also recomputes table_cache_size_per_instance and
+    table_cache_triggers_per_instance for the resolved instance count
+    (table_cache_per_instance_limit), since adjust_table_cache_size()
+    already computed them once against the pre-resolution value.
+  */
+  static void resolve_instance_count();
+
+  /**
+    Pure cap formula behind resolve_instance_count(), split out so it can
+    be exercised by unit tests without going through global sysvars,
+    DBUG_EXECUTE_IF, or real CPU topology detection.
+
+    @param requested    table_open_cache_instances value after option
+                         parsing (DEFAULT 16, or explicit 1..MAX_TABLE_CACHES).
+    @param topology_ok  Whether a physical-core count is available to cap
+                         against (false degrades to "no cap", same as an
+                         unavailable topology snapshot).
+    @param phys_cores   Physical core count; ignored when topology_ok is
+                         false.
+
+    @return clamp(topology_ok ? min(requested, phys_cores) : requested,
+                   1, MAX_TABLE_CACHES)
+  */
+  static ulong compute_effective_instance_count(ulong requested,
+                                                bool topology_ok,
+                                                ulong phys_cores);
 
   bool init();
   void destroy();

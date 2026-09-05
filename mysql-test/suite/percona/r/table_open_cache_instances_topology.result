@@ -1,0 +1,97 @@
+#
+# Scenario (d), part 1: CPU topology snapshot forced unavailable
+# (guard branch, same DBUG point family as the buffer-pool-instances
+# cap), option not set - the cap is skipped entirely and the
+# unmodified default (16) comes through, same as pre-patch behavior.
+#
+# restart: --debug=d,table_cache_topology_unavailable
+scenario (d) part 1: default (16) unaffected when topology is unavailable
+#
+# Scenario (a): fake 61-physical-core topology injected, option not
+# set - the default (16) is not raised to meet the (higher, fake)
+# core count: this cap only ever lowers, never raises.
+#
+# restart: --debug=d,table_cache_fake_topology_61
+scenario (a): default (16) unaffected by a higher (fake) core count
+include/assert_grep.inc [scenario (a): no capped-instances log line for the unmodified default]
+#
+# Scenario (v): fake 61-physical-core topology injected, explicit
+# value (32) below the (fake) cap - the ceiling is a ceiling, not a
+# correction: an explicit value at or below it passes through
+# untouched. Without the injection a host with fewer than 32
+# physical cores would have reduced 32 to its own core count -
+# the injection is what makes this scenario meaningful on any host.
+#
+# restart: --debug=d,table_cache_fake_topology_61 --table-open-cache-instances=32
+scenario (v): explicit value (32) below the cap passes through untouched
+#
+# Scenario (g-antiregression): same explicit value (32) as scenario
+# (v), but with table_open_cache set very low (100) - a small
+# table_open_cache must not, by itself, reduce the instance count.
+# A capacity clamp keyed off table_open_cache would have computed
+# 32 -> 12 here.
+#
+# restart: --debug=d,table_cache_fake_topology_61 --table-open-cache-instances=32 --table-open-cache=100
+scenario (g-antiregression): a small table_open_cache does not reduce the instance count
+include/assert_grep.inc [scenario (g-antiregression): no capped-instances log line]
+#
+# Scenario (b-canary): fake 61-physical-core topology injected,
+# explicit value (256, the raised ceiling) above the (fake) cap - the
+# cap fires, reducing it to the injected core count, with a log line
+# naming old/new/core-count. 61 is deliberately not a real core count
+# of any host in the fleet, including the 64-physical-core target
+# machine - a double canary: this scenario cannot pass by accident on
+# a real host, and the log line's own text (not just the numbers) is
+# checked, distinguishing "cap fired via the injection" from any
+# coincidental number match.
+#
+# restart: --debug=d,table_cache_fake_topology_61 --table-open-cache-instances=256
+scenario (b-canary): explicit value (256) above the injected cap (61) is capped
+PASS: capped-instances log line names 256 -> 61 (61 physical cores)
+include/assert_grep.inc [scenario (b-canary): capped-instances log line occurs exactly once]
+#
+# Scenario (d), part 2: CPU topology snapshot forced unavailable,
+# explicit value (256, the raised ceiling) - the cap is skipped
+# (deliberately no injected core count to cap against), so the raised
+# ceiling is functionally reachable, not just a compile-time constant.
+# No capped-instances line is expected from this restart.
+#
+# restart: --debug=d,table_cache_topology_unavailable --table-open-cache-instances=256
+scenario (d) part 2: raised ceiling (256) reachable when topology is unavailable
+include/assert_grep.inc [scenario (d) part 2: no capped-instances log line]
+#
+# Scenario (e): fake 61-physical-core topology injected, explicit
+# value (61) exactly at the (fake) cap - open the same table from
+# enough distinct connections to reach every shard
+# (Table_cache_manager::get_cache() picks the shard by
+# thd->thread_id() % table_cache_instances, not by table hash, so
+# touching all 61 shards needs distinct connections, not just
+# distinct tables), then FLUSH TABLES (locks every shard via
+# lock_all_and_tdc()) and SHOW OPEN TABLES (Table_cache_iterator,
+# walks every shard's cache_element up to table_cache_instances).
+# Under a debug/SAFE_MUTEX build this crashes immediately on any
+# shard whose mutex was never init()-ed - exactly what a wrong
+# instance count reaching table_cache_manager.init(), or the
+# separately-fixed [j] error-path typo, could leave behind.
+#
+# restart: --debug=d,table_cache_fake_topology_61 --table-open-cache-instances=61
+CREATE TABLE t_e_shards (a INT) ENGINE=InnoDB;
+FLUSH TABLES;
+SHOW OPEN TABLES LIKE 't_e_shards';
+Database	Table	In_use	Name_locked
+DROP TABLE t_e_shards;
+scenario (e): FLUSH TABLES / SHOW OPEN TABLES touched every shard without a debug-build mutex assertion
+#
+# Scenario (j): no injections, real CPU topology - cross-check
+# against this host's own /sys/devices/system/cpu topology, read
+# independently of the server (same methodology as
+# sql/cpu_topology.cc's sysfs walk: distinct (physical_package_id,
+# core_id) pairs among online CPUs). Precondition: skipped when this
+# process is restricted to a CPU subset (taskset/cgroup cpuset) -
+# the server's own topology snapshot filters by the process affinity
+# mask (cpu_topology.cc:529-530,883-889), which this simple sysfs
+# walk does not; comparing nproc (affinity-aware) against the raw
+# online-CPU count from sysfs (not affinity-aware) detects that case.
+#
+# restart:
+scenario (j): cross-check against /sys topology; skipped when affinity-restricted

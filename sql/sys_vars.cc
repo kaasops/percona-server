@@ -5103,7 +5103,8 @@ static bool fix_table_cache_size(sys_var *, THD *, enum_var_type) {
     in all table cache instances. Once this value is updated we need to
     update value of a per-instance soft limit on table cache size.
   */
-  table_cache_size_per_instance = table_cache_size / table_cache_instances;
+  table_cache_size_per_instance =
+      table_cache_per_instance_limit(table_cache_size, table_cache_instances);
   return false;
 }
 
@@ -5140,8 +5141,8 @@ static bool fix_table_cache_triggers(sys_var *, THD *, enum_var_type) {
     soft limit on number of TABLE objects with fully loaded triggers in a
     table cache.
   */
-  table_cache_triggers_per_instance =
-      table_cache_triggers / table_cache_instances;
+  table_cache_triggers_per_instance = table_cache_per_instance_limit(
+      table_cache_triggers, table_cache_instances);
   return false;
 }
 

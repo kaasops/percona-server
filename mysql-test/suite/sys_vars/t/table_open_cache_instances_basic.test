@@ -17,6 +17,10 @@
 #  * Value Check                                                              #
 #  * Scope Check                                                              #
 #                                                                             #
+# The default was 16 unconditionally; a physical-core cap can now lower       #
+# the effective value below 16 on hosts with fewer physical cores, so the     #
+# value itself is host-dependent and no longer asserted as a literal here     #
+# - see the range/consistency check at the end of this file instead.          #
 #                                                                             #
 ###############################################################################
 
@@ -24,7 +28,8 @@
 --echo ####################################################################
 --echo #   Displaying default value                                       #
 --echo ####################################################################
-SELECT @@GLOBAL.table_open_cache_instances;
+SELECT COUNT(@@GLOBAL.table_open_cache_instances);
+--echo 1 Expected
 
 
 --echo ####################################################################
@@ -34,7 +39,8 @@ SELECT @@GLOBAL.table_open_cache_instances;
 --error ER_INCORRECT_GLOBAL_LOCAL_VAR
 SET @@GLOBAL.table_open_cache_instances=1;
 
-SELECT @@GLOBAL.table_open_cache_instances;
+SELECT COUNT(@@GLOBAL.table_open_cache_instances);
+--echo 1 Expected
 
 
 --echo #################################################################
@@ -47,13 +53,15 @@ FROM performance_schema.global_variables
 WHERE VARIABLE_NAME='table_open_cache_instances';
 --enable_warnings
 
-SELECT @@GLOBAL.table_open_cache_instances;
+SELECT COUNT(@@GLOBAL.table_open_cache_instances);
+--echo 1 Expected
 
 --disable_warnings
-SELECT VARIABLE_VALUE
-FROM performance_schema.global_variables 
+SELECT COUNT(VARIABLE_VALUE)
+FROM performance_schema.global_variables
 WHERE VARIABLE_NAME='table_open_cache_instances';
 --enable_warnings
+--echo 1 Expected
 
 
 --echo ######################################################################
@@ -67,12 +75,36 @@ SELECT @@table_open_cache_instances = @@GLOBAL.table_open_cache_instances;
 --echo #  Check if variable has only the GLOBAL scope                       #
 --echo ######################################################################
 
-SELECT @@table_open_cache_instances;
+SELECT COUNT(@@table_open_cache_instances);
+--echo 1 Expected
 
-SELECT @@GLOBAL.table_open_cache_instances;
+SELECT COUNT(@@GLOBAL.table_open_cache_instances);
+--echo 1 Expected
 
 --error ER_INCORRECT_GLOBAL_LOCAL_VAR
 SELECT @@local.table_open_cache_instances;
 
 --error ER_INCORRECT_GLOBAL_LOCAL_VAR
 SELECT @@SESSION.table_open_cache_instances;
+
+
+--echo ######################################################################
+--echo #  Check that the effective value is within the documented range     #
+--echo #  (1..256, Table_cache_manager::MAX_TABLE_CACHES) and self-         #
+--echo #  consistent with performance_schema. Not printed as a literal: the #
+--echo #  default is host-dependent under the physical-core cap.            #
+--echo ######################################################################
+--let $tc_instances = query_get_value(SELECT @@GLOBAL.table_open_cache_instances AS v, v, 1)
+if ($tc_instances < 1) {
+  --die table_open_cache_instances is below the valid range (< 1)
+}
+if ($tc_instances > 256) {
+  --die table_open_cache_instances is above the valid range (> 256)
+}
+--echo table_open_cache_instances is within the valid range 1..256
+
+--let $tc_instances_ps = query_get_value(SELECT VARIABLE_VALUE AS v FROM performance_schema.global_variables WHERE VARIABLE_NAME='table_open_cache_instances', v, 1)
+if ($tc_instances != $tc_instances_ps) {
+  --die table_open_cache_instances disagrees with performance_schema.global_variables
+}
+--echo table_open_cache_instances agrees with performance_schema.global_variables

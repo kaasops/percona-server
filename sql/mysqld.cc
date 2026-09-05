@@ -8109,6 +8109,17 @@ static int init_server_components() {
   */
   mdl_init();
   partitioning_init();
+
+  /* Must resolve the effective table cache instance count before
+  table_def_init() below: it initializes exactly table_cache_instances
+  Table_cache slots (table_cache_manager.init()) and creates the first
+  TABLE_SHARE, whose cache_element[] array is sized off the same variable
+  at that point (sql/table.cc) - both need the final, capped value, not
+  the raw one option parsing produced. Skipped for --help/--validate-config,
+  like the rest of this function's real initialization work. */
+  if (!is_help_or_validate_option()) {
+    Table_cache_manager::resolve_instance_count();
+  }
   if (table_def_init() || hostname_cache_init(host_cache_size))
     unireg_abort(MYSQLD_ABORT_EXIT);
 
@@ -10939,9 +10950,15 @@ static void adjust_table_cache_size(ulong requested_open_files) {
     table_cache_size = limit;
   }
 
-  table_cache_size_per_instance = table_cache_size / table_cache_instances;
-  table_cache_triggers_per_instance =
-      table_cache_triggers / table_cache_instances;
+  /* table_cache_instances still holds the raw, pre-cap value here:
+  Table_cache_manager::resolve_instance_count() (init_server_components(),
+  after adjust_related_options()) recomputes both of these again for the
+  effective, capped value - this call only needs to not divide by/into 0
+  in the meantime. */
+  table_cache_size_per_instance =
+      table_cache_per_instance_limit(table_cache_size, table_cache_instances);
+  table_cache_triggers_per_instance = table_cache_per_instance_limit(
+      table_cache_triggers, table_cache_instances);
 }
 
 static void adjust_table_def_size() {

@@ -13224,6 +13224,9 @@ ER_IB_MSG_BUFFER_POOL_INIT_FAILED
 ER_IB_MSG_LOG_THREAD_PRIORITY
   eng "%s"
 
+ER_TABLE_CACHE_INSTANCES_CAPPED
+  eng "table_open_cache_instances capped from %lu to %lu: limited to the number of detected physical CPU cores (%lu)"
+
 #
 # End of Percona Server 8.4 error log messages
 #

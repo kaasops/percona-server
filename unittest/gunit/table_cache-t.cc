@@ -26,6 +26,7 @@
 
 #include "lex_string.h"
 #include "my_inttypes.h"
+#include "sql/cpu_topology.h"
 #include "sql/mysqld_thd_manager.h"
 #include "sql/table_cache.h"
 #include "storage/example/ha_example.h"
@@ -1680,6 +1681,113 @@ TEST_F(TableCacheDoubleCacheTest, Iterator) {
   share_2.destroy_table(table_3);
   share_1.destroy_table(table_4);
   share_2.destroy_table(table_5);
+}
+
+/*
+  Coverage for Table_cache_manager::compute_effective_instance_count() -
+  the pure cap formula behind resolve_instance_count() (sql/table_cache.cc).
+  Exercised directly with synthetic inputs, not through global sysvars,
+  DBUG_EXECUTE_IF or real CPU topology detection - resolve_instance_count()
+  itself is only reachable from a running server (init_server_components()).
+*/
+
+TEST(TableCacheInstanceResolverTest, CapsBelowSixteenPhysicalCores) {
+  // Default request (16) on a host with fewer physical cores than that is
+  // capped down to the core count.
+  EXPECT_EQ(8U, Table_cache_manager::compute_effective_instance_count(
+                    16, true, 8));
+}
+
+TEST(TableCacheInstanceResolverTest, DefaultUntouchedAtOrAboveSixteenCores) {
+  EXPECT_EQ(16U, Table_cache_manager::compute_effective_instance_count(
+                     16, true, 64));
+}
+
+TEST(TableCacheInstanceResolverTest, ExplicitAtOrBelowCapPassesThrough) {
+  EXPECT_EQ(32U, Table_cache_manager::compute_effective_instance_count(
+                     32, true, 64));
+}
+
+TEST(TableCacheInstanceResolverTest, ExplicitAboveCapIsCapped) {
+  EXPECT_EQ(64U, Table_cache_manager::compute_effective_instance_count(
+                     200, true, 64));
+}
+
+TEST(TableCacheInstanceResolverTest, TopologyUnavailableSkipsCap) {
+  // topology_ok == false degrades to "no cap": the request passes through
+  // untouched regardless of what phys_cores holds.
+  EXPECT_EQ(256U, Table_cache_manager::compute_effective_instance_count(
+                      256, false, 1));
+  EXPECT_EQ(16U, Table_cache_manager::compute_effective_instance_count(
+                     16, false, 999));
+}
+
+/*
+  Antiregression for a rejected capacity clamp: a small table_open_cache
+  must not, by itself, reduce the number of table cache instances - only
+  the physical-core cap does that, and only above it. Goes through the
+  real Table_cache_manager::resolve_instance_count() wrapper (not the pure
+  formula above), because the regression this guards against is a
+  table_cache_size read reappearing inside the wrapper, not in the
+  formula's own inputs.
+*/
+
+TEST(TableCacheInstanceResolverTest, SmallTableCacheSizeDoesNotReduceInstances) {
+  // Requires at least 2 physical/logical cores to tell "capped by physical
+  // cores" apart from "reduced by the rejected capacity clamp" - skip
+  // rather than risk a false pass/fail on a single-core host.
+  const Sql_cpu_topology &cpu_topology = sql_machine_topology().cpu;
+  if (!(cpu_topology.initialized && cpu_topology.effective_cpu_capacity() >= 2)) {
+    GTEST_SKIP() << "Host does not report at least 2 physical/logical cores";
+  }
+
+  const ulong saved_instances = table_cache_instances;
+  const ulong saved_size = table_cache_size;
+  const ulong saved_size_per_instance = table_cache_size_per_instance;
+  const ulong saved_triggers = table_cache_triggers;
+  const ulong saved_triggers_per_instance = table_cache_triggers_per_instance;
+
+  // 2 instances requested, comfortably below any real host's physical core
+  // count (guarded above), so the physical-core cap - the only cap this
+  // resolver applies - does not interfere with what this test checks.
+  table_cache_instances = 2;
+  // A capacity clamp based on table_cache_size (MIN_SIZE_PER_INSTANCE=8)
+  // would have computed capacity_limit = max(1, table_cache_size / 8) = 1
+  // here and reduced the instance count to 1.
+  table_cache_size = 1;
+  table_cache_triggers = 1;
+
+  Table_cache_manager::resolve_instance_count();
+
+  EXPECT_EQ(2U, table_cache_instances);
+
+  table_cache_instances = saved_instances;
+  table_cache_size = saved_size;
+  table_cache_size_per_instance = saved_size_per_instance;
+  table_cache_triggers = saved_triggers;
+  table_cache_triggers_per_instance = saved_triggers_per_instance;
+}
+
+/*
+  Coverage for table_cache_per_instance_limit() (sql/table_cache.h) -
+  the per-instance share truncates to 0 when total < instances, which is
+  upstream behaviour and means "this shard caches nothing", not
+  "unlimited". Guarding only the divisor keeps instances=0 from dividing
+  by zero.
+*/
+
+TEST(TableCachePerInstanceLimitTest, TruncatesToZeroWhenTotalBelowInstances) {
+  EXPECT_EQ(0U, table_cache_per_instance_limit(0, 64));
+  EXPECT_EQ(0U, table_cache_per_instance_limit(1, 64));
+  EXPECT_EQ(0U, table_cache_per_instance_limit(63, 64));
+}
+
+TEST(TableCachePerInstanceLimitTest, GuardsAgainstZeroInstances) {
+  EXPECT_EQ(128U, table_cache_per_instance_limit(128, 0));
+}
+
+TEST(TableCachePerInstanceLimitTest, PassesThroughWhenNotTruncatedToZero) {
+  EXPECT_EQ(2U, table_cache_per_instance_limit(128, 64));
 }
 
 }  // namespace table_cache_unittest
