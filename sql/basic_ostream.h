@@ -25,6 +25,7 @@
 #define BASIC_OSTREAM_INCLUDED
 #include "my_byteorder.h"
 #include "my_inttypes.h"
+#include "my_io.h"
 #include "my_sys.h"
 #include "mysql/binlog/event/compression/compressor.h"
 #include "mysql/binlog/event/nodiscard.h"
@@ -108,6 +109,9 @@ class IO_CACHE_ostream : public Truncatable_ostream {
      @param[in] log_file_key  The PSI_file_key for this stream
      @param[in] file_name  The file will be opened
      @param[in] flags  The flags used by IO_CACHE.
+     @param[in] cache_size  The requested size of the IO_CACHE write buffer;
+                            defaults to IO_SIZE, preserving prior behavior
+                            for any caller not passing this argument.
      @retval false  Success
      @retval true  Error
   */
@@ -115,7 +119,7 @@ class IO_CACHE_ostream : public Truncatable_ostream {
 #ifdef HAVE_PSI_INTERFACE
       PSI_file_key log_file_key,
 #endif
-      const char *file_name, myf flags);
+      const char *file_name, myf flags, size_t cache_size = IO_SIZE);
   /**
      Closes the stream. It deinitializes IO_CACHE and close the file
      it opened.

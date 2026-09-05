@@ -395,6 +395,17 @@ static bool check_auto_purge_conditions() {
   return false;
 }
 
+/* Larger IO_CACHE for binlog/relay log file writes (prior art:
+   MariaDB uses a 60 KiB log write buffer (LOG_BIN_IO_SIZE, since
+   10.5.5); AliSQL uses 512 KiB). init_io_cache rounds our request up
+   to a multiple of IO_SIZE*2 for this call site (use_async_io=false);
+   16*IO_SIZE is already an exact multiple, so the requested and
+   effective sizes coincide -- unless the underlying my_malloc fails,
+   in which case init_io_cache silently shrinks the buffer in 25% steps
+   down to that same IO_SIZE*2 floor (mysys/mf_iocache.cc) rather than
+   erroring out. */
+constexpr size_t LOG_BIN_IO_SIZE = 16 * IO_SIZE;  // 64 KiB
+
 /**
    Logical binlog file which wraps and hides the detail of lower layer storage
    implementation. Binlog code just use this class to control real storage
@@ -440,7 +451,8 @@ class MYSQL_BIN_LOG::Binlog_ofile : public Basic_ostream {
 #endif
 
     std::unique_ptr<IO_CACHE_ostream> file_ostream(new IO_CACHE_ostream);
-    if (file_ostream->open(log_file_key, binlog_name, flags)) return true;
+    if (file_ostream->open(log_file_key, binlog_name, flags, LOG_BIN_IO_SIZE))
+      return true;
 
     m_pipeline_head = std::move(file_ostream);
 
