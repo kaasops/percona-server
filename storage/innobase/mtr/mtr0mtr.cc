@@ -585,7 +585,21 @@ void mtr_t::start(bool sync) {
   m_impl.m_marked_nolog = false;
 
 #ifndef UNIV_HOTBACKUP
-  check_nolog_and_mark();
+  /* Check if redo logging is disabled globally and mark the global counter
+  till this mtr ends. m_marked_nolog was just cleared above, so the idempotence
+  guard the out-of-line version carried is dead weight on this path - the only
+  one that ever reached it. The shard index stays randomly chosen: mark_mtr()
+  and unmark_mtr() are a pair, and a CPU-keyed index would let a migrated
+  thread unmark a shard it never marked. */
+  const size_t shard_index = default_indexer_t<>::get_rnd_index();
+  m_impl.m_marked_nolog = s_logging.mark_mtr(shard_index);
+
+  /* Disable redo logging by this mtr if logging is globally off. */
+  if (m_impl.m_marked_nolog) {
+    ut_ad(m_impl.m_log_mode == MTR_LOG_ALL);
+    m_impl.m_log_mode = MTR_LOG_NO_REDO;
+    m_impl.m_shard_index = shard_index;
+  }
 #endif /* !UNIV_HOTBACKUP */
   ut_d(m_impl.m_magic_n = MTR_MAGIC_N);
 
@@ -599,23 +613,6 @@ void mtr_t::start(bool sync) {
 }
 
 #ifndef UNIV_HOTBACKUP
-void mtr_t::check_nolog_and_mark() {
-  /* Safe check to make this call idempotent. */
-  if (m_impl.m_marked_nolog) {
-    return;
-  }
-
-  size_t shard_index = default_indexer_t<>::get_rnd_index();
-  m_impl.m_marked_nolog = s_logging.mark_mtr(shard_index);
-
-  /* Disable redo logging by this mtr if logging is globally off. */
-  if (m_impl.m_marked_nolog) {
-    ut_ad(m_impl.m_log_mode == MTR_LOG_ALL);
-    m_impl.m_log_mode = MTR_LOG_NO_REDO;
-    m_impl.m_shard_index = shard_index;
-  }
-}
-
 void mtr_t::check_nolog_and_unmark() {
   if (m_impl.m_marked_nolog) {
     s_logging.unmark_mtr(m_impl.m_shard_index);
