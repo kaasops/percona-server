@@ -1,0 +1,22 @@
+#
+# Scenario 1: normal boot, topology available - the socket
+# distribution line's per-socket counts must sum to
+# @@innodb_buffer_pool_instances, whatever this host's actual
+# socket count is.
+#
+# restart: --innodb-buffer-pool-instances=8 --innodb-buffer-pool-size=128M
+include/wait_for_pattern_in_file.inc [buffer pool instances per socket]
+PASS: per-socket instance counts sum to the actual instance count
+#
+# Scenario 2: topology forced unavailable (debug point) - every
+# instance falls back to the pre-patch single-CPU formula, and the
+# distribution summary must not appear anywhere in the log written
+# since this restart (only the portion after the byte offset
+# recorded just before restarting is checked, since scenario 1's
+# own distribution line is still in the same cumulative error log
+# file).
+#
+# restart: --debug=d,bp_socket_cpuset_unavailable --innodb-buffer-pool-instances=4 --innodb-buffer-pool-size=128M
+include/wait_for_pattern_in_file.inc [Buffer pool initialization completed]
+PASS: fallback path completed init and printed no socket distribution line
+# restart:

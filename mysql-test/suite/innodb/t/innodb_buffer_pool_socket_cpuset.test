@@ -1,0 +1,111 @@
+#
+# Buffer pool init threads are bound to a whole-socket cpuset
+# (instance_no % sockets_count), not a single CPU. Verifies (1) the
+# summary distribution line is self-consistent with the actual instance
+# count on whatever hardware runs this test (1+ sockets - nothing here
+# assumes exactly 2), and (2) the DBUG_EXECUTE_IF fallback path degrades
+# to the pre-patch single-CPU-per-instance formula and does not print a
+# distribution line that did not happen - buf_pool_create() and the
+# summary in buf_pool_init() share the same debug point so they cannot
+# disagree.
+#
+--source include/have_debug.inc
+
+--let $error_log = $MYSQLTEST_VARDIR/log/mysqld.1.err
+--let error_log = $error_log
+
+--echo #
+--echo # Scenario 1: normal boot, topology available - the socket
+--echo # distribution line's per-socket counts must sum to
+--echo # @@innodb_buffer_pool_instances, whatever this host's actual
+--echo # socket count is.
+--echo #
+--let $restart_parameters = restart: --innodb-buffer-pool-instances=8 --innodb-buffer-pool-size=128M
+--source include/restart_mysqld.inc
+
+--let $grep_file = $error_log
+--let $grep_pattern = buffer pool instances per socket
+--let $wait_timeout = 30
+--source include/wait_for_pattern_in_file.inc
+
+--let $actual_instances = query_get_value(SELECT @@innodb_buffer_pool_instances AS v, v, 1)
+--let actual_instances = $actual_instances
+
+--perl
+  my $log = $ENV{error_log};
+  my $expected = $ENV{actual_instances};
+  open(FILE, "<", $log) or die("Unable to open $log: $!\n");
+  my $line;
+  while (<FILE>) { $line = $1 if (/buffer pool instances per socket:(.*)/); }
+  close(FILE);
+  if (!defined $line) {
+    print "FAIL: no socket distribution line found\n";
+  } else {
+    my $sum = 0;
+    my $sockets_seen = 0;
+    while ($line =~ /socket (\d+)=(\d+)/g) {
+      $sum += $2;
+      $sockets_seen++;
+    }
+    if ($sockets_seen < 1) {
+      print "FAIL: distribution line named no sockets: $line\n";
+    } elsif ($sum != $expected) {
+      print "FAIL: per-socket counts sum to $sum, expected $expected\n";
+    } else {
+      print "PASS: per-socket instance counts sum to the actual instance count\n";
+    }
+  }
+EOF
+
+--echo #
+--echo # Scenario 2: topology forced unavailable (debug point) - every
+--echo # instance falls back to the pre-patch single-CPU formula, and the
+--echo # distribution summary must not appear anywhere in the log written
+--echo # since this restart (only the portion after the byte offset
+--echo # recorded just before restarting is checked, since scenario 1's
+--echo # own distribution line is still in the same cumulative error log
+--echo # file).
+--echo #
+--let $offset_marker = $MYSQLTEST_VARDIR/tmp/_bp_socket_cpuset_offset.txt
+--let offset_marker = $offset_marker
+--perl
+  my @st = stat($ENV{error_log});
+  open(OUT, ">", $ENV{offset_marker}) or die("Unable to write marker: $!\n");
+  print OUT $st[7];
+  close(OUT);
+EOF
+
+--let $restart_parameters = restart: --debug=d,bp_socket_cpuset_unavailable --innodb-buffer-pool-instances=4 --innodb-buffer-pool-size=128M
+--source include/restart_mysqld.inc
+
+--let $grep_file = $error_log
+--let $grep_pattern = Buffer pool initialization completed
+--let $wait_timeout = 30
+--source include/wait_for_pattern_in_file.inc
+
+--perl
+  my $log = $ENV{error_log};
+  open(IN, "<", $ENV{offset_marker}) or die("Unable to read marker: $!\n");
+  my $offset = <IN>;
+  close(IN);
+  unlink($ENV{offset_marker});
+
+  open(FILE, "<", $log) or die("Unable to open $log: $!\n");
+  seek(FILE, $offset, 0);
+  my ($completed_found, $distribution_found) = (0, 0);
+  while (<FILE>) {
+    $completed_found = 1 if (/Buffer pool initialization completed/);
+    $distribution_found = 1 if (/buffer pool instances per socket/);
+  }
+  close(FILE);
+  if (!$completed_found) {
+    print "FAIL: no INIT_COMPLETED line found after the forced-unavailable restart\n";
+  } elsif ($distribution_found) {
+    print "FAIL: socket distribution line appeared even though the debug point forced the fallback path\n";
+  } else {
+    print "PASS: fallback path completed init and printed no socket distribution line\n";
+  }
+EOF
+
+--let $restart_parameters = restart:
+--source include/restart_mysqld.inc

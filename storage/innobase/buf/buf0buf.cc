@@ -80,6 +80,8 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "log0recv.h"
 #include "os0thread-create.h"
 #include "page0zip.h"
+#include <string>
+
 #include "sql/cpu_topology.h"
 #include "srv0mon.h"
 #include "srv0srv.h"
@@ -1298,9 +1300,42 @@ static void buf_pool_create(buf_pool_t *buf_pool, ulint buf_pool_size,
 
   CPU_ZERO(&cpuset);
 
-  const long n_cores = sysconf(_SC_NPROCESSORS_ONLN);
+  /* Bind the init thread to the full cpuset of one socket (round-robin by
+  instance_no), not a single CPU: with few instances and many CPUs the old
+  CPU_SET(instance_no % n_cores) formula pinned every instance to one of
+  the first few logical CPUs - always socket 0 on a normally-numbered
+  host, defeating any spread across sockets and, without NUMA interleave,
+  first-touching every chunk onto that one node. Deliberately socket-only,
+  not NUMA-node-aware: sql_build_cpuset_for_socket() is used explicitly
+  instead of sql_build_cpuset_for_instance(), which would silently prefer
+  its NUMA-node branch and inherit that branch's known memory-only/CXL-
+  node mapping defect - a dependency this unit does not need and should
+  not take on. Fine NUMA-node placement is a separate, later unit. */
+  const Sql_cpu_topology &cpu_topology = sql_machine_topology().cpu;
 
-  CPU_SET(instance_no % n_cores, &cpuset);
+  bool socket_topology_available =
+      cpu_topology.initialized && cpu_topology.sockets_count > 0;
+  DBUG_EXECUTE_IF("bp_socket_cpuset_unavailable",
+                  socket_topology_available = false;);
+
+  bool socket_cpuset_ok = false;
+  if (socket_topology_available) {
+    const uint32_t socket_index =
+        static_cast<uint32_t>(instance_no) % cpu_topology.sockets_count;
+    const uint32_t socket_id = cpu_topology.sockets[socket_index].socket_id;
+
+    socket_cpuset_ok =
+        sql_build_cpuset_for_socket(cpu_topology, socket_id, &cpuset);
+  }
+
+  if (!socket_cpuset_ok) {
+    /* Topology snapshot unusable, or the query itself failed - fall back
+    to the exact formula this patch replaces, not to an empty mask: a
+    topology failure should degrade to the old, exercised behavior. */
+    CPU_ZERO(&cpuset);
+    const long n_cores = sysconf(_SC_NPROCESSORS_ONLN);
+    CPU_SET(instance_no % n_cores, &cpuset);
+  }
 
   buf_pool->stat.reset();
 
@@ -1702,6 +1737,44 @@ dberr_t buf_pool_init(ulint total_size, bool populate, ulint n_instances) {
     LogErr(SYSTEM_LEVEL, ER_IB_MSG_BUFFER_POOL_INIT_COMPLETED, elapsed_minutes,
            elapsed_seconds_remaining, static_cast<ulong>(n_cores),
            speed_gb_per_sec);
+  }
+
+  {
+    /* Instance-to-socket cpuset distribution, computed once here rather
+    than logged per instance from buf_pool_create() (which runs in
+    parallel, once per instance, up to MAX_BUFFER_POOLS=256 times -
+    spammy at SYSTEM_LEVEL). Deterministic function of n_instances and
+    topology alone: instance i is bound to the same socket cpuset here
+    that buf_pool_create() computed for it (instance_no %
+    sockets_count), so this does not need any data back from the
+    parallel init threads. */
+    const Sql_cpu_topology &cpu_topology = sql_machine_topology().cpu;
+
+    /* Same DBUG hook as buf_pool_create() above, and for the same reason:
+    when it forces every instance onto the pre-patch single-CPU fallback,
+    this summary must not print a socket distribution that did not
+    actually happen. */
+    bool socket_topology_available =
+        cpu_topology.initialized && cpu_topology.sockets_count > 0;
+    DBUG_EXECUTE_IF("bp_socket_cpuset_unavailable",
+                    socket_topology_available = false;);
+
+    if (socket_topology_available) {
+      std::vector<ulint> instances_per_socket(cpu_topology.sockets_count, 0);
+      for (ulint inst = 0; inst < n_instances; ++inst) {
+        instances_per_socket[inst % cpu_topology.sockets_count]++;
+      }
+
+      std::string distribution = "buffer pool instances per socket:";
+      for (uint32_t s = 0; s < cpu_topology.sockets_count; ++s) {
+        distribution += " socket " +
+                        std::to_string(cpu_topology.sockets[s].socket_id) +
+                        "=" + std::to_string(instances_per_socket[s]);
+      }
+
+      LogErr(SYSTEM_LEVEL, ER_IB_MSG_BP_SOCKET_DISTRIBUTION,
+             distribution.c_str());
+    }
   }
 
   return (DB_SUCCESS);
