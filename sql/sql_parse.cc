@@ -1996,13 +1996,34 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
         my_ok(thd);
       break;
     }
+
     case COM_RESET_CONNECTION: {
       thd->status_var.com_other++;
       global_aggregated_stats.get_shard(thd->thread_id()).com_other++;
+
+      if (opt_reset_connection_keep_sp_cache)
+        thd->m_skip_sp_cache_clear_on_cleanup = true;
+
+      auto reset_sp_cache_flag = create_scope_guard(
+          [thd]() { thd->m_skip_sp_cache_clear_on_cleanup = false; });
+
       thd->cleanup_connection();
+      // The skip decision made above is final for COM_RESET_CONNECTION (no
+      // further clear-anyway branch follows), so count it here rather than
+      // inside cleanup_connection() itself. Re-read the THD-local flag, not
+      // the global: the global can be changed concurrently by another
+      // connection's SET GLOBAL between the decision above and this point,
+      // and re-reading it here could disagree with the decision already
+      // acted on.
+      if (thd->m_skip_sp_cache_clear_on_cleanup) {
+        thd->status_var.sp_cache_resets_skipped++;
+        global_aggregated_stats.get_shard(thd->thread_id())
+            .sp_cache_resets_skipped++;
+      }
       my_ok(thd);
       break;
     }
+
     case COM_CLONE: {
       thd->status_var.com_other++;
       global_aggregated_stats.get_shard(thd->thread_id()).com_other++;
@@ -2047,6 +2068,14 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
       thd->status_var.com_other++;
       global_aggregated_stats.get_shard(thd->thread_id()).com_other++;
 
+      // Defer SP cache clearing until auth result and new user are known.
+      // We will selectively clear below based on outcome.
+      if (opt_reset_connection_keep_sp_cache)
+        thd->m_skip_sp_cache_clear_on_cleanup = true;
+
+      auto reset_sp_cache_flag_cu = create_scope_guard(
+          [thd]() { thd->m_skip_sp_cache_clear_on_cleanup = false; });
+
       thd->cleanup_connection();
       USER_CONN *save_user_connect =
           const_cast<USER_CONN *>(thd->get_user_connect());
@@ -2071,6 +2100,15 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
         thd->set_user_connect(save_user_connect);
         thd->reset_db(save_db);
 
+        // Auth failed — SP cache must be cleared since connection is killed.
+        // Re-read the THD-local flag (see COM_RESET_CONNECTION above for
+        // why): acl_authenticate() just ran a full handshake, during which
+        // the global could have changed.
+        if (thd->m_skip_sp_cache_clear_on_cleanup) {
+          sp_cache_clear(&thd->sp_proc_cache);
+          sp_cache_clear(&thd->sp_func_cache);
+        }
+
         my_error(ER_ACCESS_DENIED_CHANGE_USER_ERROR, MYF(0),
                  thd->security_context()->user().str,
                  thd->security_context()->host_or_ip().str,
@@ -2078,6 +2116,34 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
         thd->killed = THD::KILL_CONNECTION;
         error = true;
       } else {
+        // Auth succeeded — clear SP cache only if user identity changed.
+        // Re-read the THD-local flag (see COM_RESET_CONNECTION above for
+        // why), not the global.
+        if (thd->m_skip_sp_cache_clear_on_cleanup) {
+          const LEX_CSTRING old_user = save_security_ctx.user();
+          const LEX_CSTRING new_user = thd->security_context()->user();
+          // Account names are case-sensitive identifiers (mysql.user.User
+          // uses a _bin collation): compare bytewise so that switching
+          // between two distinctly-cased accounts is treated as a real
+          // user change.
+          const bool user_changed =
+              old_user.str == nullptr || new_user.str == nullptr ||
+              old_user.length != new_user.length ||
+              memcmp(old_user.str, new_user.str, old_user.length) != 0;
+          if (user_changed) {
+            sp_cache_clear(&thd->sp_proc_cache);
+            sp_cache_clear(&thd->sp_func_cache);
+          } else {
+            // Same user re-authenticated: the skip decided earlier in
+            // cleanup_connection() stands, so count it here where the
+            // outcome is finally known (unlike the auth-failed branch
+            // above, which always clears and must not count).
+            thd->status_var.sp_cache_resets_skipped++;
+            global_aggregated_stats.get_shard(thd->thread_id())
+                .sp_cache_resets_skipped++;
+          }
+        }
+
 #ifdef HAVE_PSI_THREAD_INTERFACE
         /* we've authenticated new user */
         PSI_THREAD_CALL(notify_session_change_user)(thd->get_psi());
@@ -2623,7 +2689,7 @@ done:
   else
     thd->mem_root->Clear();
 
-    /* SHOW PROFILE instrumentation, end */
+  /* SHOW PROFILE instrumentation, end */
 #if defined(ENABLED_PROFILING)
   thd->profiling->finish_current_query();
 #endif
@@ -4731,7 +4797,7 @@ int mysql_execute_command(THD *thd, bool first_level) {
         my_ok(thd);
       }
       break; /* break super switch */
-    }        /* end case group bracket */
+    } /* end case group bracket */
 
     case SQLCOM_ALTER_PROCEDURE:
     case SQLCOM_ALTER_FUNCTION: {
@@ -6488,11 +6554,10 @@ Table_ref *Query_block::add_table_to_list(
     // threads since this is expected by the mysql_upgrade utility.
     if (!(lex->sql_command == SQLCOM_CREATE_VIEW &&
           dd::get_dictionary()->is_system_view_name(
-              lex->query_tables->db, lex->query_tables->table_name))
-&& !(dd::get_dictionary()->is_system_view_name(
-              lex->query_tables->db, lex->query_tables->table_name)
- && DBUG_EVALUATE_IF("skip_dd_table_access_check", true, false))
-        ) {
+              lex->query_tables->db, lex->query_tables->table_name)) &&
+        !(dd::get_dictionary()->is_system_view_name(
+              lex->query_tables->db, lex->query_tables->table_name) &&
+          DBUG_EVALUATE_IF("skip_dd_table_access_check", true, false))) {
       my_error(ER_NO_SYSTEM_TABLE_ACCESS, MYF(0),
                ER_THD_NONCONST(thd, dictionary->table_type_error_code(
                                         ptr->db, ptr->table_name)),

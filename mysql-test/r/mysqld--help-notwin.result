@@ -1384,6 +1384,10 @@ The following options may be given as the first argument:
  When this option is enabled, connections attempted using
  insecure transport will be rejected.  Secure transports
  are SSL/TLS, Unix socket or Shared Memory (on Windows).
+ --reset-connection-keep-sp-cache 
+ Keep stored procedure and function caches across
+ COM_RESET_CONNECTION and COM_CHANGE_USER (when the
+ authenticated user is unchanged)
  --restrict-fk-on-non-standard-key 
  Disallow the creation of foreign keys referencing
  non-unique key or partial key
@@ -2098,6 +2102,7 @@ report-password (No default value)
 report-port 0
 report-user (No default value)
 require-secure-transport FALSE
+reset-connection-keep-sp-cache FALSE
 restrict-fk-on-non-standard-key TRUE
 rpl-read-size 8192
 rpl-stop-replica-timeout 31536000

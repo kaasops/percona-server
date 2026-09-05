@@ -54,10 +54,15 @@ struct aggregated_stats_buffer {
   std::atomic_uint64_t com_stmt_reprepare;
   std::atomic_uint64_t com_stmt_send_long_data;
   std::atomic_uint64_t com_stat[(unsigned int)SQLCOM_END];
-
   std::atomic_uint64_t table_open_cache_hits;
   std::atomic_uint64_t table_open_cache_misses;
   std::atomic_uint64_t table_open_cache_overflows;
+
+  // Stored procedure cache statistics
+  std::atomic_uint64_t sp_cache_insert;
+  std::atomic_uint64_t sp_routine_count;
+  std::atomic_uint64_t sp_cache_resets_skipped;
+
   std::atomic_uint64_t created_tmp_disk_tables;
   std::atomic_uint64_t created_tmp_tables;
   std::atomic_uint64_t max_execution_time_exceeded;

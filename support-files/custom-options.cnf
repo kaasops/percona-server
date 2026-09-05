@@ -52,3 +52,18 @@ loose-innodb_sync_spin_backoff_rounds = 4
 #   ~30-cycles/PAUSE generation boundary (pre-Skylake) -- until then,
 #   the uniform default is correct, not a compromise.
 loose-innodb_spin_wait_pause_multiplier = 50
+
+
+# DESCRIPTION: Keep stored procedure and function caches across
+#   COM_RESET_CONNECTION and COM_CHANGE_USER (when the authenticated
+#   user is unchanged), instead of clearing them unconditionally.
+#   Reduces repeated reload-from-data-dictionary work for pooled
+#   connections that reissue reset/change-user between calls to the
+#   same stored routines.
+# DEFAULT: OFF (upstream behaviour: caches cleared unconditionally)
+# RECOMMENDED: ON -- the value this patchset ships with; pooled
+#   connections reissue reset/change-user between calls to the same
+#   routines, and reloading them from the data dictionary each time is
+#   pure repeated work. Status counters Sp_cache_insert /
+#   Sp_routine_count / Sp_cache_resets_skipped come with this unit.
+loose-reset_connection_keep_sp_cache = ON

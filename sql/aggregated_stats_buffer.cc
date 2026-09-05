@@ -39,6 +39,12 @@ void aggregated_stats_buffer::flush() {
   table_open_cache_hits = 0ULL;
   table_open_cache_misses = 0ULL;
   table_open_cache_overflows = 0ULL;
+
+  // Stored procedure cache statistics
+  sp_cache_insert = 0ULL;
+  sp_routine_count = 0ULL;
+  sp_cache_resets_skipped = 0ULL;
+
   created_tmp_disk_tables = 0ULL;
   created_tmp_tables = 0ULL;
   max_execution_time_exceeded = 0ULL;

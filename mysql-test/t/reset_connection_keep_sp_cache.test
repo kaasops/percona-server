@@ -1,0 +1,105 @@
+# Coverage for the opt-in GLOBAL option reset_connection_keep_sp_cache
+# (default OFF) and for the Sp_cache_insert / Sp_routine_count /
+# Sp_cache_resets_skipped status counters that expose its effect.
+#
+# THD::cleanup_connection() -- the shared implementation behind both
+# COM_RESET_CONNECTION and COM_CHANGE_USER -- resets the SESSION-scope
+# status_var to zero right at the start, before deciding whether to clear
+# or preserve the SP cache. Every SHOW SESSION STATUS check below
+# therefore reads a per-reset baseline of 0, not a running total, which
+# lets the test assert exact values instead of computing deltas.
+#
+# ps-protocol re-executes CALL through PREPARE/EXECUTE and would perturb
+# the SP-cache counters the same way it perturbs Table_open_cache_hits
+# (see CASE5 in reset_connection.test for the same, pre-existing,
+# convention) -- disabled for the whole file.
+--disable_ps_protocol
+
+--echo #
+--echo # Setup
+--echo #
+USE test;
+CREATE PROCEDURE p1() SELECT 1;
+# The second account is created here but GRANTed only right before (4),
+# where it is first used: GRANT ... ON PROCEDURE validates the routine via
+# sp_exist_routines() -> sp_find_routine(cache_only=false) (sql/sp.cc), a
+# cache-populating path that does NOT increment Sp_cache_insert (unlike
+# CALL's own lookup via the counted sp_cache_routine() in
+# sql/sql_base.cc). Granting up front here would silently pre-warm the
+# cache and make (1)'s "first CALL inserts" check read 0; verified
+# empirically while writing this test.
+CREATE USER other_sp_cache_user IDENTIFIED BY 'pw12345';
+
+--echo #
+--echo # 1. Default (OFF): COM_RESET_CONNECTION still forces a cache reload
+--echo #    on next call -- regression check for existing behaviour,
+--echo #    unaffected by the new option.
+--echo #
+SELECT @@global.reset_connection_keep_sp_cache;
+CALL p1();
+SHOW SESSION STATUS LIKE 'Sp_cache_insert';
+--reset_connection
+SHOW SESSION STATUS LIKE 'Sp_cache_insert';
+SHOW SESSION STATUS LIKE 'Sp_cache_resets_skipped';
+CALL p1();
+SHOW SESSION STATUS LIKE 'Sp_cache_insert';
+
+--echo #
+--echo # 2. ON + COM_RESET_CONNECTION: cache is preserved across the reset.
+--echo #
+SET GLOBAL reset_connection_keep_sp_cache = ON;
+CALL p1();
+--reset_connection
+SHOW SESSION STATUS LIKE 'Sp_cache_resets_skipped';
+CALL p1();
+SHOW SESSION STATUS LIKE 'Sp_cache_insert';
+
+--echo #
+--echo # 3. ON + COM_CHANGE_USER, same user: cache is preserved.
+--echo # (bare --change_user re-authenticates as the current user/pass/db,
+--echo # exercising COM_CHANGE_USER without an actual identity change.)
+--echo #
+--change_user
+SHOW SESSION STATUS LIKE 'Sp_cache_resets_skipped';
+CALL p1();
+SHOW SESSION STATUS LIKE 'Sp_cache_insert';
+
+--echo #
+--echo # 4. ON + COM_CHANGE_USER, different user: cache is cleared despite
+--echo #    ON, because the authenticated identity changed.
+--echo #
+GRANT EXECUTE ON PROCEDURE test.p1 TO other_sp_cache_user;
+--change_user other_sp_cache_user, pw12345, test
+# Regression check: Sp_cache_resets_skipped must read 0 here -- it used to
+# be counted unconditionally inside cleanup_connection(), before the
+# user-changed decision below was even made, so it read 1 for this exact
+# scenario despite the cache having just been cleared.
+SHOW SESSION STATUS LIKE 'Sp_cache_resets_skipped';
+CALL p1();
+SHOW SESSION STATUS LIKE 'Sp_cache_insert';
+
+--echo #
+--echo # 5. ON + COM_CHANGE_USER, failed auth: the SP cache is always
+--echo #    cleared and the connection is killed server-side regardless of
+--echo #    the option. mysqltest's default --change_user reconnects
+--echo #    transparently on failure, but that reconnect starts a brand
+--echo #    new session -- only the error is asserted here, not counters
+--echo #    of a session that no longer exists server-side.
+--echo #
+--echo # acl_authenticate() rejects the bad password and reports it via
+--echo # ER_ACCESS_DENIED_ERROR before dispatch_command's own
+--echo # ER_ACCESS_DENIED_CHANGE_USER_ERROR call is reached (pre-existing
+--echo # behaviour, not introduced by this patch) -- so that is the error
+--echo # actually observed on the wire; verified empirically (see coder
+--echo # report for this unit).
+--error ER_ACCESS_DENIED_ERROR
+--change_user other_sp_cache_user, wrong_password, test
+
+--echo #
+--echo # Cleanup
+--echo #
+--change_user root,,test
+SET GLOBAL reset_connection_keep_sp_cache = OFF;
+DROP USER other_sp_cache_user;
+DROP PROCEDURE p1;
+--enable_ps_protocol

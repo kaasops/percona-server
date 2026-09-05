@@ -10,31 +10,31 @@ INSTALL COMPONENT 'file://component_test_server_telemetry_metrics';
 SELECT test_component_metric_log('TEST - Check registration with slot holes:');
 SELECT count(*) FROM performance_schema.setup_metrics;
 count(*)
-421
+424
 SELECT test_register_metric_a();
 test_register_metric_a()
 0
 SELECT count(*) FROM performance_schema.setup_metrics;
 count(*)
-422
+425
 SELECT test_register_metric_b();
 test_register_metric_b()
 0
 SELECT count(*) FROM performance_schema.setup_metrics;
 count(*)
-423
+426
 SELECT test_unregister_metric_a();
 test_unregister_metric_a()
 0
 SELECT count(*) FROM performance_schema.setup_metrics;
 count(*)
-422
+425
 SELECT test_unregister_metric_b();
 test_unregister_metric_b()
 0
 SELECT count(*) FROM performance_schema.setup_metrics;
 count(*)
-421
+424
 SELECT test_component_metric_log('TEST - All metrics exported except ones in mysql.x group:');
 UPDATE performance_schema.setup_meters SET enabled = 'YES';
 UPDATE performance_schema.setup_meters SET enabled = 'NO' WHERE NAME='mysql.x';
@@ -356,6 +356,9 @@ test_report_metrics > report start:
  > metric 'sort_range': unit='', desc='The number of sorts that were done using ranges (Sort_range)'
  > metric 'sort_rows': unit='', desc='The number of sorted rows (Sort_rows)'
  > metric 'sort_scan': unit='', desc='The number of sorts that were done by scanning the table (Sort_scan)'
+ > metric 'sp_cache_insert': unit='', desc='Number of times a stored routine was loaded from DD into SP cache (Sp_cache_insert)'
+ > metric 'sp_cache_resets_skipped': unit='', desc='Number of times SP cache was preserved on COM_RESET_CONNECTION or COM_CHANGE_USER (Sp_cache_resets_skipped)'
+ > metric 'sp_routine_count': unit='', desc='Number of stored routine cache lookups (Sp_routine_count)'
  > metric 'table_locks_immediate': unit='', desc='The number of times that a request for a table lock could be granted immediately (Table_locks_immediate)'
  > metric 'table_locks_waited': unit='', desc='The number of times that a request for a table lock could not be granted immediately and a wait was needed (Table_locks_waited)'
  > metric 'table_open_cache_hits': unit='', desc='The number of hits for open tables cache lookups (Table_open_cache_hits)'
@@ -367,7 +370,7 @@ test_report_metrics > report start:
  > metric 'threads_created': unit='', desc='The number of threads created to handle connections (Threads_created)'
  > metric 'threads_running': unit='', desc='The number of threads that are not sleeping (Threads_running)'
  > metric 'uptime': unit='', desc='The number of seconds that the server has been up (Uptime)'
-< meter 'mysql.stats' end (57 metrics)
+< meter 'mysql.stats' end (60 metrics)
 > meter 'mysql.stats.com' (desc='MySql command stats', frequency=10) start:
  > metric 'admin_commands': unit='', desc='Number of times corresponding command statement has been executed.'
  > metric 'alter_db': unit='', desc='Number of times corresponding command statement has been executed.'
@@ -600,7 +603,7 @@ test_report_metrics > report start:
  > metric 'modify_collection_options': unit='', desc='The number of modify collection options statements received (Mysqlx_stmt_modify_collection_options)'
  > metric 'ping': unit='', desc='The number of ping statements received (Mysqlx_stmt_ping)'
 < meter 'mysql.x.stmt' end (16 metrics)
-test_report_metrics < done reporting (total meters=12, metrics=375)
+test_report_metrics < done reporting (total meters=12, metrics=378)
 TEST - All metrics exported:
 *** Meter change notification: mysql.x updated
 *** Meter change - silently enumerate metrics for mysql.x
@@ -759,6 +762,9 @@ test_report_metrics > report start:
  > metric 'sort_range': unit='', desc='The number of sorts that were done using ranges (Sort_range)'
  > metric 'sort_rows': unit='', desc='The number of sorted rows (Sort_rows)'
  > metric 'sort_scan': unit='', desc='The number of sorts that were done by scanning the table (Sort_scan)'
+ > metric 'sp_cache_insert': unit='', desc='Number of times a stored routine was loaded from DD into SP cache (Sp_cache_insert)'
+ > metric 'sp_cache_resets_skipped': unit='', desc='Number of times SP cache was preserved on COM_RESET_CONNECTION or COM_CHANGE_USER (Sp_cache_resets_skipped)'
+ > metric 'sp_routine_count': unit='', desc='Number of stored routine cache lookups (Sp_routine_count)'
  > metric 'table_locks_immediate': unit='', desc='The number of times that a request for a table lock could be granted immediately (Table_locks_immediate)'
  > metric 'table_locks_waited': unit='', desc='The number of times that a request for a table lock could not be granted immediately and a wait was needed (Table_locks_waited)'
  > metric 'table_open_cache_hits': unit='', desc='The number of hits for open tables cache lookups (Table_open_cache_hits)'
@@ -770,7 +776,7 @@ test_report_metrics > report start:
  > metric 'threads_created': unit='', desc='The number of threads created to handle connections (Threads_created)'
  > metric 'threads_running': unit='', desc='The number of threads that are not sleeping (Threads_running)'
  > metric 'uptime': unit='', desc='The number of seconds that the server has been up (Uptime)'
-< meter 'mysql.stats' end (57 metrics)
+< meter 'mysql.stats' end (60 metrics)
 > meter 'mysql.stats.com' (desc='MySql command stats', frequency=10) start:
  > metric 'admin_commands': unit='', desc='Number of times corresponding command statement has been executed.'
  > metric 'alter_db': unit='', desc='Number of times corresponding command statement has been executed.'
@@ -1050,7 +1056,7 @@ test_report_metrics > report start:
  > metric 'modify_collection_options': unit='', desc='The number of modify collection options statements received (Mysqlx_stmt_modify_collection_options)'
  > metric 'ping': unit='', desc='The number of ping statements received (Mysqlx_stmt_ping)'
 < meter 'mysql.x.stmt' end (16 metrics)
-test_report_metrics < done reporting (total meters=12, metrics=421)
+test_report_metrics < done reporting (total meters=12, metrics=424)
 TEST - Register duplicate meters/metrics:
 test_duplicate_metrics > called
 *** Meter change notification: mysql.test4 added
