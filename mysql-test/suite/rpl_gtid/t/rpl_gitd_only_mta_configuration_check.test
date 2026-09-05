@@ -71,7 +71,7 @@ SET @@GLOBAL.replica_parallel_workers = 0;
 
  --source include/rpl/start_replica.inc
 
---let $assert_text= There is one worker runnning with id 1
+--let $assert_text= There is one worker running with id 1
 --let $assert_cond= `SELECT COUNT(*) = 1 FROM performance_schema.replication_applier_status_by_worker WHERE worker_id=1`
 --source include/assert.inc
 
