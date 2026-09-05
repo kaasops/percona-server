@@ -36,3 +36,19 @@ loose-replica_translate_deprecated_priv = ON
 # RECOMMENDED: 4 -- the value this patchset ships with; trades more CPU
 #   spinning for fewer context switches under contention.
 loose-innodb_sync_spin_backoff_rounds = 4
+
+# DESCRIPTION: Number of PAUSE instructions used per unit of spin-wait
+#   delay (see @@innodb_spin_wait_delay). Upstream MySQL/InnoDB option,
+#   not introduced by our patches -- listed here because we
+#   investigated it (PAUSE-latency calibration at server startup,
+#   MariaDB-MDEV-19845-style) and settled on an operational answer
+#   instead of a code change.
+# DEFAULT: 50
+# RECOMMENDED: 50 (leave at default). Our fleet is uniformly Skylake+
+#   or newer, and an independent HammerDB/Intel measurement on
+#   Skylake-class hardware found the upstream default already optimal
+#   (lowering it to 5 collapsed throughput). A per-host override only
+#   becomes relevant if the fleet gains machines older than the
+#   ~30-cycles/PAUSE generation boundary (pre-Skylake) -- until then,
+#   the uniform default is correct, not a compromise.
+loose-innodb_spin_wait_pause_multiplier = 50
