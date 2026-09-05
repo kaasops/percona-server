@@ -1,0 +1,89 @@
+# ==== Purpose ====
+#
+# This test verifies that binlog_transaction_compression_min_size prevents
+# binlog transaction compression from being applied to transactions whose
+# uncompressed payload is smaller than the configured threshold, while
+# leaving transactions at or above the threshold - as well as the default
+# threshold of 0 - compressed exactly as before this variable existed.
+#
+# ==== Requirements ====
+#
+# R1. A transaction whose uncompressed payload is smaller than
+#     binlog_transaction_compression_min_size is written to the binary log
+#     uncompressed, even though binlog_transaction_compression is enabled.
+# R2. A transaction whose uncompressed payload is not smaller than the
+#     threshold is compressed as usual.
+# R3. The default threshold (0) preserves the pre-existing behavior:
+#     compression is not skipped based on payload size.
+# R4. binlog_transaction_compression_min_size is a SESSION variable.
+#
+# ==== Implementation ====
+#
+# 1. Prepare a table with a blob column and an insert statement that
+#    populates it with a fixed, uncompressable payload (same technique as
+#    binlog_compression_size_higher.test).
+# 2. With the default threshold (0), execute the insert and assert the
+#    transaction is compressed. (R3)
+# 3. Set the threshold, in the SESSION scope, above the payload size and
+#    re-execute the same insert; assert the transaction is now written
+#    uncompressed. (R1, R4)
+# 4. Set the threshold, in the SESSION scope, at/below the payload size and
+#    re-execute the same insert; assert the transaction is compressed
+#    again. (R2, R4)
+# 5. Cleanup.
+
+--source include/have_log_bin.inc
+--source include/have_binlog_format_row.inc
+
+--let $saved_min_size = `SELECT @@SESSION.binlog_transaction_compression_min_size`
+
+CREATE TABLE t1 (id bigint NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                 x mediumblob NOT NULL) ENGINE=InnoDB;
+PREPARE s FROM "INSERT INTO t1 (x) VALUES (?)";
+SET @a = LOAD_FILE('../../std_data/binlog_compression.gz');
+
+--echo #
+--echo # 2) Default threshold (0): the transaction is compressed.
+--echo #
+
+RESET BINARY LOGS AND GTIDS;
+EXECUTE s USING @a;
+
+--let $event_sequence = !Gtid_or_anon # Transaction_payload # !Begin # Table_map # Write_rows # Xid
+--let $include_trx_payload_events = 1
+--source include/rpl/assert_binlog_events.inc
+
+--echo #
+--echo # 3) Threshold above the payload size: the transaction is written
+--echo #    uncompressed.
+--echo #
+
+RESET BINARY LOGS AND GTIDS;
+SET @@session.binlog_transaction_compression_min_size = 1000000;
+EXECUTE s USING @a;
+
+--let $event_sequence = !Gtid_or_anon # !Begin # Table_map # Write_rows # Xid
+--let $include_trx_payload_events = 1
+--source include/rpl/assert_binlog_events.inc
+
+--echo #
+--echo # 4) Threshold at/below the payload size: the transaction is
+--echo #    compressed again.
+--echo #
+
+RESET BINARY LOGS AND GTIDS;
+SET @@session.binlog_transaction_compression_min_size = 1;
+EXECUTE s USING @a;
+
+--let $event_sequence = !Gtid_or_anon # Transaction_payload # !Begin # Table_map # Write_rows # Xid
+--let $include_trx_payload_events = 1
+--source include/rpl/assert_binlog_events.inc
+
+--echo #
+--echo # 5) Cleanup.
+--echo #
+
+DEALLOCATE PREPARE s;
+DROP TABLE t1;
+--replace_result $saved_min_size SAVED
+--eval SET @@session.binlog_transaction_compression_min_size = $saved_min_size

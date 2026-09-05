@@ -1,0 +1,94 @@
+# Variable Name: binlog_transaction_compression_min_size
+# Scope: Global & Session
+# Access Type: Dynamic
+# Data Type: numeric
+
+SET @saved_global = @@global.binlog_transaction_compression_min_size;
+SET @saved_session = @@session.binlog_transaction_compression_min_size;
+
+--echo #
+--echo # Default value is 0 in both scopes
+--echo #
+
+SELECT @@global.binlog_transaction_compression_min_size;
+SELECT @@session.binlog_transaction_compression_min_size;
+
+--echo #
+--echo # Value can be set in every scope, P_S reports the value set
+--echo #
+
+SET @@global.binlog_transaction_compression_min_size = 1024;
+SELECT VARIABLE_VALUE FROM performance_schema.global_variables
+  WHERE VARIABLE_NAME = 'binlog_transaction_compression_min_size';
+
+SET @@session.binlog_transaction_compression_min_size = 512;
+SELECT VARIABLE_VALUE FROM performance_schema.session_variables
+  WHERE VARIABLE_NAME = 'binlog_transaction_compression_min_size';
+
+SET PERSIST binlog_transaction_compression_min_size = 2048;
+SELECT VARIABLE_VALUE FROM performance_schema.persisted_variables
+  WHERE VARIABLE_NAME = 'binlog_transaction_compression_min_size';
+
+SET PERSIST_ONLY binlog_transaction_compression_min_size = 4096;
+SELECT VARIABLE_VALUE FROM performance_schema.persisted_variables
+  WHERE VARIABLE_NAME = 'binlog_transaction_compression_min_size';
+
+RESET PERSIST;
+
+--echo #
+--echo # DEFAULT restores 0
+--echo #
+
+SET @@global.binlog_transaction_compression_min_size = DEFAULT;
+SELECT @@global.binlog_transaction_compression_min_size;
+
+SET @@session.binlog_transaction_compression_min_size = DEFAULT;
+SELECT @@session.binlog_transaction_compression_min_size;
+
+--echo #
+--echo # Out-of-range and invalid values
+--echo #
+
+SET @@global.binlog_transaction_compression_min_size = -1;
+SELECT @@global.binlog_transaction_compression_min_size;
+
+--error ER_WRONG_TYPE_FOR_VAR
+SET @@global.binlog_transaction_compression_min_size = 'text';
+
+--error ER_WRONG_TYPE_FOR_VAR
+SET @@session.binlog_transaction_compression_min_size = 1.5;
+
+--echo #
+--echo # Session scope is not settable inside a transaction, global scope is
+--echo #
+
+BEGIN;
+--error ER_VARIABLE_NOT_SETTABLE_IN_TRANSACTION
+SET @@session.binlog_transaction_compression_min_size = 64;
+SET @@global.binlog_transaction_compression_min_size = 64;
+ROLLBACK;
+
+--echo #
+--echo # Changing the value requires SYSTEM_VARIABLES_ADMIN
+--echo #
+
+CREATE USER user1;
+--connect(conn_user1,localhost,user1,,)
+--error ER_SPECIFIC_ACCESS_DENIED_ERROR
+SET @@global.binlog_transaction_compression_min_size = 128;
+
+--connection default
+GRANT SYSTEM_VARIABLES_ADMIN ON *.* TO user1@'%';
+--connection conn_user1
+SET @@global.binlog_transaction_compression_min_size = 128;
+
+--connection default
+--disconnect conn_user1
+DROP USER user1;
+
+--echo #
+--echo # Cleanup
+--echo #
+
+SET @@global.binlog_transaction_compression_min_size = @saved_global;
+SET @@session.binlog_transaction_compression_min_size = @saved_session;

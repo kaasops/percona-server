@@ -67,3 +67,17 @@ loose-innodb_spin_wait_pause_multiplier = 50
 #   pure repeated work. Status counters Sp_cache_insert /
 #   Sp_routine_count / Sp_cache_resets_skipped come with this unit.
 loose-reset_connection_keep_sp_cache = ON
+
+# DESCRIPTION: Minimum transaction payload size, in bytes, required to
+#   apply binary log transaction compression (@@binlog_transaction_
+#   compression must also be ON). Transactions smaller than this are
+#   written to the binary log uncompressed, skipping compression
+#   overhead that rarely pays off at small sizes. Session-scoped
+#   (settable per session); the global value sets the default for new
+#   sessions.
+# DEFAULT: 0 (no threshold -- every eligible transaction is considered
+#   for compression, matching pre-existing behavior)
+# RECOMMENDED: 0 (leave at default; raise only with a measured
+#   workload-specific payload-size distribution showing small
+#   transactions dominate compression overhead)
+loose-binlog_transaction_compression_min_size = 0

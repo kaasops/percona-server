@@ -1,0 +1,32 @@
+CREATE TABLE t1 (id bigint NOT NULL AUTO_INCREMENT PRIMARY KEY,
+x mediumblob NOT NULL) ENGINE=InnoDB;
+PREPARE s FROM "INSERT INTO t1 (x) VALUES (?)";
+SET @a = LOAD_FILE('../../std_data/binlog_compression.gz');
+#
+# 2) Default threshold (0): the transaction is compressed.
+#
+RESET BINARY LOGS AND GTIDS;
+EXECUTE s USING @a;
+include/rpl/assert_binlog_events.inc [!Gtid_or_anon # Transaction_payload # !Begin # Table_map # Write_rows # Xid]
+#
+# 3) Threshold above the payload size: the transaction is written
+#    uncompressed.
+#
+RESET BINARY LOGS AND GTIDS;
+SET @@session.binlog_transaction_compression_min_size = 1000000;
+EXECUTE s USING @a;
+include/rpl/assert_binlog_events.inc [!Gtid_or_anon # !Begin # Table_map # Write_rows # Xid]
+#
+# 4) Threshold at/below the payload size: the transaction is
+#    compressed again.
+#
+RESET BINARY LOGS AND GTIDS;
+SET @@session.binlog_transaction_compression_min_size = 1;
+EXECUTE s USING @a;
+include/rpl/assert_binlog_events.inc [!Gtid_or_anon # Transaction_payload # !Begin # Table_map # Write_rows # Xid]
+#
+# 5) Cleanup.
+#
+DEALLOCATE PREPARE s;
+DROP TABLE t1;
+SET @@session.binlog_transaction_compression_min_size = SAVED;

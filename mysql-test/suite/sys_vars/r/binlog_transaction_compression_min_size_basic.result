@@ -1,0 +1,81 @@
+SET @saved_global = @@global.binlog_transaction_compression_min_size;
+SET @saved_session = @@session.binlog_transaction_compression_min_size;
+#
+# Default value is 0 in both scopes
+#
+SELECT @@global.binlog_transaction_compression_min_size;
+@@global.binlog_transaction_compression_min_size
+0
+SELECT @@session.binlog_transaction_compression_min_size;
+@@session.binlog_transaction_compression_min_size
+0
+#
+# Value can be set in every scope, P_S reports the value set
+#
+SET @@global.binlog_transaction_compression_min_size = 1024;
+SELECT VARIABLE_VALUE FROM performance_schema.global_variables
+WHERE VARIABLE_NAME = 'binlog_transaction_compression_min_size';
+VARIABLE_VALUE
+1024
+SET @@session.binlog_transaction_compression_min_size = 512;
+SELECT VARIABLE_VALUE FROM performance_schema.session_variables
+WHERE VARIABLE_NAME = 'binlog_transaction_compression_min_size';
+VARIABLE_VALUE
+512
+SET PERSIST binlog_transaction_compression_min_size = 2048;
+SELECT VARIABLE_VALUE FROM performance_schema.persisted_variables
+WHERE VARIABLE_NAME = 'binlog_transaction_compression_min_size';
+VARIABLE_VALUE
+2048
+SET PERSIST_ONLY binlog_transaction_compression_min_size = 4096;
+SELECT VARIABLE_VALUE FROM performance_schema.persisted_variables
+WHERE VARIABLE_NAME = 'binlog_transaction_compression_min_size';
+VARIABLE_VALUE
+4096
+RESET PERSIST;
+#
+# DEFAULT restores 0
+#
+SET @@global.binlog_transaction_compression_min_size = DEFAULT;
+SELECT @@global.binlog_transaction_compression_min_size;
+@@global.binlog_transaction_compression_min_size
+0
+SET @@session.binlog_transaction_compression_min_size = DEFAULT;
+SELECT @@session.binlog_transaction_compression_min_size;
+@@session.binlog_transaction_compression_min_size
+0
+#
+# Out-of-range and invalid values
+#
+SET @@global.binlog_transaction_compression_min_size = -1;
+Warnings:
+Warning	1292	Truncated incorrect binlog_transaction_compression_min_size value: '-1'
+SELECT @@global.binlog_transaction_compression_min_size;
+@@global.binlog_transaction_compression_min_size
+0
+SET @@global.binlog_transaction_compression_min_size = 'text';
+ERROR 42000: Incorrect argument type to variable 'binlog_transaction_compression_min_size'
+SET @@session.binlog_transaction_compression_min_size = 1.5;
+ERROR 42000: Incorrect argument type to variable 'binlog_transaction_compression_min_size'
+#
+# Session scope is not settable inside a transaction, global scope is
+#
+BEGIN;
+SET @@session.binlog_transaction_compression_min_size = 64;
+ERROR HY000: The system variable binlog_transaction_compression_min_size cannot be set when there is an ongoing transaction.
+SET @@global.binlog_transaction_compression_min_size = 64;
+ROLLBACK;
+#
+# Changing the value requires SYSTEM_VARIABLES_ADMIN
+#
+CREATE USER user1;
+SET @@global.binlog_transaction_compression_min_size = 128;
+ERROR 42000: Access denied; you need (at least one of) the SUPER or SYSTEM_VARIABLES_ADMIN privilege(s) for this operation
+GRANT SYSTEM_VARIABLES_ADMIN ON *.* TO user1@'%';
+SET @@global.binlog_transaction_compression_min_size = 128;
+DROP USER user1;
+#
+# Cleanup
+#
+SET @@global.binlog_transaction_compression_min_size = @saved_global;
+SET @@session.binlog_transaction_compression_min_size = @saved_session;

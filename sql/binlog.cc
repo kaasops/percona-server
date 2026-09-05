@@ -2223,6 +2223,15 @@ class Binlog_cache_compressor {
                           "binlog_transaction_compression disabled"));
       return false;
     }
+
+    // do not compress if payload is smaller than configured threshold
+    if (m_thd.variables.binlog_trx_compression_min_size > 0 &&
+        m_uncompressed_size < m_thd.variables.binlog_trx_compression_min_size) {
+      DBUG_PRINT("info", ("fallback to uncompressed: payload size below "
+                          "compression threshold"));
+      return false;
+    }
+
     // do not compress if there are incident events
     DBUG_EXECUTE_IF("binlog_compression_inject_incident", {
       static int incident_count{0};
