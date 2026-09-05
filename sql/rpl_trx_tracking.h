@@ -27,6 +27,7 @@
 #include <assert.h>
 #include <sys/types.h>
 #include <atomic>
+#include <cstdint>
 #include <map>
 
 #include "atomic_shared_ptr.h"
@@ -36,6 +37,35 @@
 #include "my_inttypes.h"
 
 class THD;
+
+/*
+  [INT02] Observability counters for the WRITESET dependency tracker's
+  eight fallback-to-COMMIT_ORDER mechanisms (F1-F8), plus one
+  counter for every transaction handled by the tracker and one for every
+  writeset-history clear. Definitions and increments live in
+  rpl_trx_tracking.cc, next to the code paths they observe; SHOW STATUS
+  registration lives in mysqld.cc. Relaxed order is enough: each is an
+  independent monotonic counter read only for SHOW STATUS, with no
+  ordering relationship to any other memory access.
+*/
+extern std::atomic<uint64_t> replication_writeset_trx_total;
+// F1
+extern std::atomic<uint64_t> replication_writeset_fallback_fk_parent;
+// F2
+extern std::atomic<uint64_t> replication_writeset_fallback_empty_writeset;
+// F3
+extern std::atomic<uint64_t> replication_writeset_fallback_ctas_ddl;
+// F4
+extern std::atomic<uint64_t> replication_writeset_fallback_non_row_format;
+// F5
+extern std::atomic<uint64_t> replication_writeset_fallback_trx_limit;
+// F6
+extern std::atomic<uint64_t> replication_writeset_history_overflow;
+// F7
+extern std::atomic<uint64_t> replication_writeset_fallback_missing_pk;
+// F8
+extern std::atomic<uint64_t> replication_writeset_fallback_unsafe_stmt;
+extern std::atomic<uint64_t> replication_writeset_history_clears;
 
 /**
   Logical timestamp generator for logical timestamping binlog transactions.

@@ -41,6 +41,19 @@
 #include "sql/system_variables.h"
 #include "sql/transaction_info.h"
 
+// [INT02] P5/A1: definitions for the extern atomics declared in
+// rpl_trx_tracking.h; see that header for the rationale of relaxed order.
+std::atomic<uint64_t> replication_writeset_trx_total{0};
+std::atomic<uint64_t> replication_writeset_fallback_fk_parent{0};
+std::atomic<uint64_t> replication_writeset_fallback_empty_writeset{0};
+std::atomic<uint64_t> replication_writeset_fallback_ctas_ddl{0};
+std::atomic<uint64_t> replication_writeset_fallback_non_row_format{0};
+std::atomic<uint64_t> replication_writeset_fallback_trx_limit{0};
+std::atomic<uint64_t> replication_writeset_history_overflow{0};
+std::atomic<uint64_t> replication_writeset_fallback_missing_pk{0};
+std::atomic<uint64_t> replication_writeset_fallback_unsafe_stmt{0};
+std::atomic<uint64_t> replication_writeset_history_clears{0};
+
 Logical_clock::Logical_clock() : state(SEQ_UNINIT), offset(0) {}
 
 /**
@@ -188,8 +201,14 @@ void Commit_order_trx_dependency_tracker::get_dependency(
         std::max(trn_ctx->last_committed, m_last_blocking_transaction) -
         m_max_committed_transaction.get_offset();
 
-  if (is_trx_unsafe_for_parallel_slave(thd) || parallelization_barrier)
+  if (is_trx_unsafe_for_parallel_slave(thd) || parallelization_barrier) {
+    // F8: admin statement (ANALYZE/REPAIR/OPTIMIZE/...) or a binlog
+    // incident forces a parallelization barrier; observation only, the
+    // barrier below is unchanged.
+    replication_writeset_fallback_unsafe_stmt.fetch_add(
+        1, std::memory_order_relaxed);
     m_last_blocking_transaction = trn_ctx->sequence_number;
+  }
 }
 
 int64 Commit_order_trx_dependency_tracker::step() {
@@ -227,6 +246,10 @@ void Commit_order_trx_dependency_tracker::update_max_committed(
 void Writeset_trx_dependency_tracker::get_dependency(THD *thd,
                                                      int64 &sequence_number,
                                                      int64 &commit_parent) {
+  // [INT02] P5/A1: one observation per transaction handled by the WRITESET
+  // tracker, regardless of the outcome computed below.
+  replication_writeset_trx_total.fetch_add(1, std::memory_order_relaxed);
+
   Rpl_transaction_write_set_ctx *write_set_ctx =
       thd->get_transaction()->get_transaction_write_set_ctx();
   std::vector<uint64> *writeset = write_set_ctx->get_write_set();
@@ -242,25 +265,50 @@ void Writeset_trx_dependency_tracker::get_dependency(THD *thd,
     transaction cascade to other tables. If that happens revert to using the
     COMMIT_ORDER and clear the history to keep data consistent.
   */
-  bool can_use_writesets =
-      // empty writeset implies DDL or similar, except if there are missing keys
-      (writeset->size() != 0 || write_set_ctx->get_has_missing_keys() ||
-       /*
-         The empty transactions do not need to clear the writeset history, since
-         they can be executed in parallel.
-       */
-       is_empty_transaction_in_binlog_cache(thd)) &&
-      /*
-        'CREATE TABLE ... AS SELECT' is considered a DML, though in reality
-        it is DDL + DML, which write-sets do not capture all dependencies.
-      */
-      !is_create_table_as_query_block(thd) &&
-      // binlog format must be ROW
-      thd->variables.binlog_format == BINLOG_FORMAT_ROW &&
-      // must not use foreign keys
-      !write_set_ctx->get_has_related_foreign_keys() &&
-      // it did not broke past the capacity already
-      !write_set_ctx->was_write_set_limit_reached();
+  /*
+    [INT02] P5/A1: the single &&-expression below was rewritten into
+    sequential ifs so a fallback counter (F1-F5) can be attributed to
+    whichever term first evaluates false, in the exact short-circuit order
+    of the original chain. This must NOT be folded back into one
+    expression with all terms evaluated: is_empty_transaction_in_binlog_cache()
+    and is_create_table_as_query_block() would then be called on paths
+    where today they are not, changing behavior. The boolean result and
+    the set of function calls performed are unchanged from before.
+  */
+  bool can_use_writesets = true;
+  if (!(writeset->size() != 0 || write_set_ctx->get_has_missing_keys() ||
+        /*
+          The empty transactions do not need to clear the writeset history,
+          since they can be executed in parallel.
+        */
+        is_empty_transaction_in_binlog_cache(thd))) {
+    // F2: empty writeset implies DDL or similar, except if there are
+    // missing keys.
+    can_use_writesets = false;
+    replication_writeset_fallback_empty_writeset.fetch_add(
+        1, std::memory_order_relaxed);
+  } else if (is_create_table_as_query_block(thd)) {
+    /*
+      'CREATE TABLE ... AS SELECT' is considered a DML, though in reality
+      it is DDL + DML, which write-sets do not capture all dependencies.
+    */
+    can_use_writesets = false;  // F3
+    replication_writeset_fallback_ctas_ddl.fetch_add(1,
+                                                     std::memory_order_relaxed);
+  } else if (thd->variables.binlog_format != BINLOG_FORMAT_ROW) {
+    can_use_writesets = false;  // F4: binlog format must be ROW
+    replication_writeset_fallback_non_row_format.fetch_add(
+        1, std::memory_order_relaxed);
+  } else if (write_set_ctx->get_has_related_foreign_keys()) {
+    can_use_writesets = false;  // F1: must not use foreign keys
+    replication_writeset_fallback_fk_parent.fetch_add(
+        1, std::memory_order_relaxed);
+  } else if (write_set_ctx->was_write_set_limit_reached()) {
+    can_use_writesets =
+        false;  // F5: it did not broke past the capacity already
+    replication_writeset_fallback_trx_limit.fetch_add(
+        1, std::memory_order_relaxed);
+  }
   bool exceeds_capacity = false;
   auto writeset_history = atomic_load_shared(m_writeset_history);
 
@@ -272,6 +320,12 @@ void Writeset_trx_dependency_tracker::get_dependency(THD *thd,
     */
     exceeds_capacity =
         writeset_history->size() + writeset->size() > m_opt_max_history_size;
+    if (exceeds_capacity) {
+      // F6: writeset history is full; this transaction still uses
+      // WRITESET parallelism, but the history is cleared below.
+      replication_writeset_history_overflow.fetch_add(
+          1, std::memory_order_relaxed);
+    }
 
     /*
      Compute the greatest sequence_number among all conflicts and add the
@@ -305,6 +359,12 @@ void Writeset_trx_dependency_tracker::get_dependency(THD *thd,
        commit parent calculated with COMMIT_ORDER.
       */
       commit_parent = std::min(last_parent, commit_parent);
+    } else {
+      // F7: a table without a usable PK/unique key was touched; keep the
+      // COMMIT_ORDER commit_parent already computed above for this
+      // transaction (the degradation is not a barrier for others).
+      replication_writeset_fallback_missing_pk.fetch_add(
+          1, std::memory_order_relaxed);
     }
   }
 
@@ -312,6 +372,8 @@ void Writeset_trx_dependency_tracker::get_dependency(THD *thd,
     m_writeset_history_start = sequence_number;
     if (writeset_history) {
       writeset_history->clear();
+      replication_writeset_history_clears.fetch_add(1,
+                                                    std::memory_order_relaxed);
     }
   }
 }

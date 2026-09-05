@@ -1,0 +1,175 @@
+################################################################################
+# ==== Purpose ====
+# [INT02] P5/A1: verify that the SHOW STATUS 'Replication_writeset_*'
+# counters observe each of the eight mechanisms that fall back from
+# WRITESET to COMMIT_ORDER binlog transaction dependency tracking (F1-F8),
+# plus the total-transactions and history-clears counters. This unit is
+# purely observational: it does not change dependency-tracking behavior,
+# so this test only asserts that counters move, not that logical
+# timestamps differ from before the counters existed.
+#
+# ==== Implementation ====
+# Each case below captures a counter's value, performs a statement that is
+# known (by reading rpl_trx_tracking.cc / rpl_write_set_handler.cc) to
+# take exactly one fallback path, and asserts the counter increased by at
+# least 1. F1-F5 are attributed by short-circuit order of a single &&
+# chain in Writeset_trx_dependency_tracker::get_dependency(), so a
+# statement is built to fail at the intended term specifically (see
+# comments per case for why the other terms do not fire first).
+################################################################################
+--source include/have_binlog_format_row.inc
+--source include/rpl/init_source_replica.inc
+
+--connection master
+
+# Known host/harness artifact (E-10 in known-effects.md, same pattern as
+# innodb_buffer_pool_init_parallel.test): InnoDB's setpriority()/nice()
+# call for its I/O and purge threads gets EPERM under mtr's plain-process
+# launch (only the packaged systemd unit's LimitNICE grants this), which
+# trips mtr's error-log scan at the end of the test. Not related to the
+# WRITESET counters under test.
+call mtr.add_suppression("Setting thread .* nice to 0 failed");
+call mtr.add_suppression("Failed to set (I/O thread|purge coordinator thread) priority");
+
+--echo #
+--echo # F2 (empty writeset) and Replication_writeset_trx_total:
+--echo # a plain DDL statement (not CTAS) reaches the WRITESET tracker with
+--echo # an empty writeset (row-set extraction is only invoked from
+--echo # binlog_log_row(), which plain DDL never calls) and without
+--echo # has_missing_keys/empty-transaction being set, so the empty-writeset
+--echo # term is the first to fail.
+--let $before_f2 = query_get_value(SHOW GLOBAL STATUS LIKE 'Replication_writeset_fallback_empty_writeset', Value, 1)
+--let $before_total = query_get_value(SHOW GLOBAL STATUS LIKE 'Replication_writeset_trx_total', Value, 1)
+CREATE TABLE t_f2 (a INT);
+--let $assert_text = F2 (empty writeset) counter increased by at least 1
+--let $assert_cond = [SHOW GLOBAL STATUS LIKE "Replication_writeset_fallback_empty_writeset", Value, 1] >= $before_f2 + 1
+--source include/assert.inc
+--let $assert_text = trx_total counter increased by at least 1
+--let $assert_cond = [SHOW GLOBAL STATUS LIKE "Replication_writeset_trx_total", Value, 1] >= $before_total + 1
+--source include/assert.inc
+
+--echo #
+--echo # F3 (CTAS / transactional DDL): 'CREATE TABLE ... AS SELECT' copies
+--echo # rows, so the writeset is not empty and the empty-writeset term
+--echo # passes; is_create_table_as_query_block() is the next term and it
+--echo # is the one that fails.
+CREATE TABLE t_ctas_src (a INT PRIMARY KEY, b INT);
+INSERT INTO t_ctas_src VALUES (1, 1);
+--let $before_f3 = query_get_value(SHOW GLOBAL STATUS LIKE 'Replication_writeset_fallback_ctas_ddl', Value, 1)
+CREATE TABLE t_ctas_dst AS SELECT * FROM t_ctas_src;
+--let $assert_text = F3 (CTAS/transactional DDL) counter increased by at least 1
+--let $assert_cond = [SHOW GLOBAL STATUS LIKE "Replication_writeset_fallback_ctas_ddl", Value, 1] >= $before_f3 + 1
+--source include/assert.inc
+
+--echo #
+--echo # F1 (FK parent) and Replication_writeset_history_clears: an INSERT
+--echo # into a table that is the parent side of a foreign key (and has a
+--echo # usable primary key) sets has_related_foreign_keys() for this
+--echo # transaction; the writeset is non-empty, it is not CTAS and the
+--echo # session is in ROW format, so the FK term is the one that fails.
+CREATE TABLE t_fk_parent (a INT PRIMARY KEY, b INT);
+CREATE TABLE t_fk_child (a INT PRIMARY KEY, b INT,
+                         FOREIGN KEY (b) REFERENCES t_fk_parent (a));
+--let $before_f1 = query_get_value(SHOW GLOBAL STATUS LIKE 'Replication_writeset_fallback_fk_parent', Value, 1)
+--let $before_clears = query_get_value(SHOW GLOBAL STATUS LIKE 'Replication_writeset_history_clears', Value, 1)
+INSERT INTO t_fk_parent VALUES (1, 1);
+--let $assert_text = F1 (FK parent) counter increased by at least 1
+--let $assert_cond = [SHOW GLOBAL STATUS LIKE "Replication_writeset_fallback_fk_parent", Value, 1] >= $before_f1 + 1
+--source include/assert.inc
+--let $assert_text = history_clears counter increased by at least 1
+--let $assert_cond = [SHOW GLOBAL STATUS LIKE "Replication_writeset_history_clears", Value, 1] >= $before_clears + 1
+--source include/assert.inc
+
+--echo #
+--echo # F4 (binlog_format != ROW): under MIXED format, a statement using
+--echo # UUID_SHORT() is unsafe for statement-based logging and is therefore
+--echo # actually logged as a row event (non-empty writeset, empty-writeset
+--echo # term passes; not CTAS), while @@SESSION.binlog_format itself stays
+--echo # MIXED, so the binlog-format term is the one that fails. A plain
+--echo # STATEMENT-format DML does not reach this term at all: it never
+--echo # calls binlog_log_row(), so its writeset stays empty and F2 (not F4)
+--echo # would fire first -- this is why UUID_SHORT()/MIXED is used instead.
+CREATE TABLE t_f4 (a INT PRIMARY KEY, b BIGINT UNSIGNED);
+SET SESSION binlog_format = MIXED;
+--let $before_f4 = query_get_value(SHOW GLOBAL STATUS LIKE 'Replication_writeset_fallback_non_row_format', Value, 1)
+INSERT INTO t_f4 VALUES (1, UUID_SHORT());
+SET SESSION binlog_format = ROW;
+--let $assert_text = F4 (binlog_format != ROW) counter increased by at least 1
+--let $assert_cond = [SHOW GLOBAL STATUS LIKE "Replication_writeset_fallback_non_row_format", Value, 1] >= $before_f4 + 1
+--source include/assert.inc
+
+--echo #
+--echo # F7 (missing PK/unique key): a table without a usable PK/unique key
+--echo # never reaches the PKE-generation block in add_pke(), so
+--echo # has_missing_keys() is set; the empty-writeset term passes because
+--echo # of has_missing_keys() (not because of a non-empty writeset), FK and
+--echo # binlog-format terms pass normally, and the missing-keys branch
+--echo # (a separate point, not part of the && chain) is the one that fires.
+CREATE TABLE t_nopk (a INT, b INT);
+--let $before_f7 = query_get_value(SHOW GLOBAL STATUS LIKE 'Replication_writeset_fallback_missing_pk', Value, 1)
+INSERT INTO t_nopk VALUES (1, 1);
+--let $assert_text = F7 (missing PK/unique key) counter increased by at least 1
+--let $assert_cond = [SHOW GLOBAL STATUS LIKE "Replication_writeset_fallback_missing_pk", Value, 1] >= $before_f7 + 1
+--source include/assert.inc
+
+--echo #
+--echo # F8 (unsafe admin statement / incident): ANALYZE TABLE is one of the
+--echo # statements recognized by is_trx_unsafe_for_parallel_slave() and
+--echo # forces a parallelization barrier in
+--echo # Commit_order_trx_dependency_tracker::get_dependency(), independent
+--echo # of the WRITESET-specific && chain above.
+--let $before_f8 = query_get_value(SHOW GLOBAL STATUS LIKE 'Replication_writeset_fallback_unsafe_stmt', Value, 1)
+ANALYZE TABLE t_f4;
+--let $assert_text = F8 (unsafe admin statement) counter increased by at least 1
+--let $assert_cond = [SHOW GLOBAL STATUS LIKE "Replication_writeset_fallback_unsafe_stmt", Value, 1] >= $before_f8 + 1
+--source include/assert.inc
+
+--echo #
+--echo # F5 (own writeset exceeds the transaction limit): with the history
+--echo # size limit set very low, a transaction that touches more distinct
+--echo # rows of a PK table than the limit has its writeset cleared by
+--echo # add_write_set() once the limit is reached
+--echo # (was_write_set_limit_reached() becomes true), which would make the
+--echo # writeset empty at commit time. To keep the empty-writeset term
+--echo # passing (so the chain actually reaches the limit-reached term
+--echo # instead of stopping at F2), the same transaction also touches a
+--echo # no-PK table, which sets has_missing_keys() independently of the
+--echo # writeset-limit mechanism.
+CREATE TABLE t_limit (a INT PRIMARY KEY);
+SET GLOBAL binlog_transaction_dependency_history_size = 2;
+--let $before_f5 = query_get_value(SHOW GLOBAL STATUS LIKE 'Replication_writeset_fallback_trx_limit', Value, 1)
+BEGIN;
+INSERT INTO t_limit VALUES (201), (202), (203);
+INSERT INTO t_nopk VALUES (99, 99);
+COMMIT;
+--let $assert_text = F5 (own writeset exceeds transaction limit) counter increased by at least 1
+--let $assert_cond = [SHOW GLOBAL STATUS LIKE "Replication_writeset_fallback_trx_limit", Value, 1] >= $before_f5 + 1
+--source include/assert.inc
+
+--echo #
+--echo # F6 (writeset history overflow): with the same low history-size
+--echo # limit, two separate one-row transactions (each individually within
+--echo # the per-transaction limit) fill the shared writeset history to
+--echo # capacity; a third one-row transaction still fits its own writeset
+--echo # under the limit (so it keeps using WRITESET, unlike F5 above), but
+--echo # merging it into the already-full history exceeds capacity.
+--echo # FLUSH LOGS resets the writeset history (Transaction_dependency_tracker::rotate())
+--echo # so this case starts from a known-empty history.
+FLUSH LOGS;
+INSERT INTO t_limit VALUES (1);
+INSERT INTO t_limit VALUES (2);
+--let $before_f6 = query_get_value(SHOW GLOBAL STATUS LIKE 'Replication_writeset_history_overflow', Value, 1)
+INSERT INTO t_limit VALUES (3);
+--let $assert_text = F6 (writeset history overflow) counter increased by at least 1
+--let $assert_cond = [SHOW GLOBAL STATUS LIKE "Replication_writeset_history_overflow", Value, 1] >= $before_f6 + 1
+--source include/assert.inc
+
+SET GLOBAL binlog_transaction_dependency_history_size = DEFAULT;
+
+--echo #
+--echo # Clean up
+--connection master
+DROP TABLE t_f2, t_ctas_dst, t_ctas_src, t_fk_child, t_fk_parent, t_f4,
+          t_nopk, t_limit;
+
+--source include/rpl/deinit.inc

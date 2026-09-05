@@ -1,0 +1,114 @@
+include/rpl/init_source_replica.inc
+Warnings:
+Note	####	Sending passwords in plain text without SSL/TLS is extremely insecure.
+Note	####	Storing MySQL user name or password information in the connection metadata repository is not secure and is therefore not recommended. Please consider using the USER and PASSWORD connection options for START REPLICA; see the 'START REPLICA Syntax' in the MySQL Manual for more information.
+[connection master]
+call mtr.add_suppression("Setting thread .* nice to 0 failed");
+call mtr.add_suppression("Failed to set (I/O thread|purge coordinator thread) priority");
+#
+# F2 (empty writeset) and Replication_writeset_trx_total:
+# a plain DDL statement (not CTAS) reaches the WRITESET tracker with
+# an empty writeset (row-set extraction is only invoked from
+# binlog_log_row(), which plain DDL never calls) and without
+# has_missing_keys/empty-transaction being set, so the empty-writeset
+# term is the first to fail.
+CREATE TABLE t_f2 (a INT);
+include/assert.inc [F2 (empty writeset) counter increased by at least 1]
+include/assert.inc [trx_total counter increased by at least 1]
+#
+# F3 (CTAS / transactional DDL): 'CREATE TABLE ... AS SELECT' copies
+# rows, so the writeset is not empty and the empty-writeset term
+# passes; is_create_table_as_query_block() is the next term and it
+# is the one that fails.
+CREATE TABLE t_ctas_src (a INT PRIMARY KEY, b INT);
+INSERT INTO t_ctas_src VALUES (1, 1);
+CREATE TABLE t_ctas_dst AS SELECT * FROM t_ctas_src;
+include/assert.inc [F3 (CTAS/transactional DDL) counter increased by at least 1]
+#
+# F1 (FK parent) and Replication_writeset_history_clears: an INSERT
+# into a table that is the parent side of a foreign key (and has a
+# usable primary key) sets has_related_foreign_keys() for this
+# transaction; the writeset is non-empty, it is not CTAS and the
+# session is in ROW format, so the FK term is the one that fails.
+CREATE TABLE t_fk_parent (a INT PRIMARY KEY, b INT);
+CREATE TABLE t_fk_child (a INT PRIMARY KEY, b INT,
+FOREIGN KEY (b) REFERENCES t_fk_parent (a));
+INSERT INTO t_fk_parent VALUES (1, 1);
+include/assert.inc [F1 (FK parent) counter increased by at least 1]
+include/assert.inc [history_clears counter increased by at least 1]
+#
+# F4 (binlog_format != ROW): under MIXED format, a statement using
+# UUID_SHORT() is unsafe for statement-based logging and is therefore
+# actually logged as a row event (non-empty writeset, empty-writeset
+# term passes; not CTAS), while @@SESSION.binlog_format itself stays
+# MIXED, so the binlog-format term is the one that fails. A plain
+# STATEMENT-format DML does not reach this term at all: it never
+# calls binlog_log_row(), so its writeset stays empty and F2 (not F4)
+# would fire first -- this is why UUID_SHORT()/MIXED is used instead.
+CREATE TABLE t_f4 (a INT PRIMARY KEY, b BIGINT UNSIGNED);
+SET SESSION binlog_format = MIXED;
+Warnings:
+Warning	1287	'@@binlog_format' is deprecated and will be removed in a future release.
+INSERT INTO t_f4 VALUES (1, UUID_SHORT());
+SET SESSION binlog_format = ROW;
+Warnings:
+Warning	1287	'@@binlog_format' is deprecated and will be removed in a future release.
+include/assert.inc [F4 (binlog_format != ROW) counter increased by at least 1]
+#
+# F7 (missing PK/unique key): a table without a usable PK/unique key
+# never reaches the PKE-generation block in add_pke(), so
+# has_missing_keys() is set; the empty-writeset term passes because
+# of has_missing_keys() (not because of a non-empty writeset), FK and
+# binlog-format terms pass normally, and the missing-keys branch
+# (a separate point, not part of the && chain) is the one that fires.
+CREATE TABLE t_nopk (a INT, b INT);
+INSERT INTO t_nopk VALUES (1, 1);
+include/assert.inc [F7 (missing PK/unique key) counter increased by at least 1]
+#
+# F8 (unsafe admin statement / incident): ANALYZE TABLE is one of the
+# statements recognized by is_trx_unsafe_for_parallel_slave() and
+# forces a parallelization barrier in
+# Commit_order_trx_dependency_tracker::get_dependency(), independent
+# of the WRITESET-specific && chain above.
+ANALYZE TABLE t_f4;
+Table	Op	Msg_type	Msg_text
+test.t_f4	analyze	status	OK
+include/assert.inc [F8 (unsafe admin statement) counter increased by at least 1]
+#
+# F5 (own writeset exceeds the transaction limit): with the history
+# size limit set very low, a transaction that touches more distinct
+# rows of a PK table than the limit has its writeset cleared by
+# add_write_set() once the limit is reached
+# (was_write_set_limit_reached() becomes true), which would make the
+# writeset empty at commit time. To keep the empty-writeset term
+# passing (so the chain actually reaches the limit-reached term
+# instead of stopping at F2), the same transaction also touches a
+# no-PK table, which sets has_missing_keys() independently of the
+# writeset-limit mechanism.
+CREATE TABLE t_limit (a INT PRIMARY KEY);
+SET GLOBAL binlog_transaction_dependency_history_size = 2;
+BEGIN;
+INSERT INTO t_limit VALUES (201), (202), (203);
+INSERT INTO t_nopk VALUES (99, 99);
+COMMIT;
+include/assert.inc [F5 (own writeset exceeds transaction limit) counter increased by at least 1]
+#
+# F6 (writeset history overflow): with the same low history-size
+# limit, two separate one-row transactions (each individually within
+# the per-transaction limit) fill the shared writeset history to
+# capacity; a third one-row transaction still fits its own writeset
+# under the limit (so it keeps using WRITESET, unlike F5 above), but
+# merging it into the already-full history exceeds capacity.
+# FLUSH LOGS resets the writeset history (Transaction_dependency_tracker::rotate())
+# so this case starts from a known-empty history.
+FLUSH LOGS;
+INSERT INTO t_limit VALUES (1);
+INSERT INTO t_limit VALUES (2);
+INSERT INTO t_limit VALUES (3);
+include/assert.inc [F6 (writeset history overflow) counter increased by at least 1]
+SET GLOBAL binlog_transaction_dependency_history_size = DEFAULT;
+#
+# Clean up
+DROP TABLE t_f2, t_ctas_dst, t_ctas_src, t_fk_child, t_fk_parent, t_f4,
+t_nopk, t_limit;
+include/rpl/deinit.inc

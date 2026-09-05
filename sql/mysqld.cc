@@ -11791,6 +11791,109 @@ static int show_replica_open_temp_tables(THD *, SHOW_VAR *var, char *buf) {
   *((int *)buf) = atomic_replica_open_temp_tables;
   return 0;
 }
+
+// [INT02] P5/A1: SHOW STATUS wrappers for the writeset dependency-tracking
+// fallback counters (rpl_trx_tracking.cc/.h). One function per counter,
+// following the show_deprecated_use_fk_on_non_standard_key_count() pattern
+// already used in this file for an atomic counter defined elsewhere.
+static int show_replication_writeset_trx_total(THD *, SHOW_VAR *var,
+                                               char *buf) {
+  var->type = SHOW_LONGLONG;
+  var->value = buf;
+  *((long long *)buf) = (long long)(replication_writeset_trx_total.load(
+      std::memory_order_relaxed));
+  return 0;
+}
+
+static int show_replication_writeset_fallback_fk_parent(THD *, SHOW_VAR *var,
+                                                        char *buf) {
+  var->type = SHOW_LONGLONG;
+  var->value = buf;
+  *((long long *)buf) =
+      (long long)(replication_writeset_fallback_fk_parent.load(
+          std::memory_order_relaxed));
+  return 0;
+}
+
+static int show_replication_writeset_fallback_empty_writeset(THD *,
+                                                             SHOW_VAR *var,
+                                                             char *buf) {
+  var->type = SHOW_LONGLONG;
+  var->value = buf;
+  *((long long *)buf) =
+      (long long)(replication_writeset_fallback_empty_writeset.load(
+          std::memory_order_relaxed));
+  return 0;
+}
+
+static int show_replication_writeset_fallback_ctas_ddl(THD *, SHOW_VAR *var,
+                                                       char *buf) {
+  var->type = SHOW_LONGLONG;
+  var->value = buf;
+  *((long long *)buf) = (long long)(replication_writeset_fallback_ctas_ddl.load(
+      std::memory_order_relaxed));
+  return 0;
+}
+
+static int show_replication_writeset_fallback_non_row_format(THD *,
+                                                             SHOW_VAR *var,
+                                                             char *buf) {
+  var->type = SHOW_LONGLONG;
+  var->value = buf;
+  *((long long *)buf) =
+      (long long)(replication_writeset_fallback_non_row_format.load(
+          std::memory_order_relaxed));
+  return 0;
+}
+
+static int show_replication_writeset_fallback_trx_limit(THD *, SHOW_VAR *var,
+                                                        char *buf) {
+  var->type = SHOW_LONGLONG;
+  var->value = buf;
+  *((long long *)buf) =
+      (long long)(replication_writeset_fallback_trx_limit.load(
+          std::memory_order_relaxed));
+  return 0;
+}
+
+static int show_replication_writeset_history_overflow(THD *, SHOW_VAR *var,
+                                                      char *buf) {
+  var->type = SHOW_LONGLONG;
+  var->value = buf;
+  *((long long *)buf) = (long long)(replication_writeset_history_overflow.load(
+      std::memory_order_relaxed));
+  return 0;
+}
+
+static int show_replication_writeset_fallback_missing_pk(THD *, SHOW_VAR *var,
+                                                         char *buf) {
+  var->type = SHOW_LONGLONG;
+  var->value = buf;
+  *((long long *)buf) =
+      (long long)(replication_writeset_fallback_missing_pk.load(
+          std::memory_order_relaxed));
+  return 0;
+}
+
+static int show_replication_writeset_fallback_unsafe_stmt(THD *, SHOW_VAR *var,
+                                                          char *buf) {
+  var->type = SHOW_LONGLONG;
+  var->value = buf;
+  *((long long *)buf) =
+      (long long)(replication_writeset_fallback_unsafe_stmt.load(
+          std::memory_order_relaxed));
+  return 0;
+}
+
+static int show_replication_writeset_history_clears(THD *, SHOW_VAR *var,
+                                                    char *buf) {
+  var->type = SHOW_LONGLONG;
+  var->value = buf;
+  *((long long *)buf) = (long long)(replication_writeset_history_clears.load(
+      std::memory_order_relaxed));
+  return 0;
+}
+
 bool validate_libcoredumper_path(char *libcoredumper_path) {
   /* validate path */
   if (!is_valid_log_name(
@@ -12124,6 +12227,38 @@ SHOW_VAR status_vars[] = {
      (char *)&show_replica_rows_last_search_algorithm_used, SHOW_FUNC,
      SHOW_SCOPE_GLOBAL},
 #endif
+    // [INT02] P5/A1: writeset dependency-tracking fallback counters,
+    // observation only (see rpl_trx_tracking.cc/.h).
+    {"Replication_writeset_trx_total",
+     (char *)&show_replication_writeset_trx_total, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Replication_writeset_fallback_fk_parent",
+     (char *)&show_replication_writeset_fallback_fk_parent, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Replication_writeset_fallback_empty_writeset",
+     (char *)&show_replication_writeset_fallback_empty_writeset, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Replication_writeset_fallback_ctas_ddl",
+     (char *)&show_replication_writeset_fallback_ctas_ddl, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Replication_writeset_fallback_non_row_format",
+     (char *)&show_replication_writeset_fallback_non_row_format, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Replication_writeset_fallback_trx_limit",
+     (char *)&show_replication_writeset_fallback_trx_limit, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Replication_writeset_history_overflow",
+     (char *)&show_replication_writeset_history_overflow, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Replication_writeset_fallback_missing_pk",
+     (char *)&show_replication_writeset_fallback_missing_pk, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Replication_writeset_fallback_unsafe_stmt",
+     (char *)&show_replication_writeset_fallback_unsafe_stmt, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Replication_writeset_history_clears",
+     (char *)&show_replication_writeset_history_clears, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
     {"Queries", (char *)&show_queries, SHOW_FUNC, SHOW_SCOPE_ALL},
     {"Questions", (char *)offsetof(System_status_var, questions),
      SHOW_LONGLONG_STATUS, SHOW_SCOPE_ALL},
