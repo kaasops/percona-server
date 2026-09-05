@@ -199,12 +199,16 @@ bool PFS_index_rpl_applier_status_by_worker_by_thread::match(
 
     if (mi->rli->slave_running) {
       if (worker) {
-        PSI_thread *psi [[maybe_unused]] = thd_get_psi(worker->info_thd);
+        mysql_mutex_lock(&worker->info_thd_lock);
+        if (worker->info_thd != nullptr) {
+          PSI_thread *psi [[maybe_unused]] = thd_get_psi(worker->info_thd);
 #ifdef HAVE_PSI_THREAD_INTERFACE
-        if (psi != nullptr) {
-          row.thread_id = PSI_THREAD_CALL(get_thread_internal_id)(psi);
-        }
+          if (psi != nullptr) {
+            row.thread_id = PSI_THREAD_CALL(get_thread_internal_id)(psi);
+          }
 #endif /* HAVE_PSI_THREAD_INTERFACE */
+        }
+        mysql_mutex_unlock(&worker->info_thd_lock);
       }
     }
 

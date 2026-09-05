@@ -6220,6 +6220,22 @@ static void *handle_slave_worker(void *arg) {
   w->info_thd = nullptr;
   mysql_mutex_unlock(&w->info_thd_lock);
 
+  // Sync point: info_thd is already nullptr here, but jobs_lock
+  // (taken above) is still held, which also blocks slave_stop_workers()'s
+  // join loop for this worker - so rli->slave_running stays true for as
+  // long as this point is held. That is the exact window a concurrent
+  // indexed PFS read of this worker's THREAD_ID races against.
+  //
+  // Plain DEBUG_SYNC(current_thd, ...) would not be reachable from a test:
+  // this runs in the worker's own background thread, which has no client
+  // session to arm it via SET @@SESSION.debug_sync - hence the
+  // DBUG_EXECUTE_IF + rpl_replica_debug_point() indirection already used
+  // elsewhere in this file for background replication threads, armed via
+  // SET @@GLOBAL.debug instead.
+  DBUG_EXECUTE_IF("rpl_worker_after_info_thd_null", {
+    rpl_replica_debug_point(DBUG_RPL_R_WORKER_AFTER_INFO_THD_NULL);
+  });
+
   mysql_cond_signal(&w->jobs_cond);  // famous last goodbye
 
   mysql_mutex_unlock(&w->jobs_lock);

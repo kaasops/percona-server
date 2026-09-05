@@ -1,0 +1,38 @@
+include/rpl/init_source_replica.inc
+Warnings:
+Note	####	Sending passwords in plain text without SSL/TLS is extremely insecure.
+Note	####	Storing MySQL user name or password information in the connection metadata repository is not secure and is therefore not recommended. Please consider using the USER and PASSWORD connection options for START REPLICA; see the 'START REPLICA Syntax' in the MySQL Manual for more information.
+[connection master]
+#
+# 1. Add some data to the source so replica workers have some stats
+[connection master]
+CREATE TABLE t1(a INT PRIMARY KEY);
+INSERT INTO t1 VALUES(1);
+include/rpl/sync_to_replica.inc
+#
+# 2. Look up a worker THREAD_ID to use in the indexed lookup below
+#
+# 3. Stop the replica, but park the worker threads right after each has
+# nulled its own info_thd, before slave_stop_workers() can join them
+# Adding debug point 'rpl_worker_after_info_thd_null' to @@GLOBAL.debug
+STOP REPLICA;
+[connection server_2]
+SET DEBUG_SYNC = "now WAIT_FOR signal.rpl_worker_info_thd_null";
+#
+# 4. The worker's info_thd is nullptr, rli->slave_running is still
+# true - run the indexed lookup now, it must not crash
+include/assert.inc ['rli->slave_running is still true while the worker is parked']
+SELECT THREAD_ID FROM performance_schema.replication_applier_status_by_worker WHERE THREAD_ID = 47;
+THREAD_ID
+#
+# 5. Unblock the workers, check STOP REPLICA completes
+# Removing debug point 'rpl_worker_after_info_thd_null' from @@GLOBAL.debug
+SET DEBUG_SYNC = "now SIGNAL signal.rpl_worker_continue";
+[connection slave]
+SET DEBUG_SYNC = 'RESET';
+#
+# 6. Cleanup
+include/rpl/start_replica.inc
+[connection master]
+DROP TABLE t1;
+include/rpl/deinit.inc

@@ -1,0 +1,119 @@
+# ==== Purpose ====
+#
+# This test checks that a SELECT ... WHERE THREAD_ID = <id> against
+# performance_schema.replication_applier_status_by_worker (the indexed
+# lookup path) does not crash when it races with STOP REPLICA nulling out
+# the worker's info_thd.
+#
+# This is a different code path from the one covered by
+# rpl_crash_on_pfs_worker_table_against_replica_stop.test (Bug#33290947):
+# that test does a full table scan (SELECT * without WHERE), which goes
+# through make_row() and is unaffected by this bug. The crash covered
+# here only happens via the indexed match() function used for an
+# equality lookup on THREAD_ID.
+#
+# ==== Implementation ====
+#
+# 1. Start a multi-threaded replica (default replica_parallel_workers)
+#    and produce one row in replication_applier_status_by_worker, so a
+#    worker's THREAD_ID is known.
+# 2. Arm the rpl_worker_after_info_thd_null debug point (handle_slave_worker)
+#    and issue STOP REPLICA. Every worker thread parks right after it has
+#    nulled out its own info_thd, but while it still holds
+#    Slave_worker::jobs_lock - which also blocks slave_stop_workers()'s
+#    join loop for each of them, so rli->slave_running stays true
+#    throughout.
+# 3. With the target worker parked there (info_thd already nullptr,
+#    worker object still alive, slave_running still true), run
+#    SELECT ... WHERE THREAD_ID = <id> normally (no synchronization
+#    needed on the reader side - the race window is already open).
+# 4. Before the fix, the SELECT dereferences the null worker->info_thd
+#    and crashes. After the fix, the worker no longer matches the
+#    THREAD_ID search key (its thread id now reads back as 0) and the
+#    query completes with an empty result, no crash.
+# 5. Unblock every parked worker so STOP REPLICA can finish.
+#
+# Note: the debug point is armed globally (SET @@GLOBAL.debug), so every
+# worker thread going through shutdown hits it, not just the one this
+# test targets - each does its own SIGNAL+WAIT_FOR round trip against the
+# same signal names. The production debug point string uses NO_CLEAR_EVENT
+# (sql/rpl_debug_points.h) precisely for this reason: WAIT_FOR otherwise
+# clears ("consumes") the signal once one waiter sees it, so a single
+# SIGNAL from this test would release only one worker and strand the
+# rest until the debug-sync facility's own (long) internal timeout.
+
+--source include/have_debug.inc
+--source include/have_debug_sync.inc
+--source include/have_binlog_format_row.inc
+--let $rpl_extra_connections_per_server = 1
+--source include/rpl/init_source_replica.inc
+
+--echo #
+--echo # 1. Add some data to the source so replica workers have some stats
+
+--source include/rpl/connection_source.inc
+
+CREATE TABLE t1(a INT PRIMARY KEY);
+INSERT INTO t1 VALUES(1);
+
+--source include/rpl/sync_to_replica.inc
+
+--echo #
+--echo # 2. Look up a worker THREAD_ID to use in the indexed lookup below
+
+--let $thread_id = query_get_value(SELECT THREAD_ID FROM performance_schema.replication_applier_status_by_worker LIMIT 1, THREAD_ID, 1)
+
+--echo #
+--echo # 3. Stop the replica, but park the worker threads right after each has
+--echo # nulled its own info_thd, before slave_stop_workers() can join them
+
+--let $debug_point = rpl_worker_after_info_thd_null
+--source include/add_debug_point.inc
+
+--send STOP REPLICA
+
+--let $rpl_connection_name = server_2
+--source include/connection.inc
+
+SET DEBUG_SYNC = "now WAIT_FOR signal.rpl_worker_info_thd_null";
+
+--echo #
+--echo # 4. The worker's info_thd is nullptr, rli->slave_running is still
+--echo # true - run the indexed lookup now, it must not crash
+
+--let $assert_text = 'rli->slave_running is still true while the worker is parked'
+--let $assert_cond = "[SELECT COUNT(*) FROM performance_schema.threads WHERE Processlist_state=\"Killing replica\" AND Processlist_info=\"STOP REPLICA\"]" = 1
+--source include/assert.inc
+
+--eval SELECT THREAD_ID FROM performance_schema.replication_applier_status_by_worker WHERE THREAD_ID = $thread_id
+
+--echo #
+--echo # 5. Unblock the workers, check STOP REPLICA completes
+
+--let $debug_point = rpl_worker_after_info_thd_null
+--source include/remove_debug_point.inc
+
+SET DEBUG_SYNC = "now SIGNAL signal.rpl_worker_continue";
+
+--let $rpl_connection_name = slave
+--source include/connection.inc
+
+--reap
+
+# NO_CLEAR_EVENT (see the debug point definition) leaves the signal set
+# permanently - by now every worker has already gone through its own
+# WAIT_FOR (STOP REPLICA above only returns once slave_stop_workers() has
+# joined all of them), so it is safe to clear the global debug_sync state
+# here; otherwise mtr's end-of-test check flags it as leftover state.
+SET DEBUG_SYNC = 'RESET';
+
+--echo #
+--echo # 6. Cleanup
+
+--source include/rpl/start_replica.inc
+
+--source include/rpl/connection_source.inc
+
+DROP TABLE t1;
+
+--source include/rpl/deinit.inc

@@ -119,7 +119,10 @@ enum enum_rpl_replica_debug_point {
   DBUG_RPL_S_RETRY_COUNT_EXCEED,
 
   /** Pause on a replica thread stop after aweking the THD */
-  DBUG_RPL_R_WAIT_AFTER_AWAKE_ON_THREAD_STOP
+  DBUG_RPL_R_WAIT_AFTER_AWAKE_ON_THREAD_STOP,
+
+  /** handle_slave_worker, right after info_thd is nulled out */
+  DBUG_RPL_R_WORKER_AFTER_INFO_THD_NULL
 };
 
 /**
@@ -280,6 +283,20 @@ void rpl_replica_debug_point(enum_rpl_replica_debug_point point_id,
     /* terminate_slave_thread */
     case DBUG_RPL_R_WAIT_AFTER_AWAKE_ON_THREAD_STOP: {
       debug_point_string.assign("now signal signal.stop_point_after_awake");
+      break;
+    }
+    /* handle_slave_worker */
+    case DBUG_RPL_R_WORKER_AFTER_INFO_THD_NULL: {
+      // NO_CLEAR_EVENT: every worker thread hits this point on shutdown
+      // (the tag is armed globally, not per-worker), so more than one
+      // thread can be waiting on rpl_worker_continue at once. WAIT_FOR
+      // defaults to consuming ("clearing") the signal once one waiter
+      // sees it; without NO_CLEAR_EVENT a single SIGNAL from the test
+      // would release only the first worker and strand the rest until
+      // the debug-sync facility's own timeout.
+      debug_point_string.assign(
+          "now SIGNAL signal.rpl_worker_info_thd_null WAIT_FOR "
+          "signal.rpl_worker_continue NO_CLEAR_EVENT");
       break;
     }
   }
