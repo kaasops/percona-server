@@ -1,0 +1,169 @@
+################# mysql-test\t\innodb_sync_spin_backoff_rounds_basic.test ####
+#                                                                             #
+# Variable Name: innodb_sync_spin_backoff_rounds                             #
+# Scope: GLOBAL                                                              #
+# Access Type: Dynamic                                                       #
+# Data Type: Numeric                                                         #
+# Default Value: 1                                                           #
+# Range: 1-64                                                                #
+#                                                                             #
+# Description: Backoff cadence for TTASEventMutex spin_and_try_lock(). 1     #
+#              (default) is the exact upstream behavior: yield and attempt   #
+#              a real sync-array wait on every round. N>1 spins purely for   #
+#              longer, then yields, and only falls through to a real         #
+#              sync-array wait every Nth round.                              #
+#                                                                             #
+# Modeled on innodb_sync_spin_loops_basic.test (same class of variable,      #
+# same suite), adapted for the narrower 1-64 range instead of the full       #
+# ulong range.                                                               #
+#                                                                             #
+###############################################################################
+
+--source include/load_sysvars.inc
+
+########################################################################
+#            START OF innodb_sync_spin_backoff_rounds TESTS            #
+########################################################################
+
+
+######################################################################
+#  Saving initial value of innodb_sync_spin_backoff_rounds in a      #
+#  temporary variable                                                #
+######################################################################
+
+SET @global_start_value = @@global.innodb_sync_spin_backoff_rounds;
+SELECT @global_start_value;
+
+--echo '#--------------------FN_DYNVARS_INNODB_SPIN_BACKOFF_01------------------#'
+########################################################################
+#     Display the DEFAULT value of innodb_sync_spin_backoff_rounds     #
+########################################################################
+
+SET @@global.innodb_sync_spin_backoff_rounds = 8;
+SET @@global.innodb_sync_spin_backoff_rounds = DEFAULT;
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+
+--echo '#--------------------FN_DYNVARS_INNODB_SPIN_BACKOFF_02------------------#'
+##############################################################################
+#  Check if innodb_sync_spin_backoff_rounds can be accessed with and without #
+#  @@ sign, and that it has no SESSION counterpart (GLOBAL-only variable)    #
+##############################################################################
+
+--Error ER_GLOBAL_VARIABLE
+SET innodb_sync_spin_backoff_rounds = 1;
+SELECT @@innodb_sync_spin_backoff_rounds;
+
+--Error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SELECT @@session.innodb_sync_spin_backoff_rounds;
+
+--Error ER_UNKNOWN_TABLE
+SELECT local.innodb_sync_spin_backoff_rounds;
+
+SET global innodb_sync_spin_backoff_rounds = 1;
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+
+--echo '#--------------------FN_DYNVARS_INNODB_SPIN_BACKOFF_03------------------#'
+##########################################################################
+#  Change the value of innodb_sync_spin_backoff_rounds to valid values,  #
+#  covering both range endpoints                                        #
+##########################################################################
+
+SET @@global.innodb_sync_spin_backoff_rounds = 1;
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+
+SET @@global.innodb_sync_spin_backoff_rounds = 32;
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+
+SET @@global.innodb_sync_spin_backoff_rounds = 64;
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+
+--echo '#--------------------FN_DYNVARS_INNODB_SPIN_BACKOFF_04------------------#'
+###########################################################################
+#  Check the value of innodb_sync_spin_backoff_rounds for out-of-bounds   #
+#  values -- clamped to the nearest bound (1-64), not the full ulong      #
+#  range, since this variable declares an explicit min/max unlike         #
+#  innodb_sync_spin_loops                                                 #
+###########################################################################
+
+--disable_warnings
+SET @@global.innodb_sync_spin_backoff_rounds = 0;
+--enable_warnings
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+
+--disable_warnings
+SET @@global.innodb_sync_spin_backoff_rounds = 65;
+--enable_warnings
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+
+--disable_warnings
+SET @@global.innodb_sync_spin_backoff_rounds = 4294967295;
+--enable_warnings
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+
+--disable_warnings
+SET @@global.innodb_sync_spin_backoff_rounds = -1;
+--enable_warnings
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+
+--echo '#--------------------FN_DYNVARS_INNODB_SPIN_BACKOFF_05------------------#'
+###########################################################################
+#   Change the value of innodb_sync_spin_backoff_rounds to invalid type   #
+###########################################################################
+
+--Error ER_WRONG_TYPE_FOR_VAR
+SET @@global.innodb_sync_spin_backoff_rounds = "T";
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+
+--Error ER_WRONG_TYPE_FOR_VAR
+SET @@global.innodb_sync_spin_backoff_rounds = "Y";
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+
+--Error ER_WRONG_TYPE_FOR_VAR
+SET @@global.innodb_sync_spin_backoff_rounds = 8.01;
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+
+--Error ER_WRONG_TYPE_FOR_VAR
+SET @@global.innodb_sync_spin_backoff_rounds = " ";
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+
+--echo '#--------------------FN_DYNVARS_INNODB_SPIN_BACKOFF_06------------------#'
+#########################################################################
+#   Check if the value in GLOBAL Table matches value in variable        #
+#########################################################################
+
+SET @@global.innodb_sync_spin_backoff_rounds = 8;
+
+--disable_warnings
+SELECT @@global.innodb_sync_spin_backoff_rounds =
+ VARIABLE_VALUE FROM performance_schema.global_variables
+  WHERE VARIABLE_NAME='innodb_sync_spin_backoff_rounds';
+--enable_warnings
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+--disable_warnings
+SELECT VARIABLE_VALUE FROM performance_schema.global_variables
+ WHERE VARIABLE_NAME='innodb_sync_spin_backoff_rounds';
+--enable_warnings
+
+--echo '#--------------------FN_DYNVARS_INNODB_SPIN_BACKOFF_07------------------#'
+################################################################
+#   Check if ON and OFF values can be used on variable         #
+################################################################
+
+--ERROR ER_WRONG_TYPE_FOR_VAR
+SET @@global.innodb_sync_spin_backoff_rounds = OFF;
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+
+--ERROR ER_WRONG_TYPE_FOR_VAR
+SET @@global.innodb_sync_spin_backoff_rounds = ON;
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+
+##############################
+#   Restore initial value    #
+##############################
+
+SET @@global.innodb_sync_spin_backoff_rounds = @global_start_value;
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+
+###############################################################
+#          END OF innodb_sync_spin_backoff_rounds TESTS       #
+###############################################################

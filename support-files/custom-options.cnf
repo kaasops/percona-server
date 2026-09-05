@@ -26,3 +26,13 @@
 #   effect if none do. Cheaper to leave on than to diagnose an applier
 #   stopping mid-upgrade.
 loose-replica_translate_deprecated_priv = ON
+# DESCRIPTION: Backoff cadence for TTASEventMutex::spin_and_try_lock().
+#   1 (default) is the exact upstream behavior: yield and attempt a real
+#   sync-array wait on every spin round. N>1 spins purely for longer,
+#   then yields, and only falls through to a real sync-array wait every
+#   Nth round, trading more CPU spinning for fewer context switches
+#   under contention.
+# DEFAULT: 1 (upstream-equivalent behaviour)
+# RECOMMENDED: 4 -- the value this patchset ships with; trades more CPU
+#   spinning for fewer context switches under contention.
+loose-innodb_sync_spin_backoff_rounds = 4

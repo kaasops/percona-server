@@ -649,6 +649,11 @@ ulint srv_pass_corrupt_table = 0; /* 0:disable 1:enable */
 /*-------------------------------------------*/
 ulong srv_n_spin_wait_rounds = 30;
 ulong srv_spin_wait_delay = 6;
+/** Backoff cadence for TTASEventMutex::spin_and_try_lock(): 1 (default)
+means the exact upstream behavior (yield + sync-array wait every round);
+N>1 means pure spin up to 4x max_spins, then yield, falling through to a
+real sync-array wait only every Nth round. */
+ulong srv_sync_spin_backoff_rounds = 1;
 bool srv_priority_boost = true;
 
 #ifndef UNIV_HOTBACKUP

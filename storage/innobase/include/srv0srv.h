@@ -784,6 +784,9 @@ extern bool srv_print_innodb_lock_monitor;
 extern ulong srv_n_spin_wait_rounds;
 extern ulong srv_n_free_tickets_to_enter;
 extern ulong srv_spin_wait_delay;
+/** Backoff cadence for TTASEventMutex::spin_and_try_lock(), see srv0srv.cc
+for details. */
+extern ulong srv_sync_spin_backoff_rounds;
 extern bool srv_priority_boost;
 
 extern ulint srv_truncated_status_writes;

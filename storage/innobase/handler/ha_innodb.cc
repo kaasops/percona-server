@@ -24015,6 +24015,16 @@ static MYSQL_SYSVAR_ULONG(
     nullptr, 30L, 0L, UINT32_MAX, 0);
 
 static MYSQL_SYSVAR_ULONG(
+    sync_spin_backoff_rounds, srv_sync_spin_backoff_rounds,
+    PLUGIN_VAR_RQCMDARG,
+    "Backoff cadence for TTASEventMutex spin-then-wait. 1 (default) is the "
+    "exact upstream behavior: yield and attempt a real sync-array wait on "
+    "every round. N>1 spins purely for longer, then yields, and only falls "
+    "through to a real sync-array wait every Nth round, trading more CPU "
+    "spinning for fewer context switches under contention.",
+    nullptr, nullptr, 1, 1, 64, 0);
+
+static MYSQL_SYSVAR_ULONG(
     spin_wait_delay, srv_spin_wait_delay, PLUGIN_VAR_OPCMDARG,
     "Maximum delay between polling for a spin lock (6 by default)", nullptr,
     nullptr, 6L, 0L, 1000, 0);
@@ -24605,6 +24615,7 @@ static SYS_VAR *innobase_system_variables[] = {
     MYSQL_SYSVAR(online_alter_log_max_size),
     MYSQL_SYSVAR(directories),
     MYSQL_SYSVAR(sync_spin_loops),
+    MYSQL_SYSVAR(sync_spin_backoff_rounds),
     MYSQL_SYSVAR(spin_wait_delay),
     MYSQL_SYSVAR(spin_wait_pause_multiplier),
     MYSQL_SYSVAR(fsync_threshold),

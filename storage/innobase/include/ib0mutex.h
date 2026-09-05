@@ -42,6 +42,11 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
 #include <atomic>
 
+/** Backoff cadence for TTASEventMutex::spin_and_try_lock(), see srv0srv.cc
+for details. Declared here (rather than pulling in srv0srv.h) to keep this
+header light, matching the existing srv global externs in ut0mutex.h. */
+extern ulong srv_sync_spin_backoff_rounds;
+
 /** OS mutex for tracking lock/unlock for debugging */
 template <template <typename> class Policy = NoPolicy>
 struct OSTrackMutex {
@@ -510,11 +515,22 @@ struct TTASEventMutex {
                          const char *filename, uint32_t line) UNIV_NOTHROW {
     uint32_t n_spins = 0;
     uint32_t n_waits = 0;
+    uint32_t n_rounds = 0;
+
     const uint32_t step = max_spins;
+
+    /* How long we are willing to purely spin before involving the
+    scheduler. Only relevant when srv_sync_spin_backoff_rounds > 1. */
+    const uint32_t active_spin_limit = max_spins * 4;
+
+    /* 1 (default) = exact upstream behavior: yield and attempt a real
+    sync-array wait on every round. N>1 = pure spin up to
+    active_spin_limit, then yield, falling through to a real
+    sync-array wait only every Nth round. */
+    const ulong backoff_rounds = srv_sync_spin_backoff_rounds;
 
     for (;;) {
       /* If the lock was free then try and acquire it. */
-
       if (is_free(max_spins, max_delay, n_spins)) {
         if (try_lock()) {
           break;
@@ -526,28 +542,44 @@ struct TTASEventMutex {
         max_spins = n_spins + step;
       }
 
+      ++n_rounds;
+
+      if (backoff_rounds > 1) {
+        /* Phase 1: pure spinning, no context switch at all. */
+        if (n_spins < active_spin_limit) {
+          /* Small pause to reduce contention on the cache line. */
+          ut_delay(1);
+          continue;
+        }
+
+        /* Phase 2: light backoff, occasional yields, still no wait. */
+        if (n_rounds % backoff_rounds != 0) {
+          std::this_thread::yield();
+          continue;
+        }
+      } else {
+        /* Legacy upstream path: yield on every round before waiting. */
+        std::this_thread::yield();
+      }
+
+      /* Phase 3: rare, but guaranteed context switch via wait(). Only
+      counted here, so that n_waits reflects actual waits and not
+      spin/yield rounds.
+
+      The 4 below is a heuristic that has existed for a very long
+      time now. It is unclear if changing this value will make a
+      difference.
+
+      NOTE: There is a delay that happens before the retry, finding a
+      free slot in the sync array and the yield above. Otherwise we
+      could have simply done the extra spin above. */
       ++n_waits;
-
-      std::this_thread::yield();
-
-      /* The 4 below is a heuristic that has existed for a
-      very long time now. It is unclear if changing this
-      value will make a difference.
-
-      NOTE: There is a delay that happens before the retry,
-      finding a free slot in the sync arary and the yield
-      above. Otherwise we could have simply done the extra
-      spin above. */
 
       if (wait(filename, line, 4)) {
         n_spins += 4;
-
         break;
       }
     }
-
-    /* Waits and yields will be the same number in our
-    mutex design */
 
     m_policy.add(n_spins, n_waits);
   }

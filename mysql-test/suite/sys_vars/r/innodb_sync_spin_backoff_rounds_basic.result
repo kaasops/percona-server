@@ -1,0 +1,105 @@
+SET @global_start_value = @@global.innodb_sync_spin_backoff_rounds;
+SELECT @global_start_value;
+@global_start_value
+1
+'#--------------------FN_DYNVARS_INNODB_SPIN_BACKOFF_01------------------#'
+SET @@global.innodb_sync_spin_backoff_rounds = 8;
+SET @@global.innodb_sync_spin_backoff_rounds = DEFAULT;
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+@@global.innodb_sync_spin_backoff_rounds
+1
+'#--------------------FN_DYNVARS_INNODB_SPIN_BACKOFF_02------------------#'
+SET innodb_sync_spin_backoff_rounds = 1;
+ERROR HY000: Variable 'innodb_sync_spin_backoff_rounds' is a GLOBAL variable and should be set with SET GLOBAL
+SELECT @@innodb_sync_spin_backoff_rounds;
+@@innodb_sync_spin_backoff_rounds
+1
+SELECT @@session.innodb_sync_spin_backoff_rounds;
+ERROR HY000: Variable 'innodb_sync_spin_backoff_rounds' is a GLOBAL variable
+SELECT local.innodb_sync_spin_backoff_rounds;
+ERROR 42S02: Unknown table 'local' in field list
+SET global innodb_sync_spin_backoff_rounds = 1;
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+@@global.innodb_sync_spin_backoff_rounds
+1
+'#--------------------FN_DYNVARS_INNODB_SPIN_BACKOFF_03------------------#'
+SET @@global.innodb_sync_spin_backoff_rounds = 1;
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+@@global.innodb_sync_spin_backoff_rounds
+1
+SET @@global.innodb_sync_spin_backoff_rounds = 32;
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+@@global.innodb_sync_spin_backoff_rounds
+32
+SET @@global.innodb_sync_spin_backoff_rounds = 64;
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+@@global.innodb_sync_spin_backoff_rounds
+64
+'#--------------------FN_DYNVARS_INNODB_SPIN_BACKOFF_04------------------#'
+SET @@global.innodb_sync_spin_backoff_rounds = 0;
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+@@global.innodb_sync_spin_backoff_rounds
+1
+SET @@global.innodb_sync_spin_backoff_rounds = 65;
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+@@global.innodb_sync_spin_backoff_rounds
+64
+SET @@global.innodb_sync_spin_backoff_rounds = 4294967295;
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+@@global.innodb_sync_spin_backoff_rounds
+64
+SET @@global.innodb_sync_spin_backoff_rounds = -1;
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+@@global.innodb_sync_spin_backoff_rounds
+1
+'#--------------------FN_DYNVARS_INNODB_SPIN_BACKOFF_05------------------#'
+SET @@global.innodb_sync_spin_backoff_rounds = "T";
+ERROR 42000: Incorrect argument type to variable 'innodb_sync_spin_backoff_rounds'
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+@@global.innodb_sync_spin_backoff_rounds
+1
+SET @@global.innodb_sync_spin_backoff_rounds = "Y";
+ERROR 42000: Incorrect argument type to variable 'innodb_sync_spin_backoff_rounds'
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+@@global.innodb_sync_spin_backoff_rounds
+1
+SET @@global.innodb_sync_spin_backoff_rounds = 8.01;
+ERROR 42000: Incorrect argument type to variable 'innodb_sync_spin_backoff_rounds'
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+@@global.innodb_sync_spin_backoff_rounds
+1
+SET @@global.innodb_sync_spin_backoff_rounds = " ";
+ERROR 42000: Incorrect argument type to variable 'innodb_sync_spin_backoff_rounds'
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+@@global.innodb_sync_spin_backoff_rounds
+1
+'#--------------------FN_DYNVARS_INNODB_SPIN_BACKOFF_06------------------#'
+SET @@global.innodb_sync_spin_backoff_rounds = 8;
+SELECT @@global.innodb_sync_spin_backoff_rounds =
+VARIABLE_VALUE FROM performance_schema.global_variables
+WHERE VARIABLE_NAME='innodb_sync_spin_backoff_rounds';
+@@global.innodb_sync_spin_backoff_rounds =
+VARIABLE_VALUE
+1
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+@@global.innodb_sync_spin_backoff_rounds
+8
+SELECT VARIABLE_VALUE FROM performance_schema.global_variables
+WHERE VARIABLE_NAME='innodb_sync_spin_backoff_rounds';
+VARIABLE_VALUE
+8
+'#--------------------FN_DYNVARS_INNODB_SPIN_BACKOFF_07------------------#'
+SET @@global.innodb_sync_spin_backoff_rounds = OFF;
+ERROR 42000: Incorrect argument type to variable 'innodb_sync_spin_backoff_rounds'
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+@@global.innodb_sync_spin_backoff_rounds
+8
+SET @@global.innodb_sync_spin_backoff_rounds = ON;
+ERROR 42000: Incorrect argument type to variable 'innodb_sync_spin_backoff_rounds'
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+@@global.innodb_sync_spin_backoff_rounds
+8
+SET @@global.innodb_sync_spin_backoff_rounds = @global_start_value;
+SELECT @@global.innodb_sync_spin_backoff_rounds;
+@@global.innodb_sync_spin_backoff_rounds
+1
