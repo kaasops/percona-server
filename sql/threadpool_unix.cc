@@ -49,6 +49,36 @@ typedef port_event_t native_event;
 /** Maximum number of native events a listener can read in one go */
 #define MAX_EVENTS 1024
 
+#define DEFAULT_THREADPOOL_STALL_LIMIT 500U
+
+/**
+  Scale a base throttling delay (in microseconds) by the ratio of the
+  configured thread_pool_stall_limit to its default value, so that a
+  lower stall_limit (more sensitive stall detection) throttles worker
+  creation less, and a higher stall_limit throttles it more.
+
+  Multiplies before dividing (rather than pre-computing a truncated
+  stall_limit/DEFAULT ratio) to avoid integer division collapsing the
+  scale factor to 0 for any thread_pool_stall_limit below the default
+  500 - the valid range starts at 10, so that would have disabled
+  throttling entirely for the most commonly tuned-down values.
+*/
+static ulonglong scale_by_stall_limit(ulonglong base_delay_us) noexcept {
+  const ulonglong result =
+      base_delay_us * threadpool_stall_limit / DEFAULT_THREADPOOL_STALL_LIMIT;
+  // Test-only observation seam: the function is static/file-local and its
+  // only caller path that is reachable without bypassing throttling is the
+  // timer-driven stall check, so there is no other way for an MTR test to
+  // observe the computed value than reading it back from the error log.
+  DBUG_EXECUTE_IF("threadpool_scale_by_stall_limit_result", {
+    sql_print_information(
+        "scale_by_stall_limit result: base_delay_us=%llu "
+        "thread_pool_stall_limit=%u result=%llu",
+        base_delay_us, threadpool_stall_limit, result);
+  });
+  return result;
+}
+
 /** Define if wait_begin() should create threads if necessary without waiting
 for stall detection to kick in */
 #define THREADPOOL_CREATE_THREADS_ON_WAIT
@@ -61,6 +91,24 @@ const char *threadpool_high_prio_mode_names[] = {"transactions", "statements",
 static bool threadpool_started = false;
 /** Indicates that timer thread was started*/
 static bool timer_thread_started = false;
+
+/*
+  Worker threads are created detached (see create_worker()), so they cannot
+  be pthread_join()-ed. tp_end() still needs to block until every worker has
+  actually finished running worker_main() - including its my_thread_end()
+  call - before the caller proceeds to tear down Global_THD_manager, PSI and
+  mysys. thread_group_close() only signals workers to shut down and returns
+  immediately (see below), so this exit barrier is what provides the actual
+  wait.
+
+  Plain pthread primitives (not mysql_*-wrapped) are used deliberately: the
+  signal in worker_main() must fire strictly after my_thread_end(), by which
+  point mysys/PSI thread-local state is already torn down and mysql_mutex_*
+  wrappers must no longer be relied upon.
+*/
+static pthread_mutex_t worker_exit_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t worker_exit_cond = PTHREAD_COND_INITIALIZER;
+static int unjoined_worker_count = 0; /* guarded by worker_exit_mutex */
 
 /*
   Define PSI Keys for performance schema.
@@ -806,6 +854,18 @@ static int create_worker(thread_group_t *thread_group,
     thread_group->last_thread_creation_time = my_microsecond_getsystime();
     Global_THD_manager::get_instance()->inc_thread_created();
     add_thread_count(thread_group, 1);
+    /*
+      Register the new thread with the exit barrier here, in the parent,
+      while still holding thread_group->mutex: this guarantees the
+      increment happens-before the matching decrement in worker_main(),
+      which cannot run until it acquires the same group mutex. If we
+      instead let the new thread increment itself, tp_end() could
+      observe unjoined_worker_count == 0 and return before the thread
+      even got a chance to register.
+    */
+    pthread_mutex_lock(&worker_exit_mutex);
+    ++unjoined_worker_count;
+    pthread_mutex_unlock(&worker_exit_mutex);
   } else {
     set_my_errno(errno);
   }
@@ -829,19 +889,21 @@ end:
  The actual values were not calculated using any scientific methods.
  They just look right, and behave well in practice.
 
- TODO: Should throttling depend on thread_pool_stall_limit?
+ Scaled by thread_pool_stall_limit via scale_by_stall_limit(): a lower
+ stall_limit (faster stall reaction) throttles new-thread creation less,
+ a higher one throttles it more.
 */
 static ulonglong microsecond_throttling_interval(
     const thread_group_t &thread_group) noexcept {
   const int count = thread_group.thread_count;
 
-  if (count < 4) return 0;
+  if (count < 1 + (int)threadpool_oversubscribe) return 0;
 
-  if (count < 8) return 50 * 1000;
+  if (count < 8) return scale_by_stall_limit(50 * 1000);
 
-  if (count < 16) return 100 * 1000;
+  if (count < 16) return scale_by_stall_limit(100 * 1000);
 
-  return 200 * 1000;
+  return scale_by_stall_limit(200 * 1000);
 }
 
 /**
@@ -967,16 +1029,6 @@ static void thread_group_close(thread_group_t *thread_group) noexcept {
   }
 
   mysql_mutex_unlock(&thread_group->mutex);
-
-  mysql_mutex_lock(&thread_group->mutex);
-  while (thread_group->thread_count > 0) {
-    mysql_mutex_unlock(&thread_group->mutex);
-    my_sleep(10000);
-    mysql_mutex_lock(&thread_group->mutex);
-  }
-  mysql_mutex_unlock(&thread_group->mutex);
-
-  thread_group_destroy(thread_group);
 
   DBUG_VOID_RETURN;
 }
@@ -1478,9 +1530,25 @@ static void *worker_main(void *param) {
 
   mysql_mutex_lock(&thread_group->mutex);
   add_thread_count(thread_group, -1);
+  const bool destroy_group =
+      thread_group->shutdown && thread_group->thread_count == 0;
   mysql_mutex_unlock(&thread_group->mutex);
 
+  if (destroy_group) thread_group_destroy(thread_group);
+
   my_thread_end();
+
+  /*
+    Signal the exit barrier only after my_thread_end(), i.e. only once this
+    thread's mysys/PSI thread-local state has been fully torn down. tp_end()
+    waits on this barrier before letting the caller proceed to tear down
+    Global_THD_manager, PSI and mysys, so the ordering here is what makes
+    that wait meaningful.
+  */
+  pthread_mutex_lock(&worker_exit_mutex);
+  if (--unjoined_worker_count == 0) pthread_cond_signal(&worker_exit_cond);
+  pthread_mutex_unlock(&worker_exit_mutex);
+
   return nullptr;
 }
 
@@ -1514,6 +1582,21 @@ void tp_end() noexcept {
   for (uint i = 0; i < array_elements(all_groups); i++) {
     thread_group_close(&all_groups[i]);
   }
+
+  /*
+    thread_group_close() only signals shutdown and returns; it does not wait
+    for worker threads to actually exit. Since worker threads are created
+    detached (no pthread_join() possible), block here until every worker has
+    finished worker_main() (including my_thread_end()), so that the caller
+    does not tear down Global_THD_manager/PSI/mysys while a worker thread
+    might still be running.
+  */
+  pthread_mutex_lock(&worker_exit_mutex);
+  while (unjoined_worker_count > 0) {
+    pthread_cond_wait(&worker_exit_cond, &worker_exit_mutex);
+  }
+  pthread_mutex_unlock(&worker_exit_mutex);
+
   threadpool_started = false;
   DBUG_VOID_RETURN;
 }

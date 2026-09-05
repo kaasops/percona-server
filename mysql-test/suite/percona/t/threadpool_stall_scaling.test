@@ -1,0 +1,102 @@
+--source include/have_debug.inc
+--source include/have_debug_sync.inc
+--source include/have_pool_of_threads.inc
+
+--echo #
+--echo # Bug: microsecond_throttling_interval() ignored thread_pool_stall_limit
+--echo # entirely, and a naive scale_by_stall_limit() implementation
+--echo # (stall_limit/DEFAULT computed before multiplying) would truncate the
+--echo # scale factor to 0 for any stall_limit below the 500 default. Verify
+--echo # that (1) a low stall_limit still produces a non-zero, correctly
+--echo # scaled interval, and (2) the 500 default reproduces the original
+--echo # (pre-scaling) base interval exactly, so existing deployments that
+--echo # never touch thread_pool_stall_limit see no behavior change.
+--echo #
+--echo # scale_by_stall_limit() is static/file-local and its only reachable
+--echo # call path that isn't bypassed by the immediate-creation fast path is
+--echo # the timer-driven stall check (check_stall(), called only from the
+--echo # internal timer thread) - there is no SQL-visible status variable for
+--echo # it, so the computed value is observed via a DBUG_EXECUTE_IF hook that
+--echo # prints it to the error log under debug builds.
+--echo #
+--echo # thread_pool_size=1 and thread_pool_oversubscribe=1 (-master.opt) put
+--echo # every connection into a single group and lower the "count < 1 +
+--echo # thread_pool_oversubscribe" immediate-creation threshold to 2, so two
+--echo # concurrently active (non-yielding) workers are enough to push
+--echo # microsecond_throttling_interval() into the scale_by_stall_limit(50000)
+--echo # bucket ("count < 8").
+--echo #
+
+--let SEARCH_FILE= $MYSQLTEST_VARDIR/log/mysqld.1.err
+
+--echo #
+--echo # Part 1: stall_limit below the 500 default must not collapse the
+--echo # scale factor to 0.
+--echo #
+SET GLOBAL thread_pool_stall_limit = 10;
+SET GLOBAL debug = '+d,threadpool_scale_by_stall_limit_result';
+
+--connect(con1,localhost,root,,)
+--send SET DEBUG_SYNC='now WAIT_FOR go1'
+
+--connect(con2,localhost,root,,)
+--send SET DEBUG_SYNC='now WAIT_FOR go2'
+
+--connection default
+--let SEARCH_PATTERN= scale_by_stall_limit result: base_delay_us=50000 thread_pool_stall_limit=10 result=1000
+--source include/wait_for_search_pattern.inc
+
+SET DEBUG_SYNC='now SIGNAL go1';
+SET DEBUG_SYNC='now SIGNAL go2';
+
+--connection con1
+--reap
+--disconnect con1
+
+--connection con2
+--reap
+--disconnect con2
+
+--connection default
+SET DEBUG_SYNC='RESET';
+
+--echo #
+--echo # Restart before Part 2: a fresh thread group with no leftover idle
+--echo # workers from Part 1 is needed, otherwise new connections may be
+--echo # handed to an already-idle worker (wake_thread() success) instead of
+--echo # going through the throttled create path being tested.
+--echo #
+--let $restart_parameters= restart:
+--source include/restart_mysqld.inc
+
+--echo #
+--echo # Part 2: stall_limit = 500 (the default) must reproduce the original
+--echo # unscaled base interval exactly (500 / 500 == 1).
+--echo #
+SET GLOBAL thread_pool_stall_limit = 500;
+SET GLOBAL debug = '+d,threadpool_scale_by_stall_limit_result';
+
+--connect(con3,localhost,root,,)
+--send SET DEBUG_SYNC='now WAIT_FOR go3'
+
+--connect(con4,localhost,root,,)
+--send SET DEBUG_SYNC='now WAIT_FOR go4'
+
+--connection default
+--let SEARCH_PATTERN= scale_by_stall_limit result: base_delay_us=50000 thread_pool_stall_limit=500 result=50000
+--source include/wait_for_search_pattern.inc
+
+SET DEBUG_SYNC='now SIGNAL go3';
+SET DEBUG_SYNC='now SIGNAL go4';
+
+--connection con3
+--reap
+--disconnect con3
+
+--connection con4
+--reap
+--disconnect con4
+
+--connection default
+SET DEBUG_SYNC='RESET';
+SET GLOBAL debug = '-d,threadpool_scale_by_stall_limit_result';

@@ -1,0 +1,56 @@
+#
+# Bug: microsecond_throttling_interval() ignored thread_pool_stall_limit
+# entirely, and a naive scale_by_stall_limit() implementation
+# (stall_limit/DEFAULT computed before multiplying) would truncate the
+# scale factor to 0 for any stall_limit below the 500 default. Verify
+# that (1) a low stall_limit still produces a non-zero, correctly
+# scaled interval, and (2) the 500 default reproduces the original
+# (pre-scaling) base interval exactly, so existing deployments that
+# never touch thread_pool_stall_limit see no behavior change.
+#
+# scale_by_stall_limit() is static/file-local and its only reachable
+# call path that isn't bypassed by the immediate-creation fast path is
+# the timer-driven stall check (check_stall(), called only from the
+# internal timer thread) - there is no SQL-visible status variable for
+# it, so the computed value is observed via a DBUG_EXECUTE_IF hook that
+# prints it to the error log under debug builds.
+#
+# thread_pool_size=1 and thread_pool_oversubscribe=1 (-master.opt) put
+# every connection into a single group and lower the "count < 1 +
+# thread_pool_oversubscribe" immediate-creation threshold to 2, so two
+# concurrently active (non-yielding) workers are enough to push
+# microsecond_throttling_interval() into the scale_by_stall_limit(50000)
+# bucket ("count < 8").
+#
+#
+# Part 1: stall_limit below the 500 default must not collapse the
+# scale factor to 0.
+#
+SET GLOBAL thread_pool_stall_limit = 10;
+SET GLOBAL debug = '+d,threadpool_scale_by_stall_limit_result';
+SET DEBUG_SYNC='now WAIT_FOR go1';
+SET DEBUG_SYNC='now WAIT_FOR go2';
+Pattern "scale_by_stall_limit result: base_delay_us=50000 thread_pool_stall_limit=10 result=1000" found
+SET DEBUG_SYNC='now SIGNAL go1';
+SET DEBUG_SYNC='now SIGNAL go2';
+SET DEBUG_SYNC='RESET';
+#
+# Restart before Part 2: a fresh thread group with no leftover idle
+# workers from Part 1 is needed, otherwise new connections may be
+# handed to an already-idle worker (wake_thread() success) instead of
+# going through the throttled create path being tested.
+#
+# restart:
+#
+# Part 2: stall_limit = 500 (the default) must reproduce the original
+# unscaled base interval exactly (500 / 500 == 1).
+#
+SET GLOBAL thread_pool_stall_limit = 500;
+SET GLOBAL debug = '+d,threadpool_scale_by_stall_limit_result';
+SET DEBUG_SYNC='now WAIT_FOR go3';
+SET DEBUG_SYNC='now WAIT_FOR go4';
+Pattern "scale_by_stall_limit result: base_delay_us=50000 thread_pool_stall_limit=500 result=50000" found
+SET DEBUG_SYNC='now SIGNAL go3';
+SET DEBUG_SYNC='now SIGNAL go4';
+SET DEBUG_SYNC='RESET';
+SET GLOBAL debug = '-d,threadpool_scale_by_stall_limit_result';
