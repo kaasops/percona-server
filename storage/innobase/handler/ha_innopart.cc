@@ -1169,6 +1169,7 @@ int ha_innopart::open(const char *name, int mode [[maybe_unused]],
     ut_a(part.m_trx_id == 0);
     ut_a(part.m_blob_heap == nullptr);
     ut_a(part.m_compress_heap == nullptr);
+    ut_a(part.m_stop_tuple_found == false);
     ut_a(0 == part.m_new_rec_lock.count());
   }
 #endif
@@ -1355,6 +1356,7 @@ void ha_innopart::set_partition(uint part_id) {
 
   m_prebuilt->trx_id = part.m_trx_id;
   m_prebuilt->row_read_type = part.m_row_read_type;
+  m_prebuilt->m_stop_tuple_found = part.m_stop_tuple_found;
   m_prebuilt->new_rec_lock = part.m_new_rec_lock;
 
   /* All fields from m_parts[part_id] should have been restored above. */
@@ -1403,6 +1405,7 @@ void ha_innopart::update_partition(uint part_id) {
 
   part.m_trx_id = m_prebuilt->trx_id;
   part.m_row_read_type = m_prebuilt->row_read_type;
+  part.m_stop_tuple_found = m_prebuilt->m_stop_tuple_found;
   part.m_new_rec_lock = m_prebuilt->new_rec_lock;
 
   /* All fields of m_parts[part_id] should have been updated above. */

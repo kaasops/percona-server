@@ -648,6 +648,12 @@ class ha_innopart : public ha_innobase,
     /** saved m_prebuilt->row_read_type  */
     ulint m_row_read_type;
 
+    /** saved m_prebuilt->m_stop_tuple_found. Per-partition, because the
+    ordered scan's shared m_prebuilt would otherwise let the flag set by
+    one partition's stop tuple suppress gap locking on another
+    partition's out-of-range record (end-range-tuple-check change). */
+    bool m_stop_tuple_found;
+
     /** save m_prebuilt->new_rec_lock[] values */
     decltype(row_prebuilt_t::new_rec_lock) m_new_rec_lock;
   };

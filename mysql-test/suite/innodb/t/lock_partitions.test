@@ -126,3 +126,230 @@ SELECT LOCK_DATA
 COMMIT;
 
 DROP TABLE t;
+
+# Test for range-based SELECT FOR UPDATE
+# Note - If the optimizer decides to perform a full scan instead of
+# a range scan, all scanned rows will be locked. The test uses
+# FORCE INDEX to ensure a range scan.
+
+SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+
+CREATE TABLE t (
+  i INT NOT NULL PRIMARY KEY
+) ENGINE=INNODB
+PARTITION BY RANGE(i) (
+  PARTITION p0 VALUES LESS THAN (11),
+  PARTITION p1 VALUES LESS THAN MAXVALUE);
+
+-- delimiter //
+CREATE PROCEDURE check_locks_and_rollback()
+BEGIN
+  SELECT partition_name, lock_mode, lock_status, lock_type, lock_data
+    FROM performance_schema.data_locks
+    WHERE object_schema="test" AND OBJECT_NAME='t'
+    ORDER BY partition_name, lock_type, lock_data;
+  ROLLBACK;
+END //
+
+CREATE PROCEDURE check_locks_le(n INT)
+BEGIN
+  SELECT i FROM t FORCE INDEX (PRIMARY) WHERE i <= n FOR UPDATE;
+  CALL check_locks_and_rollback();
+END //
+
+CREATE PROCEDURE check_locks_gt(n INT)
+BEGIN
+  SELECT i FROM t FORCE INDEX (PRIMARY) WHERE i > n FOR UPDATE;
+  CALL check_locks_and_rollback();
+END //
+
+CREATE PROCEDURE check_locks_between(a INT, b INT)
+BEGIN
+  SELECT i FROM t FORCE INDEX (PRIMARY) WHERE i BETWEEN a AND b FOR UPDATE;
+  CALL check_locks_and_rollback();
+END //
+-- delimiter ;
+
+INSERT INTO t VALUES (1), (2), (3), (7), (11), (13), (17), (19);
+
+SET @save_autocommit= @@autocommit;
+SET autocommit= 0;
+
+CALL check_locks_le(2);
+CALL check_locks_between(0, 3);
+CALL check_locks_between(2, 3);
+CALL check_locks_between(0, 17);
+CALL check_locks_between(3, 17);
+CALL check_locks_between(3, 21);
+CALL check_locks_between(12, 21);
+
+SET autocommit= @save_autocommit;
+
+DROP TABLE t;
+
+CREATE TABLE t (
+  i INT NOT NULL PRIMARY KEY
+) ENGINE=INNODB
+PARTITION BY HASH(i)
+  PARTITIONS 2;
+
+INSERT INTO t VALUES (1), (2), (3), (4), (6), (7), (8), (9), (10);
+
+SET @save_autocommit= @@autocommit;
+SET autocommit= 0;
+
+CALL check_locks_le(2);
+CALL check_locks_between(0, 3);
+CALL check_locks_between(2, 3);
+CALL check_locks_between(2, 6);
+CALL check_locks_between(0, 17);
+CALL check_locks_between(3, 17);
+CALL check_locks_between(3, 12);
+CALL check_locks_gt(9);
+
+SET autocommit= @save_autocommit;
+
+DROP PROCEDURE check_locks_le;
+DROP PROCEDURE check_locks_gt;
+DROP PROCEDURE check_locks_between;
+DROP PROCEDURE check_locks_and_rollback;
+DROP TABLE t;
+
+# Test for ordered (ORDER BY) range-based SELECT FOR UPDATE across
+# partitions. Not part of the upstream Bug#35006212 test - this section
+# covers the ha_innopart-specific leak this change closes: with
+# is_reading_range() removed, a shared row_prebuilt_t would let the "stop
+# tuple reached" flag set by one partition's priority-queue refill
+# suppress gap locking on another partition's own out-of-range record
+# (m_stop_tuple_found is per-partition state, saved/restored in
+# set_partition()/update_partition()).
+#
+# All three variants share one shape: the priority queue that backs the
+# ordered scan fills so that one partition reads a record exactly equal
+# to the (full-length) end-of-range key before another partition reads
+# its own first out-of-range record - the point where a shared flag
+# would leak and a per-partition one must not.
+
+--echo #
+--echo # Ordered scan, variant 1: HASH partitioning, single-column PK.
+--echo #
+
+CREATE TABLE t1 (
+  i INT NOT NULL PRIMARY KEY
+) ENGINE=INNODB
+PARTITION BY HASH(i) PARTITIONS 2;
+
+INSERT INTO t1 VALUES (2), (5), (10), (17);
+
+--replace_column 10 # 11 #
+EXPLAIN SELECT * FROM t1 FORCE INDEX (PRIMARY)
+  WHERE i BETWEEN 1 AND 10 ORDER BY i FOR UPDATE;
+
+SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+BEGIN;
+SELECT * FROM t1 FORCE INDEX (PRIMARY)
+  WHERE i BETWEEN 1 AND 10 ORDER BY i FOR UPDATE;
+
+--echo # Expect a gap lock on 17 (first out-of-range record read by the
+--echo # partition that never itself read the end-of-range key 10).
+SELECT partition_name, lock_mode, lock_status, lock_type, lock_data
+  FROM performance_schema.data_locks
+  WHERE object_schema='test' AND OBJECT_NAME='t1'
+  ORDER BY partition_name, lock_type, lock_data;
+
+--connect (con_ins1, localhost, root,,)
+SET innodb_lock_wait_timeout = 1;
+--echo # Phantom insert into the gap protected above must be blocked.
+--error ER_LOCK_WAIT_TIMEOUT
+INSERT INTO t1 VALUES (7);
+--disconnect con_ins1
+
+--connection default
+ROLLBACK;
+DROP TABLE t1;
+
+--echo #
+--echo # Ordered scan, variant 2: composite PK, HASH partitioning on the
+--echo # non-leading PK column, conjunctive range predicate.
+--echo #
+
+CREATE TABLE t2 (
+  a INT NOT NULL,
+  b INT NOT NULL,
+  PRIMARY KEY (a, b)
+) ENGINE=INNODB
+PARTITION BY HASH(b) PARTITIONS 2;
+
+INSERT INTO t2 VALUES (5,3), (5,4), (5,7), (5,10), (5,11);
+
+--replace_column 10 # 11 #
+EXPLAIN SELECT * FROM t2 FORCE INDEX (PRIMARY)
+  WHERE a = 5 AND b <= 7 ORDER BY a, b FOR UPDATE;
+
+SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+BEGIN;
+SELECT * FROM t2 FORCE INDEX (PRIMARY)
+  WHERE a = 5 AND b <= 7 ORDER BY a, b FOR UPDATE;
+
+--echo # Expect a gap lock on (5,10) (first out-of-range record read by
+--echo # the partition that never itself read the end-of-range key (5,7)).
+SELECT partition_name, lock_mode, lock_status, lock_type, lock_data
+  FROM performance_schema.data_locks
+  WHERE object_schema='test' AND OBJECT_NAME='t2'
+  ORDER BY partition_name, lock_type, lock_data;
+
+--connect (con_ins2, localhost, root,,)
+SET innodb_lock_wait_timeout = 1;
+--echo # Phantom insert into the gap protected above must be blocked.
+--error ER_LOCK_WAIT_TIMEOUT
+INSERT INTO t2 VALUES (5,6);
+--disconnect con_ins2
+
+--connection default
+ROLLBACK;
+DROP TABLE t2;
+
+--echo #
+--echo # Ordered scan, variant 3: composite PK, RANGE COLUMNS partitioning
+--echo # on the non-leading PK column - the end of range is reached by the
+--echo # leading (partitioning) column, not the trailing one.
+--echo #
+
+CREATE TABLE t3 (
+  a INT NOT NULL,
+  b INT NOT NULL,
+  PRIMARY KEY (a, b)
+) ENGINE=INNODB
+PARTITION BY RANGE COLUMNS(b) (
+  PARTITION p0 VALUES LESS THAN (6),
+  PARTITION p1 VALUES LESS THAN (MAXVALUE));
+
+INSERT INTO t3 VALUES (5,3), (5,4), (6,0), (5,7);
+
+--replace_column 10 # 11 #
+EXPLAIN SELECT * FROM t3 FORCE INDEX (PRIMARY)
+  WHERE a = 5 AND b <= 7 ORDER BY a, b FOR UPDATE;
+
+SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+BEGIN;
+SELECT * FROM t3 FORCE INDEX (PRIMARY)
+  WHERE a = 5 AND b <= 7 ORDER BY a, b FOR UPDATE;
+
+--echo # Expect a gap lock on (6,0) (first out-of-range record - out of
+--echo # range on column a, not b - read by the partition that never
+--echo # itself read the end-of-range key (5,7)).
+SELECT partition_name, lock_mode, lock_status, lock_type, lock_data
+  FROM performance_schema.data_locks
+  WHERE object_schema='test' AND OBJECT_NAME='t3'
+  ORDER BY partition_name, lock_type, lock_data;
+
+--connect (con_ins3, localhost, root,,)
+SET innodb_lock_wait_timeout = 1;
+--echo # Phantom insert into the gap protected above must be blocked.
+--error ER_LOCK_WAIT_TIMEOUT
+INSERT INTO t3 VALUES (5,5);
+--disconnect con_ins3
+
+--connection default
+ROLLBACK;
+DROP TABLE t3;

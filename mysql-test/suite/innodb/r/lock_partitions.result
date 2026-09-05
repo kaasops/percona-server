@@ -70,3 +70,401 @@ WHERE LOCK_TYPE = 'RECORD' AND OBJECT_NAME = 't';
 LOCK_DATA
 COMMIT;
 DROP TABLE t;
+SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+CREATE TABLE t (
+i INT NOT NULL PRIMARY KEY
+) ENGINE=INNODB
+PARTITION BY RANGE(i) (
+PARTITION p0 VALUES LESS THAN (11),
+PARTITION p1 VALUES LESS THAN MAXVALUE);
+CREATE PROCEDURE check_locks_and_rollback()
+BEGIN
+SELECT partition_name, lock_mode, lock_status, lock_type, lock_data
+FROM performance_schema.data_locks
+WHERE object_schema="test" AND OBJECT_NAME='t'
+    ORDER BY partition_name, lock_type, lock_data;
+ROLLBACK;
+END //
+CREATE PROCEDURE check_locks_le(n INT)
+BEGIN
+SELECT i FROM t FORCE INDEX (PRIMARY) WHERE i <= n FOR UPDATE;
+CALL check_locks_and_rollback();
+END //
+CREATE PROCEDURE check_locks_gt(n INT)
+BEGIN
+SELECT i FROM t FORCE INDEX (PRIMARY) WHERE i > n FOR UPDATE;
+CALL check_locks_and_rollback();
+END //
+CREATE PROCEDURE check_locks_between(a INT, b INT)
+BEGIN
+SELECT i FROM t FORCE INDEX (PRIMARY) WHERE i BETWEEN a AND b FOR UPDATE;
+CALL check_locks_and_rollback();
+END //
+INSERT INTO t VALUES (1), (2), (3), (7), (11), (13), (17), (19);
+SET @save_autocommit= @@autocommit;
+SET autocommit= 0;
+CALL check_locks_le(2);
+i
+1
+2
+partition_name	lock_mode	lock_status	lock_type	lock_data
+p0	X	GRANTED	RECORD	1
+p0	X	GRANTED	RECORD	2
+p0	IX	GRANTED	TABLE	NULL
+CALL check_locks_between(0, 3);
+i
+1
+2
+3
+partition_name	lock_mode	lock_status	lock_type	lock_data
+p0	X	GRANTED	RECORD	1
+p0	X	GRANTED	RECORD	2
+p0	X	GRANTED	RECORD	3
+p0	IX	GRANTED	TABLE	NULL
+CALL check_locks_between(2, 3);
+i
+2
+3
+partition_name	lock_mode	lock_status	lock_type	lock_data
+p0	X,REC_NOT_GAP	GRANTED	RECORD	2
+p0	X	GRANTED	RECORD	3
+p0	IX	GRANTED	TABLE	NULL
+CALL check_locks_between(0, 17);
+i
+1
+2
+3
+7
+11
+13
+17
+partition_name	lock_mode	lock_status	lock_type	lock_data
+p0	X	GRANTED	RECORD	1
+p0	X	GRANTED	RECORD	2
+p0	X	GRANTED	RECORD	3
+p0	X	GRANTED	RECORD	7
+p0	X	GRANTED	RECORD	supremum pseudo-record
+p0	IX	GRANTED	TABLE	NULL
+p1	X	GRANTED	RECORD	11
+p1	X	GRANTED	RECORD	13
+p1	X	GRANTED	RECORD	17
+p1	IX	GRANTED	TABLE	NULL
+CALL check_locks_between(3, 17);
+i
+3
+7
+11
+13
+17
+partition_name	lock_mode	lock_status	lock_type	lock_data
+p0	X,REC_NOT_GAP	GRANTED	RECORD	3
+p0	X	GRANTED	RECORD	7
+p0	X	GRANTED	RECORD	supremum pseudo-record
+p0	IX	GRANTED	TABLE	NULL
+p1	X	GRANTED	RECORD	11
+p1	X	GRANTED	RECORD	13
+p1	X	GRANTED	RECORD	17
+p1	IX	GRANTED	TABLE	NULL
+CALL check_locks_between(3, 21);
+i
+3
+7
+11
+13
+17
+19
+partition_name	lock_mode	lock_status	lock_type	lock_data
+p0	X,REC_NOT_GAP	GRANTED	RECORD	3
+p0	X	GRANTED	RECORD	7
+p0	X	GRANTED	RECORD	supremum pseudo-record
+p0	IX	GRANTED	TABLE	NULL
+p1	X	GRANTED	RECORD	11
+p1	X	GRANTED	RECORD	13
+p1	X	GRANTED	RECORD	17
+p1	X	GRANTED	RECORD	19
+p1	X	GRANTED	RECORD	supremum pseudo-record
+p1	IX	GRANTED	TABLE	NULL
+CALL check_locks_between(12, 21);
+i
+13
+17
+19
+partition_name	lock_mode	lock_status	lock_type	lock_data
+p1	X	GRANTED	RECORD	13
+p1	X	GRANTED	RECORD	17
+p1	X	GRANTED	RECORD	19
+p1	X	GRANTED	RECORD	supremum pseudo-record
+p1	IX	GRANTED	TABLE	NULL
+SET autocommit= @save_autocommit;
+DROP TABLE t;
+CREATE TABLE t (
+i INT NOT NULL PRIMARY KEY
+) ENGINE=INNODB
+PARTITION BY HASH(i)
+PARTITIONS 2;
+INSERT INTO t VALUES (1), (2), (3), (4), (6), (7), (8), (9), (10);
+SET @save_autocommit= @@autocommit;
+SET autocommit= 0;
+CALL check_locks_le(2);
+i
+2
+1
+partition_name	lock_mode	lock_status	lock_type	lock_data
+p0	X	GRANTED	RECORD	2
+p0	IX	GRANTED	TABLE	NULL
+p1	X	GRANTED	RECORD	1
+p1	X,GAP	GRANTED	RECORD	3
+p1	IX	GRANTED	TABLE	NULL
+CALL check_locks_between(0, 3);
+i
+2
+1
+3
+partition_name	lock_mode	lock_status	lock_type	lock_data
+p0	X	GRANTED	RECORD	2
+p0	X,GAP	GRANTED	RECORD	4
+p0	IX	GRANTED	TABLE	NULL
+p1	X	GRANTED	RECORD	1
+p1	X	GRANTED	RECORD	3
+p1	IX	GRANTED	TABLE	NULL
+CALL check_locks_between(2, 3);
+i
+2
+3
+partition_name	lock_mode	lock_status	lock_type	lock_data
+p0	X,REC_NOT_GAP	GRANTED	RECORD	2
+p0	X,GAP	GRANTED	RECORD	4
+p0	IX	GRANTED	TABLE	NULL
+p1	X	GRANTED	RECORD	3
+p1	IX	GRANTED	TABLE	NULL
+CALL check_locks_between(2, 6);
+i
+2
+4
+6
+3
+partition_name	lock_mode	lock_status	lock_type	lock_data
+p0	X,REC_NOT_GAP	GRANTED	RECORD	2
+p0	X	GRANTED	RECORD	4
+p0	X	GRANTED	RECORD	6
+p0	IX	GRANTED	TABLE	NULL
+p1	X	GRANTED	RECORD	3
+p1	X,GAP	GRANTED	RECORD	7
+p1	IX	GRANTED	TABLE	NULL
+CALL check_locks_between(0, 17);
+i
+2
+4
+6
+8
+10
+1
+3
+7
+9
+partition_name	lock_mode	lock_status	lock_type	lock_data
+p0	X	GRANTED	RECORD	10
+p0	X	GRANTED	RECORD	2
+p0	X	GRANTED	RECORD	4
+p0	X	GRANTED	RECORD	6
+p0	X	GRANTED	RECORD	8
+p0	X	GRANTED	RECORD	supremum pseudo-record
+p0	IX	GRANTED	TABLE	NULL
+p1	X	GRANTED	RECORD	1
+p1	X	GRANTED	RECORD	3
+p1	X	GRANTED	RECORD	7
+p1	X	GRANTED	RECORD	9
+p1	X	GRANTED	RECORD	supremum pseudo-record
+p1	IX	GRANTED	TABLE	NULL
+CALL check_locks_between(3, 17);
+i
+4
+6
+8
+10
+3
+7
+9
+partition_name	lock_mode	lock_status	lock_type	lock_data
+p0	X	GRANTED	RECORD	10
+p0	X	GRANTED	RECORD	4
+p0	X	GRANTED	RECORD	6
+p0	X	GRANTED	RECORD	8
+p0	X	GRANTED	RECORD	supremum pseudo-record
+p0	IX	GRANTED	TABLE	NULL
+p1	X,REC_NOT_GAP	GRANTED	RECORD	3
+p1	X	GRANTED	RECORD	7
+p1	X	GRANTED	RECORD	9
+p1	X	GRANTED	RECORD	supremum pseudo-record
+p1	IX	GRANTED	TABLE	NULL
+CALL check_locks_between(3, 12);
+i
+4
+6
+8
+10
+3
+7
+9
+partition_name	lock_mode	lock_status	lock_type	lock_data
+p0	X	GRANTED	RECORD	10
+p0	X	GRANTED	RECORD	4
+p0	X	GRANTED	RECORD	6
+p0	X	GRANTED	RECORD	8
+p0	X	GRANTED	RECORD	supremum pseudo-record
+p0	IX	GRANTED	TABLE	NULL
+p1	X,REC_NOT_GAP	GRANTED	RECORD	3
+p1	X	GRANTED	RECORD	7
+p1	X	GRANTED	RECORD	9
+p1	X	GRANTED	RECORD	supremum pseudo-record
+p1	IX	GRANTED	TABLE	NULL
+CALL check_locks_gt(9);
+i
+10
+partition_name	lock_mode	lock_status	lock_type	lock_data
+p0	X	GRANTED	RECORD	10
+p0	X	GRANTED	RECORD	supremum pseudo-record
+p0	IX	GRANTED	TABLE	NULL
+p1	X	GRANTED	RECORD	supremum pseudo-record
+p1	IX	GRANTED	TABLE	NULL
+SET autocommit= @save_autocommit;
+DROP PROCEDURE check_locks_le;
+DROP PROCEDURE check_locks_gt;
+DROP PROCEDURE check_locks_between;
+DROP PROCEDURE check_locks_and_rollback;
+DROP TABLE t;
+#
+# Ordered scan, variant 1: HASH partitioning, single-column PK.
+#
+CREATE TABLE t1 (
+i INT NOT NULL PRIMARY KEY
+) ENGINE=INNODB
+PARTITION BY HASH(i) PARTITIONS 2;
+INSERT INTO t1 VALUES (2), (5), (10), (17);
+EXPLAIN SELECT * FROM t1 FORCE INDEX (PRIMARY)
+WHERE i BETWEEN 1 AND 10 ORDER BY i FOR UPDATE;
+id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t1	p0,p1	range	PRIMARY	PRIMARY	4	NULL	#	#	Using where; Using index
+Warnings:
+Note	1003	/* select#1 */ select `test`.`t1`.`i` AS `i` from `test`.`t1` FORCE INDEX (PRIMARY) where (`test`.`t1`.`i` between 1 and 10) order by `test`.`t1`.`i`
+SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+BEGIN;
+SELECT * FROM t1 FORCE INDEX (PRIMARY)
+WHERE i BETWEEN 1 AND 10 ORDER BY i FOR UPDATE;
+i
+2
+5
+10
+# Expect a gap lock on 17 (first out-of-range record read by the
+# partition that never itself read the end-of-range key 10).
+SELECT partition_name, lock_mode, lock_status, lock_type, lock_data
+FROM performance_schema.data_locks
+WHERE object_schema='test' AND OBJECT_NAME='t1'
+  ORDER BY partition_name, lock_type, lock_data;
+partition_name	lock_mode	lock_status	lock_type	lock_data
+p0	X	GRANTED	RECORD	10
+p0	X	GRANTED	RECORD	2
+p0	X	GRANTED	RECORD	supremum pseudo-record
+p0	IX	GRANTED	TABLE	NULL
+p1	X,GAP	GRANTED	RECORD	17
+p1	X	GRANTED	RECORD	5
+p1	IX	GRANTED	TABLE	NULL
+SET innodb_lock_wait_timeout = 1;
+# Phantom insert into the gap protected above must be blocked.
+INSERT INTO t1 VALUES (7);
+ERROR HY000: Lock wait timeout exceeded; try restarting transaction
+ROLLBACK;
+DROP TABLE t1;
+#
+# Ordered scan, variant 2: composite PK, HASH partitioning on the
+# non-leading PK column, conjunctive range predicate.
+#
+CREATE TABLE t2 (
+a INT NOT NULL,
+b INT NOT NULL,
+PRIMARY KEY (a, b)
+) ENGINE=INNODB
+PARTITION BY HASH(b) PARTITIONS 2;
+INSERT INTO t2 VALUES (5,3), (5,4), (5,7), (5,10), (5,11);
+EXPLAIN SELECT * FROM t2 FORCE INDEX (PRIMARY)
+WHERE a = 5 AND b <= 7 ORDER BY a, b FOR UPDATE;
+id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t2	p0,p1	range	PRIMARY	PRIMARY	8	NULL	#	#	Using where; Using index
+Warnings:
+Note	1003	/* select#1 */ select `test`.`t2`.`a` AS `a`,`test`.`t2`.`b` AS `b` from `test`.`t2` FORCE INDEX (PRIMARY) where ((`test`.`t2`.`a` = 5) and (`test`.`t2`.`b` <= 7)) order by `test`.`t2`.`a`,`test`.`t2`.`b`
+SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+BEGIN;
+SELECT * FROM t2 FORCE INDEX (PRIMARY)
+WHERE a = 5 AND b <= 7 ORDER BY a, b FOR UPDATE;
+a	b
+5	3
+5	4
+5	7
+# Expect a gap lock on (5,10) (first out-of-range record read by
+# the partition that never itself read the end-of-range key (5,7)).
+SELECT partition_name, lock_mode, lock_status, lock_type, lock_data
+FROM performance_schema.data_locks
+WHERE object_schema='test' AND OBJECT_NAME='t2'
+  ORDER BY partition_name, lock_type, lock_data;
+partition_name	lock_mode	lock_status	lock_type	lock_data
+p0	X,GAP	GRANTED	RECORD	5, 10
+p0	X	GRANTED	RECORD	5, 4
+p0	IX	GRANTED	TABLE	NULL
+p1	X	GRANTED	RECORD	5, 3
+p1	X	GRANTED	RECORD	5, 7
+p1	IX	GRANTED	TABLE	NULL
+SET innodb_lock_wait_timeout = 1;
+# Phantom insert into the gap protected above must be blocked.
+INSERT INTO t2 VALUES (5,6);
+ERROR HY000: Lock wait timeout exceeded; try restarting transaction
+ROLLBACK;
+DROP TABLE t2;
+#
+# Ordered scan, variant 3: composite PK, RANGE COLUMNS partitioning
+# on the non-leading PK column - the end of range is reached by the
+# leading (partitioning) column, not the trailing one.
+#
+CREATE TABLE t3 (
+a INT NOT NULL,
+b INT NOT NULL,
+PRIMARY KEY (a, b)
+) ENGINE=INNODB
+PARTITION BY RANGE COLUMNS(b) (
+PARTITION p0 VALUES LESS THAN (6),
+PARTITION p1 VALUES LESS THAN (MAXVALUE));
+INSERT INTO t3 VALUES (5,3), (5,4), (6,0), (5,7);
+EXPLAIN SELECT * FROM t3 FORCE INDEX (PRIMARY)
+WHERE a = 5 AND b <= 7 ORDER BY a, b FOR UPDATE;
+id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t3	p0,p1	range	PRIMARY	PRIMARY	8	NULL	#	#	Using where; Using index
+Warnings:
+Note	1003	/* select#1 */ select `test`.`t3`.`a` AS `a`,`test`.`t3`.`b` AS `b` from `test`.`t3` FORCE INDEX (PRIMARY) where ((`test`.`t3`.`a` = 5) and (`test`.`t3`.`b` <= 7)) order by `test`.`t3`.`a`,`test`.`t3`.`b`
+SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+BEGIN;
+SELECT * FROM t3 FORCE INDEX (PRIMARY)
+WHERE a = 5 AND b <= 7 ORDER BY a, b FOR UPDATE;
+a	b
+5	3
+5	4
+5	7
+# Expect a gap lock on (6,0) (first out-of-range record - out of
+# range on column a, not b - read by the partition that never
+# itself read the end-of-range key (5,7)).
+SELECT partition_name, lock_mode, lock_status, lock_type, lock_data
+FROM performance_schema.data_locks
+WHERE object_schema='test' AND OBJECT_NAME='t3'
+  ORDER BY partition_name, lock_type, lock_data;
+partition_name	lock_mode	lock_status	lock_type	lock_data
+p0	X	GRANTED	RECORD	5, 3
+p0	X	GRANTED	RECORD	5, 4
+p0	X,GAP	GRANTED	RECORD	6, 0
+p0	IX	GRANTED	TABLE	NULL
+p1	X	GRANTED	RECORD	5, 7
+p1	X	GRANTED	RECORD	supremum pseudo-record
+p1	IX	GRANTED	TABLE	NULL
+SET innodb_lock_wait_timeout = 1;
+# Phantom insert into the gap protected above must be blocked.
+INSERT INTO t3 VALUES (5,5);
+ERROR HY000: Lock wait timeout exceeded; try restarting transaction
+ROLLBACK;
+DROP TABLE t3;

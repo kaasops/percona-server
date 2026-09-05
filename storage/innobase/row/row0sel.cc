@@ -4164,9 +4164,8 @@ static row_to_range_relation_t row_compare_row_to_range(
   In particular we only handle cases where we iterate the index in its
   natural order. */
   if (index == clust_index && (mode == PAGE_CUR_GE || mode == PAGE_CUR_G) &&
-      (direction == 0 || direction == ROW_SEL_NEXT) &&
-      prebuilt->is_reading_range()) {
-    ut_ad(moves_up);
+      (direction == 0 || direction == ROW_SEL_NEXT)) {
+    ut_a(moves_up);
     const auto stop_len = dtuple_get_n_fields_cmp(prebuilt->m_stop_tuple);
     if (0 < stop_len) {
       const auto index_len = dict_index_get_n_unique(index);
@@ -4317,8 +4316,6 @@ dberr_t row_search_mvcc(byte *buf, page_cur_mode_t mode,
   size_t prev_rec_debug_buf_size = 0;
 #endif /* UNIV_DEBUG */
   const rec_t *rec = nullptr;
-  byte *end_range_cache = nullptr;
-  const dtuple_t *prev_vrow = nullptr;
   const dtuple_t *vrow = nullptr;
   const rec_t *result_rec = nullptr;
   const rec_t *clust_rec;
@@ -4346,7 +4343,6 @@ dberr_t row_search_mvcc(byte *buf, page_cur_mode_t mode,
   byte *next_buf = nullptr;
   bool spatial_search = false;
   bool use_clustered_index = false;
-  ulint end_loop = 0;
 
   rec_offs_init(offsets_);
 
@@ -4705,6 +4701,7 @@ dberr_t row_search_mvcc(byte *buf, page_cur_mode_t mode,
 
     if (!srv_read_only_mode) {
       trx_assign_read_view(trx);
+      DEBUG_SYNC_C("after_mvcc_assign_read_view");
     }
 
     prebuilt->sql_stat_start = false;
@@ -4848,46 +4845,52 @@ rec_loop:
   }
 
   if (page_rec_is_supremum(rec)) {
-    DBUG_EXECUTE_IF(
-        "compare_end_range", if (end_loop < 100) { end_loop = 100; });
-
-    /** Compare the last record of the page with end range
-    passed to InnoDB when there is no ICP and number of
-    loops in row_search_mvcc for rows found but not
-    reporting due to search views etc.
-    When scanning a multi-value index, we don't perform the
-    check because we cannot convert the indexed value
-    (single scalar element) into the primary index (virtual)
-    column type (array of values).  */
+    /* Compare key fields of the last record scanned on this page against
+    end_range using InnoDB's own tuple comparison (m_stop_tuple), instead
+    of converting the row to MySQL format first and comparing that
+    (Bug#35006212). The conversion could observe an uncommitted/
+    "being modified" row (e.g. a LOB write in progress) and broke
+    assumptions the conversion functions make about row state; comparing
+    key fields on the InnoDB tuple avoids the conversion entirely. This
+    also means the check now runs on every page boundary rather than only
+    after 100 iterations (Bug#23481444's threshold protected the removed
+    conversion's cost, which no longer applies).
+    Not attempted under ICP (idx_cond) or when scanning a multi-value
+    secondary index through a clustered-index template - both exclusions
+    predate this change (Bug#23481444, Bug#36341532). */
     if (prev_rec != nullptr && !prebuilt->innodb_api &&
         prebuilt->m_mysql_handler->end_range != nullptr &&
-        prebuilt->idx_cond == false && end_loop >= 100 &&
+        prebuilt->idx_cond == false &&
         !(clust_templ_for_sec && index->is_multi_value())) {
-      dict_index_t *key_index = prebuilt->index;
-
-      if (end_range_cache == nullptr) {
-        end_range_cache = static_cast<byte *>(ut::malloc_withkey(
-            UT_NEW_THIS_FILE_PSI_KEY, prebuilt->mysql_row_len));
-      }
-
-      if (clust_templ_for_sec) {
-        /** Secondary index record but the template
-        based on PK. */
-        key_index = clust_index;
-      }
-
-      /** Create offsets based on prebuilt index. */
+      /* Create offsets based on prebuilt index. */
       offsets = rec_get_offsets(prev_rec, prebuilt->index, offsets,
                                 ULINT_UNDEFINED, UT_LOCATION_HERE, &heap);
 
-      if (row_sel_store_mysql_rec(end_range_cache, prebuilt, prev_rec,
-                                  prev_vrow, clust_templ_for_sec, key_index,
-                                  prebuilt->index, offsets, clust_templ_for_sec,
-                                  prebuilt->get_lob_undo(),
-                                  prebuilt->blob_heap)) {
-        if (row_search_end_range_check(end_range_cache, prev_rec, prebuilt,
-                                       clust_templ_for_sec, offsets,
-                                       record_buffer)) {
+      ut_a(prebuilt->m_stop_tuple);
+      const auto stop_len = dtuple_get_n_fields_cmp(prebuilt->m_stop_tuple);
+      /* end_range != nullptr implies index_read() (ha_innodb.cc) already
+      populated m_stop_tuple for this index. */
+      ut_ad_ne(stop_len, 0);
+
+      if (stop_len > 0) {
+        ut_a_le(stop_len, dict_index_get_n_unique(index));
+        /* Reaching supremum with prev_rec != nullptr on a backward scan is
+        structurally unreachable here: prev_rec is reset on infimum, after
+        supremum, and on every mtr restart, and end_range on a descending
+        scan is only ever set under ICP, already excluded above by
+        idx_cond == false. Hardened to ut_a rather than the debug-only
+        ut_ad the upstream source of this change uses, because a silent
+        violation here would silently drop rows via the early
+        DB_RECORD_NOT_FOUND below - cheap, since it is one bool check per
+        page boundary. */
+        ut_a(moves_up);
+
+        const auto cmp =
+            cmp_dtuple_rec(prebuilt->m_stop_tuple, prev_rec, index, offsets);
+
+        if (cmp < 0 ||
+            (cmp == 0 && prebuilt->m_mysql_handler->end_range->flag ==
+                             HA_READ_BEFORE_KEY)) {
           /** In case of prebuilt->fetch,
           set the error in prebuilt->end_range. */
           if (next_buf != nullptr) {
@@ -4898,7 +4901,6 @@ rec_loop:
           goto normal_return;
         }
       }
-      DEBUG_SYNC_C("allow_insert");
     }
 
     if (set_also_gap_locks && !trx->skip_gap_locks() &&
@@ -4923,7 +4925,6 @@ rec_loop:
         default:
           goto lock_wait_or_error;
       }
-      DEBUG_SYNC_C("allow_insert");
     }
 
     /* A page supremum record cannot be in the result set: skip
@@ -5699,19 +5700,6 @@ idx_cond_failed:
 
 next_rec:
 
-  if (end_loop >= 99 && need_vrow && vrow == nullptr && prev_rec != nullptr) {
-    if (!heap) {
-      heap = mem_heap_create(100, UT_LOCATION_HERE);
-    }
-
-    prev_vrow = nullptr;
-    row_sel_fill_vrow(prev_rec, index, &prev_vrow, heap);
-  } else {
-    prev_vrow = vrow;
-  }
-
-  end_loop++;
-
   /* Reset the old and new "did semi-consistent read" flags. */
   if (UNIV_UNLIKELY(prebuilt->row_read_type == ROW_READ_DID_SEMI_CONSISTENT)) {
     prebuilt->row_read_type = ROW_READ_TRY_SEMI_CONSISTENT;
@@ -5950,10 +5938,6 @@ normal_return:
 
 func_exit:
   trx->op_info = "";
-
-  if (end_range_cache != nullptr) {
-    ut::free(end_range_cache);
-  }
 
   if (heap != nullptr) {
     mem_heap_free(heap);

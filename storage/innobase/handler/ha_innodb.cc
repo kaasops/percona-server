@@ -11109,7 +11109,7 @@ int ha_innobase::index_read(
 
   ut_ad(m_prebuilt->m_mysql_handler == this);
   m_prebuilt->m_stop_tuple_found = false;
-  if (end_range != nullptr && m_prebuilt->is_reading_range()) {
+  if (end_range != nullptr) {
     row_sel_convert_mysql_key_to_innobase(
         m_prebuilt->m_stop_tuple, m_prebuilt->srch_key_val2,
         m_prebuilt->srch_key_val_len, index, end_range->key, end_range->length);
@@ -11644,18 +11644,6 @@ int ha_innobase::sample_end(void *scan_ctx) {
   ut::delete_(sampler);
 
   return 0;
-}
-
-int ha_innobase::read_range_first(const key_range *start_key,
-                                  const key_range *end_key, bool eq_range_arg,
-                                  bool sorted) {
-  auto guard = m_prebuilt->get_is_reading_range_guard();
-  return handler::read_range_first(start_key, end_key, eq_range_arg, sorted);
-}
-
-int ha_innobase::read_range_next() {
-  auto guard = m_prebuilt->get_is_reading_range_guard();
-  return (handler::read_range_next());
 }
 
 /** Initialize a table scan.
