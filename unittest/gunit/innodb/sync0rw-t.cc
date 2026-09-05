@@ -247,4 +247,106 @@ TEST(sync0rw, rw_lock_reader_thread) {
   os_event_global_destroy();
 }
 
+TEST(sync0rw, rw_lock_word_accounting) {
+  /* The lock_word accessors (rw_lock_get_writer, rw_lock_get_reader_count,
+  rw_lock_get_x_lock_count) decode a single int32_t into the S/X/SX state, and
+  the recursive x-lock and x-unlock paths walk an if/else chain over that same
+  word. This test pins down what each accessor reports for every state a lock
+  can be driven into by a single owning thread, so that changes to the types
+  used for those snapshots, or to how often the word is read, have to keep the
+  reported state identical. */
+
+  os_event_global_init();
+  sync_check_init(1);
+
+  auto *lock = static_cast<rw_lock_t *>(malloc(sizeof(rw_lock_t)));
+  rw_lock_create(PSI_NOT_INSTRUMENTED, lock, LATCH_ID_BUF_BLOCK_LOCK);
+
+  auto expect_state = [&](ulint writer, ulint readers, ulint x_locks) {
+    EXPECT_EQ(rw_lock_get_writer(lock), writer);
+    EXPECT_EQ(rw_lock_get_reader_count(lock), readers);
+    EXPECT_EQ(rw_lock_get_x_lock_count(lock), x_locks);
+  };
+
+  /* Readers are taken and released through the lock_word primitives rather
+  than rw_lock_s_lock(), because a single thread is not allowed to hold two
+  S-locks on the same latch (sync debug asserts on it) while the counting
+  under test is precisely about several readers being present at once. */
+  auto add_reader = [&]() { EXPECT_TRUE(rw_lock_lock_word_decr(lock, 1, 0)); };
+  auto remove_reader = [&]() { rw_lock_lock_word_incr(lock, 1); };
+
+  /* A free lock. */
+  expect_state(RW_LOCK_NOT_LOCKED, 0, 0);
+
+  /* S-locks are counted, and do not make the lock look written to. */
+  for (ulint readers = 1; readers <= 3; ++readers) {
+    add_reader();
+    expect_state(RW_LOCK_NOT_LOCKED, readers, 0);
+  }
+  for (ulint readers = 3; readers > 0; --readers) {
+    expect_state(RW_LOCK_NOT_LOCKED, readers, 0);
+    remove_reader();
+  }
+  expect_state(RW_LOCK_NOT_LOCKED, 0, 0);
+
+  /* A single real S-lock goes through the same accounting. */
+  rw_lock_s_lock(lock, UT_LOCATION_HERE);
+  expect_state(RW_LOCK_NOT_LOCKED, 1, 0);
+  rw_lock_s_unlock(lock);
+  expect_state(RW_LOCK_NOT_LOCKED, 0, 0);
+
+  /* Recursive x-locks. The first one zeroes lock_word, the second subtracts a
+  whole X_LOCK_DECR, every further one subtracts 1 - three different branches
+  of the same chain. */
+  for (ulint x_locks = 1; x_locks <= 3; ++x_locks) {
+    rw_lock_x_lock(lock, UT_LOCATION_HERE);
+    expect_state(RW_LOCK_X, 0, x_locks);
+  }
+  for (ulint x_locks = 3; x_locks > 0; --x_locks) {
+    expect_state(RW_LOCK_X, 0, x_locks);
+    rw_lock_x_unlock(lock);
+  }
+  expect_state(RW_LOCK_NOT_LOCKED, 0, 0);
+
+  /* The same recursion through the nowait path, which has its own copy of the
+  relock chain. */
+  for (ulint x_locks = 1; x_locks <= 3; ++x_locks) {
+    EXPECT_TRUE(rw_lock_x_lock_nowait(lock, UT_LOCATION_HERE));
+    expect_state(RW_LOCK_X, 0, x_locks);
+  }
+  for (ulint x_locks = 3; x_locks > 0; --x_locks) {
+    rw_lock_x_unlock(lock);
+  }
+  expect_state(RW_LOCK_NOT_LOCKED, 0, 0);
+
+  /* SX is reported as a writer state of its own, but does not exclude
+  readers. */
+  rw_lock_sx_lock(lock, UT_LOCATION_HERE);
+  expect_state(RW_LOCK_SX, 0, 0);
+
+  add_reader();
+  add_reader();
+  expect_state(RW_LOCK_SX, 2, 0);
+  remove_reader();
+  remove_reader();
+  expect_state(RW_LOCK_SX, 0, 0);
+
+  /* Upgrading our own SX to X and back: this drives lock_word to the
+  -X_LOCK_HALF_DECR value, which the chains treat as "one x-lock" but which is
+  a different constant than the plain single-x-lock case above. */
+  rw_lock_x_lock(lock, UT_LOCATION_HERE);
+  expect_state(RW_LOCK_X, 0, 1);
+  rw_lock_x_unlock(lock);
+  expect_state(RW_LOCK_SX, 0, 0);
+
+  rw_lock_sx_unlock(lock);
+  expect_state(RW_LOCK_NOT_LOCKED, 0, 0);
+
+  rw_lock_free(lock);
+  free(lock);
+
+  sync_check_close();
+  os_event_global_destroy();
+}
+
 }  // namespace innodb_sync0rw_unittest
