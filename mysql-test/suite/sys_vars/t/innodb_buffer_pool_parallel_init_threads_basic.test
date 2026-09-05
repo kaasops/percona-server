@@ -1,0 +1,105 @@
+################ innodb_buffer_pool_parallel_init_threads_basic.test #########
+#                                                                             #
+# Variable Name: innodb_buffer_pool_parallel_init_threads                    #
+# Scope: Global                                                              #
+# Access Type: Static (READONLY)                                             #
+# Data Type: numeric                                                         #
+# Default Value: 0 (auto: derive from detected physical CPU cores)           #
+# Range: 0-256 (256 = MAX_BUFFER_POOLS, buf0buf.h)                           #
+#                                                                             #
+# Description: max threads for parallel buffer pool initialization.          #
+# READONLY is a fix on transfer, not upstream behavior: buf_pool_init()      #
+# reads this exactly once, at startup, before any connection exists to      #
+# run SET - a runtime SET on a non-readonly copy of this variable would      #
+# silently do nothing. Modeled on
+# innodb_buffer_pool_instances_basic.test (same class of variable: a
+# READONLY numeric InnoDB startup-sizing knob).                              #
+#                                                                             #
+###############################################################################
+
+--echo '#---------------------BS_STVARS_IB_PIT_01----------------------#'
+####################################################################
+#   Displaying default value                                       #
+####################################################################
+SELECT COUNT(@@GLOBAL.innodb_buffer_pool_parallel_init_threads);
+--echo 1 Expected
+
+SELECT @@GLOBAL.innodb_buffer_pool_parallel_init_threads;
+--echo 0 Expected (auto)
+
+
+--echo '#---------------------BS_STVARS_IB_PIT_02----------------------#'
+####################################################################
+#   Check that the value cannot be set at runtime (READONLY fix)   #
+####################################################################
+
+--error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SET @@GLOBAL.innodb_buffer_pool_parallel_init_threads=1;
+--echo Expected error 'Read only variable'
+
+SELECT COUNT(@@GLOBAL.innodb_buffer_pool_parallel_init_threads);
+--echo 1 Expected
+
+
+--echo '#---------------------BS_STVARS_IB_PIT_03----------------------#'
+#################################################################
+# Check if the value in GLOBAL Table matches value in variable  #
+#################################################################
+
+--disable_warnings
+SELECT @@GLOBAL.innodb_buffer_pool_parallel_init_threads = VARIABLE_VALUE
+FROM performance_schema.global_variables
+WHERE VARIABLE_NAME='innodb_buffer_pool_parallel_init_threads';
+--enable_warnings
+--echo 1 Expected
+
+SELECT COUNT(VARIABLE_VALUE)
+FROM performance_schema.global_variables
+WHERE VARIABLE_NAME='innodb_buffer_pool_parallel_init_threads';
+--echo 1 Expected
+
+
+--echo '#---------------------BS_STVARS_IB_PIT_04----------------------#'
+################################################################################
+#  Check if accessing variable with and without GLOBAL point to same variable  #
+################################################################################
+SELECT @@innodb_buffer_pool_parallel_init_threads =
+       @@GLOBAL.innodb_buffer_pool_parallel_init_threads;
+--echo 1 Expected
+
+
+--echo '#---------------------BS_STVARS_IB_PIT_05----------------------#'
+##########################################################################
+#   Check scope: no SESSION counterpart (GLOBAL-only variable)           #
+##########################################################################
+
+SELECT COUNT(@@innodb_buffer_pool_parallel_init_threads);
+--echo 1 Expected
+
+--Error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SELECT COUNT(@@local.innodb_buffer_pool_parallel_init_threads);
+--echo Expected error 'Variable is a GLOBAL variable'
+
+--Error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SELECT COUNT(@@SESSION.innodb_buffer_pool_parallel_init_threads);
+--echo Expected error 'Variable is a GLOBAL variable'
+
+--Error ER_BAD_FIELD_ERROR
+SELECT innodb_buffer_pool_parallel_init_threads;
+--echo Expected error 'Unknown column'
+
+
+--echo '#---------------------BS_STVARS_IB_PIT_06----------------------#'
+##########################################################################
+#  Set an explicit non-default value on the command line at startup -   #
+#  the only way to change this variable, since SET is rejected (above). #
+##########################################################################
+
+--let $restart_parameters = restart: --innodb-buffer-pool-parallel-init-threads=2
+--source include/restart_mysqld.inc
+
+SELECT @@GLOBAL.innodb_buffer_pool_parallel_init_threads;
+--echo 2 Expected
+
+--let $restart_parameters = restart:
+--source include/restart_mysqld.inc

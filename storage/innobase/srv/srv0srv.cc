@@ -458,6 +458,12 @@ const ulonglong srv_buf_pool_chunk_unit_max =
 ulong srv_buf_pool_instances;
 /** Default number of buffer pool instances */
 const ulong srv_buf_pool_instances_default = 0;
+#ifdef UNIV_LINUX
+/** Max threads for parallel buffer pool initialization. 0 (default):
+derive from detected physical CPU cores, capped at srv_buf_pool_instances -
+see buf_pool_init() in buf0buf.cc. */
+ulong srv_buffer_pool_parallel_init_threads = 0;
+#endif /* UNIV_LINUX */
 /** Number of locks to protect buf_pool->page_hash */
 ulong srv_n_page_hash_locks = 16;
 /** Whether to validate InnoDB tablespace paths on startup */

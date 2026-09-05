@@ -23661,6 +23661,20 @@ static MYSQL_SYSVAR_ULONG(buffer_pool_instances, srv_buf_pool_instances,
                           nullptr, nullptr, srv_buf_pool_instances_default, 0,
                           MAX_BUFFER_POOLS, 0);
 
+#ifdef UNIV_LINUX
+static MYSQL_SYSVAR_ULONG(
+    buffer_pool_parallel_init_threads, srv_buffer_pool_parallel_init_threads,
+    /* READONLY: buf_pool_init() reads this exactly once, at startup, before
+    any connection can run SET - a runtime SET would silently do nothing,
+    which upstream left settable (defect fixed on transfer, see commit
+    message Adaptations). */
+    PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+    "Maximum threads for parallel buffer pool initialization. 0 (default): "
+    "derive from detected physical CPU cores, capped at "
+    "innodb_buffer_pool_instances.",
+    nullptr, nullptr, 0, 0, MAX_BUFFER_POOLS, 0);
+#endif /* UNIV_LINUX */
+
 static MYSQL_SYSVAR_STR(
     buffer_pool_filename, srv_buf_dump_filename,
     PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_MEMALLOC,
@@ -24565,6 +24579,9 @@ static SYS_VAR *innobase_system_variables[] = {
     MYSQL_SYSVAR(buffer_pool_size),
     MYSQL_SYSVAR(buffer_pool_chunk_size),
     MYSQL_SYSVAR(buffer_pool_instances),
+#ifdef UNIV_LINUX
+    MYSQL_SYSVAR(buffer_pool_parallel_init_threads),
+#endif
     MYSQL_SYSVAR(buffer_pool_filename),
     MYSQL_SYSVAR(buffer_pool_dump_now),
     MYSQL_SYSVAR(buffer_pool_dump_at_shutdown),

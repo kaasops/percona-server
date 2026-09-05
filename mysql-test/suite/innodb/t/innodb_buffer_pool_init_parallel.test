@@ -1,0 +1,222 @@
+#
+# Parallel buffer pool initialization: thread count derivation and its
+# topology-unavailable guard branch. Shares the bp_topology_unavailable
+# debug point with the C1 instance cap
+# (innodb_buffer_pool_instances_cpu_cap.test) - both are forced by the
+# same SET DEBUG, since they read the same topology snapshot.
+#
+# Nothing here is tied to this test host's actual core count: scenario 1
+# derives it from the server's own output (the C1 cap's log line, exactly
+# as innodb_buffer_pool_instances_cpu_cap.test does) instead of assuming a
+# number, and reuses that derived value for the rest of the test. The one
+# literal constant asserted below (8, in scenario 2) is not a host
+# property - it is the pre-patch fallback formula's own hardcoded ceiling
+# (buf_pool_init(), the min(sysconf_onln(), 8) term), asserted as an upper
+# bound on any host with at least 8 logical CPUs (true of every host in
+# the current fleet).
+--source include/have_debug.inc
+--source include/big_test.inc
+
+--let $error_log = $MYSQLTEST_VARDIR/log/mysqld.1.err
+# Non-$-prefixed copy for the custom --perl blocks below: mysqltest only
+# exports a --let variable to the OS environment (and therefore to
+# $ENV{...} in --perl blocks) when its name has no leading $ - see
+# client/mysqltest.cc var_set().
+--let error_log = $error_log
+
+# Large, fixed request used to derive this host's physical core count from
+# the C1 cap's own log line - not assumed, read back from the server, same
+# technique as innodb_buffer_pool_instances_cpu_cap.test.
+--let $high_request = 200
+--let high_request = $high_request
+
+# Same known host/harness artifact as innodb_buffer_pool_instances_cpu_cap.test
+# (see the comment there for the full explanation): scenario 2 below skips
+# the C1 cap via the same debug point and reaches $high_request instances,
+# which spawns enough I/O/purge threads for InnoDB's setpriority()/nice()
+# EPERM warning (always present under MTR, never under the packaged
+# systemd unit's LimitNICE) to actually appear and trip mtr's log check.
+call mtr.add_suppression("Setting thread .* nice to 0 failed");
+call mtr.add_suppression("Failed to set (I/O thread|purge coordinator thread) priority");
+
+--echo #
+--echo # Scenario 1: explicit instance count above any real host's physical
+--echo # core count, topology available (no debug point) - the C1 cap fires
+--echo # and reduces the instance count to this host's actual physical core
+--echo # count (call it N). Since N <= N trivially, the "instances <= cores"
+--echo # branch of the thread-count formula applies, and the INIT_COMPLETED
+--echo # line should name exactly N parallel threads - both numbers (capped
+--echo # instance count and thread count) come from the server's own
+--echo # output, cross-checked against each other and against
+--echo # @@innodb_buffer_pool_instances.
+--echo #
+--let $restart_parameters = restart: --innodb-buffer-pool-instances=$high_request --innodb-buffer-pool-size=1G
+--source include/restart_mysqld.inc
+
+--let $grep_file = $error_log
+--let $grep_pattern = Buffer pool initialization completed
+--let $wait_timeout = 30
+--source include/wait_for_pattern_in_file.inc
+
+--let $actual_instances = query_get_value(SELECT @@innodb_buffer_pool_instances AS v, v, 1)
+--let actual_instances = $actual_instances
+# Not echoing the derived value itself (this host's physical core count) -
+# only that it was read back from the server; the actual cross-check
+# against the log line happens in the --perl block below and its own
+# PASS/FAIL message is likewise number-free, to keep this .result file
+# portable across hosts with a different core count.
+--echo actual_instances read back from the server after requesting $high_request instances
+
+--perl
+  my $log = $ENV{error_log};
+  my $requested = $ENV{high_request};
+  my $actual = $ENV{actual_instances};
+  open(FILE, "<", $log) or die("Unable to open $log: $!\n");
+  my ($cap_found, $threads_found) = (0, 0);
+  my ($cap_old, $cap_new, $cap_cores, $threads);
+  while (<FILE>) {
+    if (/innodb_buffer_pool_instances capped from (\d+) to (\d+): limited to the number of detected physical CPU cores \((\d+)\)/) {
+      $cap_found = 1;
+      $cap_old = $1; $cap_new = $2; $cap_cores = $3;
+    }
+    if (/Buffer pool initialization completed .* using (\d+) parallel thread\(s\)/) {
+      $threads_found = 1;
+      $threads = $1;
+    }
+  }
+  close(FILE);
+  if (!$cap_found) {
+    print "FAIL: no capped-instances log line found for the physical-core-count probe\n";
+  } elsif ($cap_old != $requested) {
+    print "FAIL: capped-instances line names old value $cap_old, expected $requested\n";
+  } elsif ($cap_new != $cap_cores || $cap_new != $actual) {
+    print "FAIL: capped-instances line ($cap_new) not self-consistent with cores ($cap_cores) or \@\@innodb_buffer_pool_instances ($actual)\n";
+  } elsif (!$threads_found) {
+    print "FAIL: no INIT_COMPLETED line found\n";
+  } elsif ($threads != $actual) {
+    print "FAIL: INIT_COMPLETED names $threads thread(s), expected it to match the (capped) instance count $actual (instances <= cores case)\n";
+  } else {
+    print "PASS: capped instance count and thread count are self-consistent\n";
+  }
+EOF
+
+# Save this host's derived physical core count for the remaining scenarios.
+--let $phys_cores_marker = $MYSQLTEST_VARDIR/tmp/_bp_init_phys_cores.txt
+--let phys_cores_marker = $phys_cores_marker
+--perl
+  open(OUT, ">", $ENV{phys_cores_marker}) or die("Unable to write marker: $!\n");
+  print OUT $ENV{actual_instances};
+  close(OUT);
+EOF
+
+--echo #
+--echo # Scenario 2: topology forced unavailable (debug point), same large
+--echo # request as scenario 1 - the C1 cap is skipped here (guard branch),
+--echo # so the instance count is honored as requested, but the thread
+--echo # count falls back to the literal pre-patch formula
+--echo # min(min(sysconf_onln(), 8), n_instances): capped at 8 by that
+--echo # formula's own hardcoded ceiling (not a host property - see header
+--echo # comment), and distinct from both the (skipped) instance count and
+--echo # from silently falling back to a single thread.
+--echo #
+--let $restart_parameters = restart: --debug=d,bp_topology_unavailable --innodb-buffer-pool-instances=$high_request --innodb-buffer-pool-size=1G
+--source include/restart_mysqld.inc
+
+--let $grep_file = $error_log
+--let $grep_pattern = CPU topology unavailable, buffer pool instance cap skipped
+--let $wait_timeout = 30
+--source include/wait_for_pattern_in_file.inc
+
+--let $actual_instances_s2 = query_get_value(SELECT @@innodb_buffer_pool_instances AS v, v, 1)
+if ($actual_instances_s2 != $high_request) {
+  --die Guard branch did not honor the requested instance count as-is
+}
+--echo guard-branch instance count matches the request: $actual_instances_s2
+
+--let $assert_text = topology-unavailable diagnostic line is present exactly once
+--let $assert_file = $error_log
+--let $assert_select = CPU topology unavailable, buffer pool instance cap skipped
+--let $assert_count = 1
+--source include/assert_grep.inc
+
+--perl
+  my $log = $ENV{error_log};
+  my $requested = $ENV{high_request};
+  open(FILE, "<", $log) or die("Unable to open $log: $!\n");
+  my $threads;
+  while (<FILE>) {
+    if (/Buffer pool initialization completed .* using (\d+) parallel thread\(s\)/) {
+      $threads = $1;
+    }
+  }
+  close(FILE);
+  if (!defined $threads) {
+    print "FAIL: no INIT_COMPLETED line found for the guard-branch restart\n";
+  } elsif ($threads < 1 || $threads > 8) {
+    print "FAIL: guard-branch thread count $threads is outside the fallback formula's own range [1, 8]\n";
+  } elsif ($threads == $requested) {
+    print "FAIL: guard-branch thread count ($threads) silently tracked the requested instance count ($requested) instead of using the fallback formula\n";
+  } else {
+    print "PASS: guard-branch thread count is within the fallback formula's [1, 8] range and does not silently track the instance count\n";
+  }
+EOF
+
+--echo #
+--echo # Scenario 3: INIT_COMPLETED is SYSTEM level - visible at
+--echo # log-error-verbosity=1, the strictest (most filtered) setting, same
+--echo # reasoning as the CPU/NUMA topology dump uses. Instance count here
+--echo # is this host's own derived physical core count (scenario 1) so
+--echo # that "instances <= cores" holds without assuming anything about
+--echo # the host - not reused from a --debug run, so this checks a plain,
+--echo # realistic startup.
+--echo #
+--let $read_from_file = $phys_cores_marker
+--source include/read_file_to_var.inc
+--let $phys_cores = $result
+--remove_file $phys_cores_marker
+# Not echoing the derived value itself (host-dependent) - see the same
+# reasoning at the scenario 1 echo above.
+--echo reusing this host's derived physical core count for this restart
+
+--let init_completed_marker = $MYSQLTEST_VARDIR/tmp/_bp_init_completed_count2.txt
+--perl
+  open(FILE, "<", $ENV{error_log}) or die("Unable to open $ENV{error_log}: $!\n");
+  my $count = 0;
+  while (<FILE>) { $count++ if (/Buffer pool initialization completed/); }
+  close(FILE);
+  open(OUT, ">", $ENV{init_completed_marker}) or die("Unable to write marker: $!\n");
+  print OUT $count;
+  close(OUT);
+EOF
+
+# $phys_cores is host-dependent (this host's derived physical core count) -
+# suppress the usual "# restart: ..." echo of $restart_parameters
+# (include/restart_mysqld.inc) since it would otherwise interpolate that
+# number into .result, same reasoning as the --echo lines above.
+--let $restart_parameters = restart: --log-error-verbosity=1 --innodb-buffer-pool-instances=$phys_cores --innodb-buffer-pool-size=1G
+--let $do_not_echo_parameters = 1
+--source include/restart_mysqld.inc
+--let $do_not_echo_parameters = 0
+
+--perl
+  my $log = $ENV{error_log};
+  open(IN, "<", $ENV{init_completed_marker}) or die("Unable to read marker: $!\n");
+  my $before = <IN>;
+  close(IN);
+  unlink($ENV{init_completed_marker});
+  my $grown = 0;
+  my $count = 0;
+  for (my $i = 0; $i < 30; $i++) {
+    open(FILE, "<", $log) or die("Unable to open $log: $!\n");
+    $count = 0;
+    while (<FILE>) { $count++ if (/Buffer pool initialization completed/); }
+    close(FILE);
+    if ($count > $before) { $grown = 1; last; }
+    sleep 1;
+  }
+  print $grown ? "PASS: a new INIT_COMPLETED line appeared under log-error-verbosity=1\n"
+               : "FAIL: no new INIT_COMPLETED line appeared under log-error-verbosity=1 (before=$before, after=$count)\n";
+EOF
+
+--let $restart_parameters = restart:
+--source include/restart_mysqld.inc

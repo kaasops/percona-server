@@ -1,0 +1,46 @@
+call mtr.add_suppression("Setting thread .* nice to 0 failed");
+call mtr.add_suppression("Failed to set (I/O thread|purge coordinator thread) priority");
+#
+# Scenario 1: explicit instance count above any real host's physical
+# core count, topology available (no debug point) - the C1 cap fires
+# and reduces the instance count to this host's actual physical core
+# count (call it N). Since N <= N trivially, the "instances <= cores"
+# branch of the thread-count formula applies, and the INIT_COMPLETED
+# line should name exactly N parallel threads - both numbers (capped
+# instance count and thread count) come from the server's own
+# output, cross-checked against each other and against
+# @@innodb_buffer_pool_instances.
+#
+# restart: --innodb-buffer-pool-instances=200 --innodb-buffer-pool-size=1G
+include/wait_for_pattern_in_file.inc [Buffer pool initialization completed]
+actual_instances read back from the server after requesting 200 instances
+PASS: capped instance count and thread count are self-consistent
+#
+# Scenario 2: topology forced unavailable (debug point), same large
+# request as scenario 1 - the C1 cap is skipped here (guard branch),
+# so the instance count is honored as requested, but the thread
+# count falls back to the literal pre-patch formula
+# min(min(sysconf_onln(), 8), n_instances): capped at 8 by that
+# formula's own hardcoded ceiling (not a host property - see header
+# comment), and distinct from both the (skipped) instance count and
+# from silently falling back to a single thread.
+#
+# restart: --debug=d,bp_topology_unavailable --innodb-buffer-pool-instances=200 --innodb-buffer-pool-size=1G
+include/wait_for_pattern_in_file.inc [CPU topology unavailable, buffer pool instance cap skipped]
+guard-branch instance count matches the request: 200
+include/assert_grep.inc [topology-unavailable diagnostic line is present exactly once]
+PASS: guard-branch thread count is within the fallback formula's [1, 8] range and does not silently track the instance count
+#
+# Scenario 3: INIT_COMPLETED is SYSTEM level - visible at
+# log-error-verbosity=1, the strictest (most filtered) setting, same
+# reasoning as the CPU/NUMA topology dump uses. Instance count here
+# is this host's own derived physical core count (scenario 1) so
+# that "instances <= cores" holds without assuming anything about
+# the host - not reused from a --debug run, so this checks a plain,
+# realistic startup.
+#
+include/read_file_to_var.inc
+reusing this host's derived physical core count for this restart
+# restart
+PASS: a new INIT_COMPLETED line appeared under log-error-verbosity=1
+# restart:

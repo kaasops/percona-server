@@ -110,7 +110,9 @@ struct Sql_machine_topology {
 
 /** Process-wide immutable machine topology snapshot, built exactly once
     (C++11 magic static, thread-safe): lazy thread-safe init at first
-    access; currently the first access is the topology log in srv_start().
+    access; currently the first access is the buffer pool instance count
+    cap in innodb_buffer_pool_size_init() (called from innodb_init_params(),
+    ahead of srv_start() and its own topology log line).
     CPU hotplug and runtime cgroup cpuset changes are NOT reflected (known
     limitation). */
 [[nodiscard]] const Sql_machine_topology &sql_machine_topology() noexcept;

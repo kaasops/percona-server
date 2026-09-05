@@ -13215,6 +13215,12 @@ ER_IB_MSG_CPU_CORES_INFO
 ER_IB_MSG_BP_INSTANCES_CAPPED
   eng "innodb_buffer_pool_instances capped from %lu to %lu: limited to the number of detected physical CPU cores (%lu)"
 
+ER_IB_MSG_BUFFER_POOL_INIT_COMPLETED
+  eng "Buffer pool initialization completed in %d minutes %.3lf seconds using %lu parallel thread(s). Speed: %.3lf GB/sec"
+
+ER_IB_MSG_BUFFER_POOL_INIT_FAILED
+  eng "Buffer pool initialization failed after %d minutes %.3lf seconds"
+
 #
 # End of Percona Server 8.4 error log messages
 #

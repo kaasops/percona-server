@@ -66,6 +66,8 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include <stdarg.h>
 #include <sys/types.h>
 #include <time.h>
+#include <chrono>
+#include <cmath>
 #include <map>
 #include <new>
 #include <sstream>
@@ -78,6 +80,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "log0recv.h"
 #include "os0thread-create.h"
 #include "page0zip.h"
+#include "sql/cpu_topology.h"
 #include "srv0mon.h"
 #include "srv0srv.h"
 #include "srv0start.h"
@@ -1568,21 +1571,51 @@ dberr_t buf_pool_init(ulint total_size, bool populate, ulint n_instances) {
   errs.assign(n_instances, DB_SUCCESS);
 
 #ifdef UNIV_LINUX
-  ulint n_cores = sysconf(_SC_NPROCESSORS_ONLN);
+  ulint n_cores;
 
-  /* Magic number 8 is from empirical testing on a
-  4 socket x 10 Cores x 2 HT host. 128G / 16 instances
-  takes about 4 secs, compared to 10 secs without this
-  optimisation.. */
+  if (srv_buffer_pool_parallel_init_threads > 0) {
+    /* Explicit override (innodb_buffer_pool_parallel_init_threads > 0):
+    hard limit is still the instance count - more threads than instances
+    would just leave threads idle in the batching loop below. */
+    n_cores = std::min<ulint>(srv_buffer_pool_parallel_init_threads,
+                              n_instances);
+  } else {
+    /* Auto: parallelize across physical cores, using the same topology
+    source as the instance cap itself (innodb_buffer_pool_size_init() in
+    ha_innodb.cc) - sql_machine_topology() is a process-wide singleton, so
+    this is not a second, possibly different, detection pass. */
+    const Sql_cpu_topology &cpu_topology = sql_machine_topology().cpu;
 
-  if (n_cores > 8) {
-    n_cores = 8;
+    bool topology_available =
+        cpu_topology.initialized && cpu_topology.effective_cpu_capacity() > 0;
+    DBUG_EXECUTE_IF("bp_topology_unavailable", topology_available = false;);
+
+    if (topology_available) {
+      const ulint phys_cores =
+          static_cast<ulint>(cpu_topology.effective_cpu_capacity());
+      n_cores = std::min<ulint>(phys_cores, n_instances);
+    } else {
+      /* Topology snapshot unusable - fall back to the LITERAL formula
+      this patch replaces (sysconf() capped at 8), not to a single
+      thread: a topology failure should degrade to the old, exercised
+      behavior, not to a new, unexercised one. */
+      ulint n_cores_sysconf = sysconf(_SC_NPROCESSORS_ONLN);
+
+      if (n_cores_sysconf > 8) {
+        n_cores_sysconf = 8;
+      }
+
+      n_cores = std::min<ulint>(n_cores_sysconf, n_instances);
+    }
   }
 #else
   ulint n_cores = 4;
 #endif /* UNIV_LINUX */
 
   dberr_t err = DB_SUCCESS;
+
+  using buf_pool_init_clock = std::chrono::steady_clock;
+  const auto init_start_time = buf_pool_init_clock::now();
 
   for (i = 0; i < n_instances; /* no op */) {
     ulint n = i + n_cores;
@@ -1612,6 +1645,16 @@ dberr_t buf_pool_init(ulint total_size, bool populate, ulint n_instances) {
     }
 
     if (err != DB_SUCCESS) {
+      const double elapsed_seconds =
+          std::chrono::duration_cast<std::chrono::duration<double>>(
+              buf_pool_init_clock::now() - init_start_time)
+              .count();
+      const int elapsed_minutes = static_cast<int>(elapsed_seconds / 60);
+      const double elapsed_seconds_remaining = fmod(elapsed_seconds, 60.0);
+
+      ib::error(ER_IB_MSG_BUFFER_POOL_INIT_FAILED, elapsed_minutes,
+                elapsed_seconds_remaining);
+
       for (size_t id = 0; id < n; ++id) {
         if (buf_pool_ptr[id].chunks != nullptr) {
           buf_pool_free_instance(&buf_pool_ptr[id]);
@@ -1634,6 +1677,32 @@ dberr_t buf_pool_init(ulint total_size, bool populate, ulint n_instances) {
 
   buf_stat_per_index = ut::new_withkey<buf_stat_per_index_t>(
       ut::make_psi_memory_key(mem_key_buf_stat_per_index_t));
+
+  {
+    /* SYSTEM_LEVEL, not ib::info()/INFORMATION_LEVEL as upstream had it:
+    same reasoning as the CPU/NUMA topology dump in srv0start.cc - the
+    default log_error_verbosity=2 filters INFORMATION-level records, and
+    this line is the intended measurement channel for buffer pool startup
+    time, which must be readable on an unmodified production config.
+    Thread count is printed too (upstream did not): it is what
+    distinguishes the auto-derived-from-topology thread count from the
+    topology-unavailable fallback formula, both exercised by tests. */
+    const double elapsed_seconds =
+        std::chrono::duration_cast<std::chrono::duration<double>>(
+            buf_pool_init_clock::now() - init_start_time)
+            .count();
+    const double speed_gb_per_sec =
+        elapsed_seconds > 0.000001
+            ? (static_cast<double>(total_size) / (1024.0 * 1024 * 1024)) /
+                  elapsed_seconds
+            : 0.0;
+    const int elapsed_minutes = static_cast<int>(elapsed_seconds / 60);
+    const double elapsed_seconds_remaining = fmod(elapsed_seconds, 60.0);
+
+    LogErr(SYSTEM_LEVEL, ER_IB_MSG_BUFFER_POOL_INIT_COMPLETED, elapsed_minutes,
+           elapsed_seconds_remaining, static_cast<ulong>(n_cores),
+           speed_gb_per_sec);
+  }
 
   return (DB_SUCCESS);
 }

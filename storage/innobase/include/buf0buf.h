@@ -117,6 +117,14 @@ constexpr ulint MAX_PAGE_HASH_LOCKS = 1024;
 /** The buffer pools of the database */
 extern buf_pool_t *buf_pool_ptr;
 
+#ifdef UNIV_LINUX
+/** Sysvar backing innodb_buffer_pool_parallel_init_threads: max threads for
+parallel buffer pool initialization, 0 = derive from detected physical CPU
+cores. Read once at startup by buf_pool_init() - see its READONLY flag in
+ha_innodb.cc for why. */
+extern ulong srv_buffer_pool_parallel_init_threads;
+#endif
+
 #ifdef UNIV_HOTBACKUP
 /** first block, for --apply-log */
 extern buf_block_t *back_block1;

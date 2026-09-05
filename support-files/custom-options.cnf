@@ -81,3 +81,13 @@ loose-reset_connection_keep_sp_cache = ON
 #   workload-specific payload-size distribution showing small
 #   transactions dominate compression overhead)
 loose-binlog_transaction_compression_min_size = 0
+
+# DESCRIPTION: Maximum threads for parallel buffer pool initialization.
+#   0 (default): derive from detected physical CPU cores, capped at
+#   innodb_buffer_pool_instances. READONLY (buf_pool_init() reads this
+#   exactly once, at startup). Linux only.
+# DEFAULT: 0 (auto)
+# RECOMMENDED: 0 (leave at default -- auto-derivation from physical
+#   core count is the point of this unit; only override for a measured
+#   reason on a specific host)
+loose-innodb_buffer_pool_parallel_init_threads = 0
