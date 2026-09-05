@@ -202,11 +202,8 @@ static inline void ib_heap_allocator_free(
 
 /* Allocator used by ib_vector_t. */
 struct ib_alloc_t {
-  ib_mem_alloc_t mem_malloc;  /* For allocating memory */
-  ib_mem_free_t mem_release;  /* For freeing memory */
-  ib_mem_resize_t mem_resize; /* For resizing memory */
-  void *arg;                  /* Currently if not NULL then it
-                              points to the heap instance */
+  void *arg; /* Currently if not NULL then it
+             points to the heap instance */
 };
 
 /* See comment at beginning of file. */

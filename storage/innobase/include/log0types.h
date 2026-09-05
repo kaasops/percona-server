@@ -120,9 +120,9 @@ enum class Log_file_type {
                        from the beginning of the file)
 @param[in]  size       size of data that is going to be read or written in
                        the IO operation */
-typedef std::function<void(Log_file_id file_id, Log_file_type file_type,
-                           os_offset_t offset, os_offset_t size)>
-    Log_file_io_callback;
+typedef void (*Log_file_io_callback)(Log_file_id file_id,
+                                     Log_file_type file_type,
+                                     os_offset_t offset, os_offset_t size);
 
 /** Function used to calculate checksums of log blocks. */
 typedef std::atomic<uint32_t (*)(const byte *log_block)>

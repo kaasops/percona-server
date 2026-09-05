@@ -4822,7 +4822,7 @@ static uint innobase_partition_flags() {
 }
 #endif /* !UNIV_HOTBACKUP */
 
-/** Update log_checksum_algorithm_ptr with a pointer to the function
+/** Update log_checksum_algorithm
 corresponding to whether checksums are enabled.
 @param[in]      check   whether redo log block checksums are enabled */
 #ifndef UNIV_HOTBACKUP
@@ -4830,8 +4830,7 @@ static
 #endif /* !UNIV_HOTBACKUP */
     void
     innodb_log_checksums_func_update(bool check) {
-  log_checksum_algorithm_ptr.store(check ? log_block_calc_checksum_crc32
-                                         : log_block_calc_checksum_none);
+  log_checksum_algorithm.store(check);
 }
 
 #ifndef UNIV_HOTBACKUP
