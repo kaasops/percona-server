@@ -1,0 +1,70 @@
+--source include/have_debug.inc
+--source include/count_sessions.inc
+
+#
+# dict_sys->mutex -> rw_lock conversion (purge_threads scaling): the
+# discard-after-DDL cleanup inside dd_table_open_on_id() is skipped by a
+# background s-mode reader (variant D) instead of being cleaned up right
+# there, to avoid taking dict_sys exclusively on the purge hot path; the
+# exclusive client openers (ha_innobase::open(), Ha_innopart_share::
+# open_one_table_part()) wait out any lingering reference and clean up
+# instead (A7).
+#
+# NOTE ON COVERAGE: this test exercises the functional path (undo history
+# + INSTANT ALTER + purge catching up + a later client open all see a
+# correct table, no crash, no debug-assert failures). It does NOT assert
+# that purge specifically observed the object while still
+# discard_after_ddl-flagged (the s-mode skip branch itself): reachability
+# investigation during implementation found that ALTER's own commit path
+# reopens the table (ha_innobase::open()) within roughly 100ms of setting
+# the flag, in the same session, via the x-mode branch -- narrowing the
+# window in which a background s-mode reader could observe the flag to a
+# race that a sequential mysqltest script cannot reliably force without
+# an additional DEBUG_SYNC point inside the ALTER commit path itself
+# (dict0inst.cc/handler0alter.cc), which is outside this unit's reviewed
+# instrumentation. Left for follow-up if line-level reachability proof is
+# required; the DBUG_EXECUTE_IF marker and DEBUG_SYNC point added for
+# that purpose remain in the code (dict0dd.cc) for such a follow-up test.
+#
+
+# STATS_PERSISTENT=0: the persistent-stats background thread also reopens
+# a table by id shortly after DML/DDL (dict0stats_bg.cc); disabling it
+# for this table keeps the scenario deterministic (one fewer background
+# opener racing to reload the table).
+CREATE TABLE t1 (id INT PRIMARY KEY, a INT) ENGINE=InnoDB STATS_PERSISTENT=0;
+INSERT INTO t1 VALUES (1,1), (2,2), (3,3);
+
+# Build undo history for purge to process alongside the INSTANT ALTER
+# below, on the same table_id (INSTANT ALTER does not change it). The
+# purge coordinator polls the stop flag on its own cycle, so give it a
+# moment to actually stop before creating the history it must not
+# consume yet.
+SET GLOBAL innodb_purge_stop_now = ON;
+--sleep 1
+DELETE FROM t1 WHERE id = 1;
+
+# Sets discard_after_ddl on the cached in-memory table object on commit
+# (innobase_discard_table()).
+ALTER TABLE t1 ALGORITHM=INSTANT, ADD COLUMN b INT DEFAULT 42;
+
+# innodb_purge_run_now is a one-shot nudge, not a "keep running" toggle,
+# so re-issue it a few times instead of relying on a single call.
+--disable_query_log
+--let $i = 20
+while ($i)
+{
+  SET GLOBAL innodb_purge_run_now = ON;
+  --sleep 0.2
+  --dec $i
+}
+--enable_query_log
+--source include/wait_innodb_all_purged.inc
+
+# The next client open sees the post-ALTER schema, with the earlier
+# history fully purged; no crash, no leftover discard state.
+SELECT * FROM t1 ORDER BY id;
+SHOW CREATE TABLE t1;
+
+DROP TABLE t1;
+
+--source include/wait_until_count_sessions.inc

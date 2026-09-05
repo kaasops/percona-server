@@ -145,8 +145,35 @@ bool Ha_innopart_share::open_one_table_part(
       }
       part_table = nullptr;
     } else if (part_table->discard_after_ddl) {
-      btr_drop_ahi_for_table(part_table);
-      dict_table_remove_from_cache(part_table);
+      /* Same rationale and pattern as ha_innobase::open(): a
+      background s-mode reader (dd_table_open_on_id() variant D, e.g.
+      purge) may still hold a reference to this discard-after-DDL
+      object; removing it unconditionally would hit
+      dict_table_remove_from_cache()'s ut_a(get_ref_count() == 0) even
+      in release builds. Wait for the reference to be released instead
+      of aborting. */
+      while (part_table != nullptr && part_table->get_ref_count() != 0) {
+        dict_sys_mutex_exit();
+
+        if (thd_killed(thd)) {
+          return true;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+        dict_sys_mutex_enter();
+        part_table = dict_table_check_if_in_cache_low(part_name);
+        if (part_table != nullptr && !part_table->discard_after_ddl) {
+          /* Someone else already reloaded (or is reloading) this
+          partition while we waited; nothing left for us to clean up. */
+          break;
+        }
+      }
+
+      if (part_table != nullptr && part_table->discard_after_ddl) {
+        btr_drop_ahi_for_table(part_table);
+        dict_table_remove_from_cache(part_table);
+      }
       part_table = nullptr;
       cached = false;
     } else {

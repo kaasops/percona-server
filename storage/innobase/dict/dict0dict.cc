@@ -503,19 +503,18 @@ void dict_table_close(dict_table_t *table, bool dict_locked, bool try_drop) {
 #ifdef UNIV_DEBUG
   if (!table->is_intrinsic()) {
     /* This is now only for validation in debug mode */
+    /* Cannot execute the validation when s-locked */
     if (!dict_locked) {
       dict_sys_mutex_enter();
-    }
 
-    ut_ad(dict_lru_validate());
+      ut_ad(dict_lru_validate());
 
-    if (table->can_be_evicted) {
-      ut_ad(dict_lru_find_table(table));
-    } else {
-      ut_ad(dict_non_lru_find_table(table));
-    }
+      if (table->can_be_evicted) {
+        ut_ad(dict_lru_find_table(table));
+      } else {
+        ut_ad(dict_non_lru_find_table(table));
+      }
 
-    if (!dict_locked) {
       dict_sys_mutex_exit();
     }
   }
@@ -1015,13 +1014,23 @@ void dict_init(void) {
   dict_operation_lock = static_cast<rw_lock_t *>(ut::zalloc_withkey(
       UT_NEW_THIS_FILE_PSI_KEY, sizeof(*dict_operation_lock)));
 
-  dict_sys = static_cast<dict_sys_t *>(
-      ut::zalloc_withkey(UT_NEW_THIS_FILE_PSI_KEY, sizeof(*dict_sys)));
+  /* Aligned so dict_sys->lock (alignas(INNODB_CACHE_LINE_SIZE), see
+  dict0dict.h) actually lands on its own cache line at runtime, not only
+  in the type's declared layout -- the static_assert next to the member
+  only proves the offset within the struct is a multiple of the cache
+  line size, not that the allocator honoured alignof(dict_sys_t) for the
+  base address itself. */
+  dict_sys = static_cast<dict_sys_t *>(ut::aligned_zalloc_withkey(
+      UT_NEW_THIS_FILE_PSI_KEY, sizeof(*dict_sys), alignof(dict_sys_t)));
 
   UT_LIST_INIT(dict_sys->table_LRU);
   UT_LIST_INIT(dict_sys->table_non_LRU);
 
-  mutex_create(LATCH_ID_DICT_SYS, &dict_sys->mutex);
+  rw_lock_create(dict_sys_lock_key, &dict_sys->lock, LATCH_ID_DICT_SYS);
+
+  ut_a(reinterpret_cast<uintptr_t>(&dict_sys->lock) %
+           ut::INNODB_CACHE_LINE_SIZE ==
+       0);
 
   dict_sys->table_hash = ut::new_<hash_table_t>(
       buf_pool_get_curr_size() / (DICT_POOL_PER_TABLE_HASH * UNIV_WORD_SIZE));
@@ -2724,7 +2733,7 @@ void dict_index_remove_from_cache(dict_table_t *table, /*!< in/out: table */
 
 std::vector<table_id_t> dict_get_all_table_ids() {
   std::vector<table_id_t> ids;
-  mutex_enter(&dict_sys->mutex);
+  rw_lock_s_lock(&dict_sys->lock, UT_LOCATION_HERE);
   ids.reserve(dict_sys->table_LRU.get_length() +
               dict_sys->table_non_LRU.get_length());
   for (dict_table_t *table : dict_sys->table_LRU) {
@@ -2733,7 +2742,7 @@ std::vector<table_id_t> dict_get_all_table_ids() {
   for (dict_table_t *table : dict_sys->table_non_LRU) {
     ids.push_back(table->id);
   }
-  mutex_exit(&dict_sys->mutex);
+  rw_lock_s_unlock(&dict_sys->lock);
   return ids;
 }
 
@@ -4387,14 +4396,14 @@ void dict_set_merge_threshold_all_debug(uint merge_threshold_all) {
 
 /** Set is_corrupt flag by space_id
 @param	space_id	space id
-@param	need_mutex	whether dict_sys->mutex needs to be locked
+@param	need_mutex	whether dict_sys->lock needs to be x-locked
 */
 void dict_table_set_corrupt_by_space(space_id_t space_id,
                                      bool need_mutex) noexcept {
   ut_a(space_id != 0);
   ut_a(space_id < dict_sys_t::s_log_space_id);
 
-  if (need_mutex) mutex_enter(&(dict_sys->mutex));
+  if (need_mutex) dict_sys_mutex_enter();
 
   dict_table_t *table = UT_LIST_GET_FIRST(dict_sys->table_LRU);
   bool found = false;
@@ -4408,7 +4417,7 @@ void dict_table_set_corrupt_by_space(space_id_t space_id,
     table = UT_LIST_GET_NEXT(table_LRU, table);
   }
 
-  if (need_mutex) mutex_exit(&(dict_sys->mutex));
+  if (need_mutex) dict_sys_mutex_exit();
 
   if (!found) {
     ib::warn() << "Space to be marked as crashed was not found "
@@ -4754,7 +4763,7 @@ void dict_close(void) {
 
   ut_ad(dict_sys->size == 0);
 
-  ut::free(dict_sys);
+  ut::aligned_free(dict_sys);
   dict_sys = nullptr;
 }
 
@@ -6062,7 +6071,7 @@ void dict_validate_no_purge_rollback_threads() {
 dberr_t dict_get_dictionary_id_by_key(table_id_t table_id, ulint column_pos,
                                       ulint *dict_id) {
   ut_ad(srv_is_upgrade_mode);
-  ut_ad(!mutex_own(&dict_sys->mutex));
+  ut_ad(!dict_sys_mutex_own());
 
   trx_t *const trx = trx_allocate_for_background();
   trx->op_info = "get zip dict id by composite key";
@@ -6093,7 +6102,7 @@ dberr_t dict_get_dictionary_info_by_id(ulint dict_id, char **name,
                                        ulint *name_len, char **data,
                                        ulint *data_len) {
   ut_ad(srv_is_upgrade_mode);
-  ut_ad(!mutex_own(&dict_sys->mutex));
+  ut_ad(!dict_sys_mutex_own());
 
   trx_t *const trx = trx_allocate_for_background();
   trx->op_info = "get zip dict name and data by id";

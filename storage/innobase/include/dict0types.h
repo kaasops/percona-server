@@ -42,6 +42,9 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
 struct dict_sys_t;
 struct dict_col_t;
+/* Forward declaration: full definition (sync0rw.h) is not included here,
+only DictSysLock below needs the (possibly incomplete) type name. */
+struct rw_lock_t;
 struct dict_field_t;
 struct dict_index_t;
 struct dict_table_t;
@@ -315,7 +318,7 @@ enum ib_quiesce_t {
 };
 
 #ifndef UNIV_HOTBACKUP
-typedef ib_mutex_t DictSysMutex;
+typedef rw_lock_t DictSysLock;
 #endif /* !UNIV_HOTBACKUP */
 
 /** Prefix for tmp tables, adopted from sql/table.h */

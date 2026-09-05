@@ -35,6 +35,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #ifndef dict0dict_h
 #define dict0dict_h
 
+#include <cstddef>  // offsetof
 #include <set>
 #include <vector>
 
@@ -61,13 +62,20 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "ut0new.h"
 #include "ut0rnd.h"
 
-#define dict_sys_mutex_enter() mutex_enter(&dict_sys->mutex)
+#define dict_sys_mutex_enter() \
+  rw_lock_x_lock(&dict_sys->lock, UT_LOCATION_HERE)
 
-#define dict_sys_mutex_exit() mutex_exit(&dict_sys->mutex)
+#define dict_sys_mutex_exit() rw_lock_x_unlock(&dict_sys->lock)
 
-#define dict_sys_mutex_own() mutex_own(&dict_sys->mutex)
+#define dict_sys_mutex_own() rw_lock_own(&dict_sys->lock, RW_LOCK_X)
 
-#define dict_sys_mutex_free() mutex_free(&dict_sys->mutex)
+#define dict_sys_s_lock() rw_lock_s_lock(&dict_sys->lock, UT_LOCATION_HERE)
+
+#define dict_sys_s_unlock() rw_lock_s_unlock(&dict_sys->lock)
+
+#define dict_sys_s_lock_own() rw_lock_own(&dict_sys->lock, RW_LOCK_S)
+
+#define dict_sys_mutex_free() rw_lock_free(&dict_sys->lock)
 /** initial memory heap size when creating a table or index object */
 constexpr uint32_t DICT_HEAP_SIZE = 100;
 
@@ -1009,10 +1017,15 @@ extern dict_persist_t *dict_persist;
 /* Dictionary system struct */
 struct dict_sys_t {
 #ifndef UNIV_HOTBACKUP
-  DictSysMutex mutex;          /*!< mutex protecting the data
+  /* Own cache line: purge threads take this s-locked on the
+  dd_table_open_on_id() hot path (RP007), so it must not share a line
+  with the fields below that mutate on every DDL/cache update -- false
+  sharing there would give back part of the concurrency win. */
+  alignas(ut::INNODB_CACHE_LINE_SIZE)
+      DictSysLock lock;        /*!< rw-lock protecting the data
                                dictionary; protects also the
                                disk-based dictionary system tables;
-                               this mutex serializes CREATE TABLE
+                               this rw-lock serializes CREATE TABLE
                                and DROP TABLE, as well as reading
                                the dictionary data for a table from
                                system tables */
@@ -1057,7 +1070,7 @@ struct dict_sys_t {
   @param[in,out]  functor to be invoked on each table */
   template <typename Functor>
   void for_each_table(Functor &functor) {
-    mutex_enter(&mutex);
+    rw_lock_x_lock(&lock, UT_LOCATION_HERE);
 
     hash_table_t *hash = table_id_hash;
     const auto n_cells = hash->get_n_cells();
@@ -1070,7 +1083,7 @@ struct dict_sys_t {
       }
     }
 
-    mutex_exit(&mutex);
+    rw_lock_x_unlock(&lock);
   }
 
   /** Check if a tablespace id is a reserved tablespace ID
@@ -1165,6 +1178,32 @@ struct dict_sys_t {
   /** The clustered index ID of mysql.innodb_dynamic_metadata */
   static constexpr space_index_t s_dynamic_meta_index_id = 2;
 };
+
+#ifndef UNIV_HOTBACKUP
+/* dict_sys_t::lock is allocated cache-line aligned (dict_init(), via
+ut::aligned_zalloc_withkey()) precisely so this holds at runtime, not only
+in the type's declared layout -- catch a future reordering of dict_sys_t
+that would break the invariant at compile time instead of via false
+sharing found under load. dict_sys_t is not standard-layout because
+several of its non-static data members (rw_lock_t, hash_table_t,
+UT_LIST_BASE_NODE_T's ut_list_base) are themselves not standard-layout
+types -- a class is standard-layout only if every non-static data member
+is too, regardless of its own template member functions or its mix of
+static/non-static members (neither of those disqualifies standard-layout,
+and dict_sys_t has no base class at all). GCC therefore warns that
+offsetof() on it is only conditionally supported; the computed offset is
+correct regardless (there is a single dict_sys_t instance, its "lock"
+member is a plain, non-reference, non-bitfield object, and offsetof()
+only needs the member's position within the object, not full
+standard-layout), so the warning is suppressed locally rather than
+disabling -Winvalid-offsetof tree-wide. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpragmas"
+#pragma GCC diagnostic ignored "-Wunknown-warning-option"
+#pragma GCC diagnostic ignored "-Winvalid-offsetof"
+static_assert(offsetof(dict_sys_t, lock) % ut::INNODB_CACHE_LINE_SIZE == 0);
+#pragma GCC diagnostic pop
+#endif /* !UNIV_HOTBACKUP */
 
 /** Structure for persisting dynamic metadata of data dictionary */
 struct dict_persist_t {

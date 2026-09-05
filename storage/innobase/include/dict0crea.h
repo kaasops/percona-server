@@ -170,9 +170,11 @@ struct tab_node_t {
 @param[in]      space_discarded true if space is discarded
 @param[in]      in_flags        space flags to use when space_discarded is true
 @param[in]      is_create       true when creating SDI index
+@param[in]      has_x_lock      false when holding s-lock of dict_sys
 @return in-memory index structure for tablespace dictionary or NULL */
 dict_index_t *dict_sdi_create_idx_in_mem(space_id_t space, bool space_discarded,
-                                         uint32_t in_flags, bool is_create);
+                                         uint32_t in_flags, bool is_create,
+                                         bool has_x_lock = true);
 
 /* Index create node struct */
 

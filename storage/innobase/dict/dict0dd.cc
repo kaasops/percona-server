@@ -401,7 +401,7 @@ int dd_table_open_on_dd_obj(THD *thd, dd::cache::Dictionary_client *client,
 
   ut_ad(table_id != dd::INVALID_OBJECT_ID);
 
-  dict_sys_mutex_enter();
+  dict_sys_s_lock();
 
   HASH_SEARCH(id_hash, dict_sys->table_id_hash, hash_value, dict_table_t *,
               table, ut_ad(table->cached), table->id == table_id);
@@ -410,7 +410,7 @@ int dd_table_open_on_dd_obj(THD *thd, dd::cache::Dictionary_client *client,
     table->acquire();
   }
 
-  dict_sys_mutex_exit();
+  dict_sys_s_unlock();
 
   if (table != nullptr) {
     return 0;
@@ -699,17 +699,32 @@ hold Shared MDL lock on it.
 table_id was found) mdl=NULL if we are resurrecting table IX locks in recovery
 @param[in]      dict_locked             dict_sys mutex is held
 @param[in]      check_corruption        check if the table is corrupted or not.
+@param[in]      for_modification        if false, dict_locked means s-lock.
 @return table
 @retval NULL if the table does not exist or cannot be opened */
 dict_table_t *dd_table_open_on_id(table_id_t table_id, THD *thd,
                                   MDL_ticket **mdl, bool dict_locked,
-                                  bool check_corruption) {
+                                  bool check_corruption,
+                                  bool for_modification) {
   dict_table_t *ib_table;
   const auto hash_value = ut::hash_uint64(table_id);
   char full_name[MAX_FULL_NAME_LEN + 1];
 
+  /* An s-mode caller (dict_locked && !for_modification, e.g. purge) must
+  not pass an SDI table id here: the SDI branch below always re-acquires
+  dict_sys exclusively via dict_sdi_create_idx_in_mem() before returning
+  (see the comment there), which would silently upgrade an s-mode
+  caller's held lock to x without it knowing, tripping the dict_locked ==
+  ... assertion at the end of this function. Checked on entry, not inside
+  the SDI branch itself, because the invariant is a property of the
+  caller's contract, not of a particular code path taken once inside.
+  The one caller that uses for_modification=false (row0purge.cc) already
+  pre-filters SDI table ids into a separate branch before ever reaching
+  the s-mode call. */
+  ut_ad(!(dict_locked && !for_modification) || !dict_table_is_sdi(table_id));
+
   if (!dict_locked) {
-    dict_sys_mutex_enter();
+    dict_sys_s_lock();
   }
 
   HASH_SEARCH(id_hash, dict_sys->table_id_hash, hash_value, dict_table_t *,
@@ -723,12 +738,12 @@ reopen:
       space_id_t space_id = dict_sdi_get_space_id(table_id);
 
       /* Create in-memory table object for SDI table */
-      dict_index_t *sdi_index =
-          dict_sdi_create_idx_in_mem(space_id, false, 0, false);
+      dict_index_t *sdi_index = dict_sdi_create_idx_in_mem(
+          space_id, false, 0, false, dict_locked && for_modification);
 
       if (sdi_index == nullptr) {
         if (!dict_locked) {
-          dict_sys_mutex_exit();
+          dict_sys_s_unlock();
         }
         return nullptr;
       }
@@ -739,15 +754,24 @@ reopen:
       ib_table->acquire();
 
       if (!dict_locked) {
+        /* dict_sdi_create_idx_in_mem() re-obtains with x-lock. */
         dict_sys_mutex_exit();
       }
     } else {
-      dict_sys_mutex_exit();
+      if (dict_locked && for_modification) {
+        dict_sys_mutex_exit();
+      } else {
+        dict_sys_s_unlock();
+      }
 
       ib_table = dd_table_open_on_id_low(thd, mdl, table_id);
 
       if (dict_locked) {
-        dict_sys_mutex_enter();
+        if (for_modification) {
+          dict_sys_mutex_enter();
+        } else {
+          dict_sys_s_lock();
+        }
       }
     }
 #else  /* !UNIV_HOTBACKUP */
@@ -764,7 +788,7 @@ reopen:
     }
 
     if (!dict_locked) {
-      dict_sys_mutex_exit();
+      dict_sys_s_unlock();
     }
   } else {
     for (;;) {
@@ -780,26 +804,48 @@ reopen:
 
       ut_ad(!ib_table->is_temporary());
 
-      dict_sys_mutex_exit();
+      if (dict_locked && for_modification) {
+        dict_sys_mutex_exit();
+      } else {
+        dict_sys_s_unlock();
+      }
 
 #ifndef UNIV_HOTBACKUP
       if (db_str.empty() || tbl_str.empty()) {
         if (dict_locked) {
-          dict_sys_mutex_enter();
+          if (for_modification) {
+            dict_sys_mutex_enter();
+          } else {
+            dict_sys_s_lock();
+          }
         }
         return nullptr;
       }
 
       if (dd_mdl_acquire(thd, mdl, db_str.c_str(), tbl_str.c_str())) {
         if (dict_locked) {
-          dict_sys_mutex_enter();
+          /* Keep the lock mode symmetric with every other early return
+          in this loop -- the donor patch left this branch taking the
+          x-lock unconditionally, which would hand back the wrong lock
+          mode to an s-mode caller (e.g. purge, dict_locked=true,
+          for_modification=false) and desynchronize with its own
+          dict_sys_s_unlock(). */
+          if (for_modification) {
+            dict_sys_mutex_enter();
+          } else {
+            dict_sys_s_lock();
+          }
         }
         return nullptr;
       }
 #endif /* !UNIV_HOTBACKUP */
 
       /* Re-lookup the table after acquiring MDL. */
-      dict_sys_mutex_enter();
+      if (dict_locked && for_modification) {
+        dict_sys_mutex_enter();
+      } else {
+        dict_sys_s_lock();
+      }
 
       HASH_SEARCH(id_hash, dict_sys->table_id_hash, hash_value, dict_table_t *,
                   ib_table, ut_ad(ib_table->cached), ib_table->id == table_id);
@@ -819,7 +865,20 @@ reopen:
           continue;
         } else if (check_corruption && dd_check_corrupted(ib_table)) {
           ut_ad(ib_table == nullptr);
-        } else if (ib_table->discard_after_ddl) {
+        } else if (ib_table->discard_after_ddl && dict_locked &&
+                   for_modification) {
+          /* Only an exclusive holder of dict_sys cleans up a
+          discard-after-DDL object here. A caller that entered under a
+          shared lock (background readers, e.g. purge -- see A7 in the
+          conversion of dict_sys->mutex to a rw_lock) skips this and
+          falls through to acquire_with_lock() below, returning the
+          stale-flagged object as-is: cleaning it here would require
+          re-acquiring dict_sys exclusively on this path, serializing
+          exactly the purge hot path this conversion exists to unblock.
+          The cleanup is instead performed by the exclusive client
+          openers (ha_innobase::open(), Ha_innopart_share::
+          open_one_table_part()), which wait out any lingering reference
+          left by an s-mode reader before removing the object. */
 #ifndef UNIV_HOTBACKUP
           btr_drop_ahi_for_table(ib_table);
           dict_table_remove_from_cache(ib_table);
@@ -830,11 +889,48 @@ reopen:
 #endif /* !UNIV_HOTBACKUP */
           goto reopen;
         } else {
+          /* Test-only marker for mtr reachability/mutation coverage of
+          the s-mode skip above (variant D): dict_locked &&
+          !for_modification, e.g. purge. The discard_after_ddl check is
+          folded into the DBUG_EXECUTE_IF argument itself (evaluated
+          only once _db_keyword_() already matched, near-never in
+          production) rather than guarding the whole DBUG_EXECUTE_IF
+          call with it, so this branch -- shared with the ordinary,
+          non-discard cache hit -- does not pay an extra field read on
+          every purge lookup in release. ER_IB_MSG_0 is InnoDB's generic
+          free-text passthrough message, reused here instead of
+          registering a new error-log message code. */
+          DBUG_EXECUTE_IF("dict_sys_s_mode_skips_discard_cleanup",
+                           if (ib_table->discard_after_ddl) {
+                             ib::info(ER_IB_MSG_0)
+                                 << "dict_sys_s_mode_skips_discard_cleanup "
+                                    "reached";
+                           });
+
           ib_table->acquire_with_lock();
+
+#ifdef ENABLED_DEBUG_SYNC
+          if (ib_table->discard_after_ddl) {
+            /* Test-only pause: let a concurrent exclusive opener
+            (ha_innobase::open()/Ha_innopart_share::
+            open_one_table_part(), A7) observe the non-zero refcount
+            this acquire_with_lock() just created and exercise its
+            wait loop, before this s-mode caller releases dict_sys and
+            eventually drops its reference. Guarded by the same macro
+            DEBUG_SYNC_C() itself is compiled under, so the
+            discard_after_ddl check disappears entirely (not just the
+            sync call) outside debug-sync-enabled builds. */
+            DEBUG_SYNC_C("dict_sys_s_mode_acquired_discarded_table");
+          }
+#endif /* ENABLED_DEBUG_SYNC */
         }
       }
 
-      dict_sys_mutex_exit();
+      if (dict_locked && for_modification) {
+        dict_sys_mutex_exit();
+      } else {
+        dict_sys_s_unlock();
+      }
       break;
     }
 
@@ -859,11 +955,16 @@ reopen:
 #endif /* !UNIV_HOTBACKUP */
 
     if (dict_locked) {
-      dict_sys_mutex_enter();
+      if (for_modification) {
+        dict_sys_mutex_enter();
+      } else {
+        dict_sys_s_lock();
+      }
     }
   }
 
-  ut_ad(dict_locked == dict_sys_mutex_own());
+  ut_ad(dict_locked ==
+        (for_modification ? dict_sys_mutex_own() : dict_sys_s_lock_own()));
 
   return ib_table;
 }

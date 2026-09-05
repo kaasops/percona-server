@@ -1,0 +1,58 @@
+--source include/have_debug.inc
+--source include/count_sessions.inc
+
+#
+# dict_sys->mutex -> rw_lock conversion (purge_threads scaling): regression
+# coverage for the "purge x INSTANT-ALTER hybrid" scenario discussed at
+# design time (design doc, "Почему вариант D не наследует проблему шести
+# вызывающих" -- three-axis reasoning about the hybrid dict_table_t
+# object). This is independent of the discard_after_ddl race covered by
+# dict_sys_lock_discard.test: it exercises purge parsing *pre-ALTER*
+# format undo records against a dict_table_t that already reflects the
+# *post-ALTER* INSTANT ADD/DROP COLUMN state (current_row_version bumped,
+# column counts updated), checking that this is not a regression.
+#
+
+CREATE TABLE t1 (
+  id INT PRIMARY KEY,
+  a INT,
+  c VARCHAR(20)
+) ENGINE=InnoDB STATS_PERSISTENT=0;
+
+INSERT INTO t1 VALUES (1,1,'one'), (2,2,'two'), (3,3,'three'), (4,4,'four');
+
+# Build undo history in the *pre-ALTER* row format for purge to process
+# after the table becomes an INSTANT-ALTER hybrid.
+SET GLOBAL innodb_purge_stop_now = ON;
+--sleep 1
+UPDATE t1 SET a = a + 10 WHERE id IN (1,2);
+DELETE FROM t1 WHERE id = 3;
+
+# Table becomes a purge x INSTANT-ALTER hybrid: current_row_version is
+# bumped and instant column-count bookkeeping updated on the *same*
+# dict_table_t object that still has undo history referencing the old
+# row format pending purge.
+ALTER TABLE t1 ALGORITHM=INSTANT, ADD COLUMN b INT DEFAULT 42;
+
+--disable_query_log
+--let $i = 20
+while ($i)
+{
+  SET GLOBAL innodb_purge_run_now = ON;
+  --sleep 0.2
+  --dec $i
+}
+--enable_query_log
+--source include/wait_innodb_all_purged.inc
+
+# No regression: the pre-ALTER undo records parse and purge cleanly
+# against the now-hybrid table, and a subsequent structural check and
+# client read both see a consistent, correct post-ALTER state.
+CHECK TABLE t1 EXTENDED;
+
+SELECT * FROM t1 ORDER BY id;
+SHOW CREATE TABLE t1;
+
+DROP TABLE t1;
+
+--source include/wait_until_count_sessions.inc

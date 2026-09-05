@@ -1,0 +1,28 @@
+CREATE TABLE t1 (
+id INT PRIMARY KEY,
+a INT,
+c VARCHAR(20)
+) ENGINE=InnoDB STATS_PERSISTENT=0;
+INSERT INTO t1 VALUES (1,1,'one'), (2,2,'two'), (3,3,'three'), (4,4,'four');
+SET GLOBAL innodb_purge_stop_now = ON;
+UPDATE t1 SET a = a + 10 WHERE id IN (1,2);
+DELETE FROM t1 WHERE id = 3;
+ALTER TABLE t1 ALGORITHM=INSTANT, ADD COLUMN b INT DEFAULT 42;
+CHECK TABLE t1 EXTENDED;
+Table	Op	Msg_type	Msg_text
+test.t1	check	status	OK
+SELECT * FROM t1 ORDER BY id;
+id	a	c	b
+1	11	one	42
+2	12	two	42
+4	4	four	42
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `id` int NOT NULL,
+  `a` int DEFAULT NULL,
+  `c` varchar(20) DEFAULT NULL,
+  `b` int DEFAULT '42',
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci STATS_PERSISTENT=0
+DROP TABLE t1;

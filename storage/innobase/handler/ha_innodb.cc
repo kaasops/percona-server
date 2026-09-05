@@ -718,7 +718,6 @@ static PSI_mutex_info all_innodb_mutexes[] = {
     PSI_MUTEX_KEY(ddl_autoinc_mutex, 0, 0, PSI_DOCUMENT_ME),
     PSI_MUTEX_KEY(dict_foreign_err_mutex, 0, 0, PSI_DOCUMENT_ME),
     PSI_MUTEX_KEY(dict_persist_dirty_tables_mutex, 0, 0, PSI_DOCUMENT_ME),
-    PSI_MUTEX_KEY(dict_sys_mutex, 0, 0, PSI_DOCUMENT_ME),
     PSI_MUTEX_KEY(dict_table_mutex, 0, 0, PSI_DOCUMENT_ME),
     PSI_MUTEX_KEY(parser_mutex, 0, 0, PSI_DOCUMENT_ME),
     PSI_MUTEX_KEY(recalc_pool_mutex, 0, 0, PSI_DOCUMENT_ME),
@@ -814,6 +813,7 @@ static PSI_rwlock_info all_innodb_rwlocks[] = {
     PSI_RWLOCK_KEY(buf_block_debug_latch, 0, PSI_DOCUMENT_ME),
 #endif /* UNIV_DEBUG */
     PSI_RWLOCK_KEY(dict_operation_lock, 0, PSI_DOCUMENT_ME),
+    PSI_RWLOCK_KEY(dict_sys_lock, 0, PSI_DOCUMENT_ME),
     PSI_RWLOCK_KEY(fil_space_latch, 0, PSI_DOCUMENT_ME),
     PSI_RWLOCK_KEY(log_sn_lock, 0, PSI_DOCUMENT_ME),
     PSI_RWLOCK_KEY(undo_spaces_lock, 0, PSI_DOCUMENT_ME),
@@ -7949,15 +7949,58 @@ int ha_innobase::open(const char *name, int, uint open_flags,
         ib_table->refresh_fk = false;
 
         if (err != DB_SUCCESS) {
+          /* Unconditional cleanup, as before this table gained the
+          separate discard_after_ddl branch below: refresh_fk is set
+          only in rename_table() (on a table still carrying its
+          temporary #sql-... name), while every discard_after_ddl
+          setter (dict0inst.cc INSTANT ALTER paths, handler0alter.cc
+          rebuild/vcol paths, the new-partition INSTANT-inherit path)
+          acts on a table already carrying its final user-visible
+          name. The two flags are not expected to coincide on the same
+          object, so there is no lingering background reference to
+          wait out here. */
           ib_table->release();
-          goto reload;
+          btr_drop_ahi_for_table(ib_table);
+          dict_table_remove_from_cache(ib_table);
+          ib_table = nullptr;
+        } else {
+          cached = true;
+        }
+      } else if (ib_table->discard_after_ddl) {
+        /* dd_table_open_on_id() variant D lets a background s-mode
+        reader (e.g. purge) acquire a reference to a discard-after-DDL
+        object instead of cleaning it up itself, to avoid taking
+        dict_sys exclusively on that hot path. That reference can still
+        be live here: removing the object unconditionally would hit
+        dict_table_remove_from_cache()'s ut_a(get_ref_count() == 0) even
+        in release builds. Wait for it to be released instead of
+        aborting -- this is a rare, short-lived window (client open
+        right after ALTER ... ALGORITHM=INSTANT), not a steady-state
+        cost. */
+        while (ib_table != nullptr && ib_table->get_ref_count() != 0) {
+          dict_sys_mutex_exit();
+
+          /* m_user_thd is not set yet at this point in open() (see
+          above) -- ha_thd() is the only valid THD handle here. */
+          if (thd_killed(ha_thd())) {
+            return HA_ERR_QUERY_INTERRUPTED;
+          }
+
+          std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+          dict_sys_mutex_enter();
+          ib_table = dict_table_check_if_in_cache_low(norm_name);
+          if (ib_table != nullptr && !ib_table->discard_after_ddl) {
+            /* Someone else already reloaded (or is reloading) this
+            table while we waited; nothing left for us to clean up. */
+            break;
+          }
         }
 
-        cached = true;
-      } else if (ib_table->discard_after_ddl) {
-      reload:
-        btr_drop_ahi_for_table(ib_table);
-        dict_table_remove_from_cache(ib_table);
+        if (ib_table != nullptr && ib_table->discard_after_ddl) {
+          btr_drop_ahi_for_table(ib_table);
+          dict_table_remove_from_cache(ib_table);
+        }
         ib_table = nullptr;
       } else {
         cached = true;
