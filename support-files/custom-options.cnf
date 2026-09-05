@@ -115,3 +115,24 @@ loose-innodb_log_writer_threads_priority = -15
 # RECOMMENDED: -16 -- the value this patchset ships with, one step
 #   ahead of innodb_log_writer_threads_priority as recommended above.
 loose-innodb_log_writer_threads_checkpoint_priority = -16
+
+# DESCRIPTION: Interleave InnoDB buffer pool pages across NUMA nodes at
+#   startup (Linux, upstream option). Not introduced by our patches --
+#   listed here because this patchset ships a different operational
+#   answer for it.
+# DEFAULT: OFF
+# RECOMMENDED: OFF -- the value this patchset ships with. Buffer pool
+#   instances are spread across sockets by the parallel-init unit, so
+#   pages are first-touched on the node that will use them; blanket
+#   interleaving would undo that placement.
+loose-innodb_numa_interleave = OFF
+
+# DESCRIPTION: Number of buffer pool instances (upstream option). This
+#   patchset raises the compile-time ceiling to 256 and caps the value
+#   by the number of physical cores at startup, so a value above the
+#   core count is silently reduced.
+# DEFAULT: 8 upstream; this file ships 256, which the startup cap then
+#   lowers to the physical core count of the host.
+# RECOMMENDED: 256 -- ask for the maximum and let the cap decide, so one
+#   file serves hosts with different core counts.
+loose-innodb_buffer_pool_instances = 256
