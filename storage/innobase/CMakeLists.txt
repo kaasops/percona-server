@@ -261,6 +261,7 @@ SET(INNOBASE_SOURCES
   ut/ut0math.cc
   ut/ut0mem.cc
   ut/ut0new.cc
+  ut/ut0page_alloc.cc
   ut/ut0rbt.cc
   ut/ut0rnd.cc
   ut/ut0test.cc
