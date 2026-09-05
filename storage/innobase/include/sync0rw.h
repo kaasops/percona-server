@@ -86,6 +86,22 @@ static inline bool rw_lock_own(rw_lock_t *lock, ulint lock_type) {
 #define rw_lock_sx_lock_gen(M, P, L) ((void)0)
 #define sync_check_lock(A, B) ((void)0)
 #define rw_lock_own_flagged(A, B) true
+
+#define rw_lock_s_lock_pfsni(L, Loc) ((void)0)
+#define rw_lock_s_unlock_pfsni(L) ((void)0)
+#define rw_lock_x_lock_pfsni(L, Loc) ((void)0)
+#define rw_lock_x_lock_nowait_pfsni(L, Loc) true
+#define rw_lock_x_unlock_pfsni(L) ((void)0)
+#define rw_lock_sx_lock_pfsni(L, Loc) ((void)0)
+#define rw_lock_sx_unlock_pfsni(L) ((void)0)
+#define rw_lock_s_lock_gen_pfsni(M, P, L) ((void)0)
+#define rw_lock_s_unlock_gen_pfsni(L, P) ((void)0)
+#define rw_lock_x_lock_gen_pfsni(M, P, L) ((void)0)
+#define rw_lock_x_unlock_gen_pfsni(L, P) ((void)0)
+#define rw_lock_sx_lock_gen_pfsni(M, P, L) ((void)0)
+#define rw_lock_sx_unlock_gen_pfsni(L, P) ((void)0)
+#define rw_lock_s_lock_nowait_pfsni(M, L) true
+#define rw_lock_sx_lock_nowait_pfsni(M, P, L) true
 #endif /* UNIV_LIBRARY */
 
 #endif /* !UNIV_HOTBACKUP */
@@ -812,6 +828,149 @@ static inline void rw_lock_s_unlock(rw_lock_t *L) {
 }
 static inline void rw_lock_x_unlock(rw_lock_t *L) {
   rw_lock_x_unlock_gen(L, 0);
+}
+
+/* The _pfsni ("PFS Not Instrumented") variants below skip straight to the
+non-instrumented rw_lock_*_func()/_low() calls regardless of whether
+UNIV_PFS_RWLOCK is compiled in, instead of going through the normal
+rw_lock_*() macros' PFS dispatch layer. They exist only for locks that are
+*always* created with PFS_NOT_INSTRUMENTED (currently: buf_block_t::lock),
+where the PFS layer's pfs_psi==nullptr runtime check is pure overhead on
+every single acquire/release - buf_block_t::lock is latched on essentially
+every page access. */
+
+static ALWAYS_INLINE void rw_lock_s_lock_pfsni(rw_lock_t *M, ut::Location L) {
+#ifdef UNIV_PFS_RWLOCK
+  ut_ad(M->pfs_psi == nullptr);
+#endif /* UNIV_PFS_RWLOCK */
+  rw_lock_s_lock_func(M, 0, L);
+}
+
+static inline void rw_lock_s_lock_gen_pfsni(rw_lock_t *M, ulint P,
+                                            ut::Location L) {
+#ifdef UNIV_PFS_RWLOCK
+  ut_ad(M->pfs_psi == nullptr);
+#endif /* UNIV_PFS_RWLOCK */
+  rw_lock_s_lock_func(M, P, L);
+}
+
+static inline bool rw_lock_s_lock_nowait_pfsni(rw_lock_t *M, ut::Location L) {
+#ifdef UNIV_PFS_RWLOCK
+  ut_ad(M->pfs_psi == nullptr);
+#endif /* UNIV_PFS_RWLOCK */
+  return rw_lock_s_lock_low(M, 0, L);
+}
+
+#ifdef UNIV_DEBUG
+static inline void rw_lock_s_unlock_gen_pfsni(rw_lock_t *L, ulint P) {
+#ifdef UNIV_PFS_RWLOCK
+  ut_ad(L->pfs_psi == nullptr);
+#endif /* UNIV_PFS_RWLOCK */
+  rw_lock_s_unlock_func(P, L);
+}
+#else
+static inline void rw_lock_s_unlock_gen_pfsni(rw_lock_t *L, ulint P) {
+#ifdef UNIV_PFS_RWLOCK
+  ut_ad(L->pfs_psi == nullptr);
+#endif /* UNIV_PFS_RWLOCK */
+  rw_lock_s_unlock_func(L);
+}
+#endif /* UNIV_DEBUG */
+
+static inline void rw_lock_sx_lock_pfsni(rw_lock_t *L, ut::Location Loc) {
+#ifdef UNIV_PFS_RWLOCK
+  ut_ad(L->pfs_psi == nullptr);
+#endif /* UNIV_PFS_RWLOCK */
+  rw_lock_sx_lock_func(L, 0, Loc);
+}
+
+static inline void rw_lock_sx_lock_gen_pfsni(rw_lock_t *M, ulint P,
+                                             ut::Location L) {
+#ifdef UNIV_PFS_RWLOCK
+  ut_ad(M->pfs_psi == nullptr);
+#endif /* UNIV_PFS_RWLOCK */
+  rw_lock_sx_lock_func(M, P, L);
+}
+
+static inline bool rw_lock_sx_lock_nowait_pfsni(rw_lock_t *M, ulint P,
+                                                ut::Location L) {
+#ifdef UNIV_PFS_RWLOCK
+  ut_ad(M->pfs_psi == nullptr);
+#endif /* UNIV_PFS_RWLOCK */
+  return rw_lock_sx_lock_low(M, P, L);
+}
+
+#ifdef UNIV_DEBUG
+static inline void rw_lock_sx_unlock_pfsni(rw_lock_t *L) {
+#ifdef UNIV_PFS_RWLOCK
+  ut_ad(L->pfs_psi == nullptr);
+#endif /* UNIV_PFS_RWLOCK */
+  rw_lock_sx_unlock_func(0, L);
+}
+static inline void rw_lock_sx_unlock_gen_pfsni(rw_lock_t *L, ulint P) {
+#ifdef UNIV_PFS_RWLOCK
+  ut_ad(L->pfs_psi == nullptr);
+#endif /* UNIV_PFS_RWLOCK */
+  rw_lock_sx_unlock_func(P, L);
+}
+#else /* UNIV_DEBUG */
+static inline void rw_lock_sx_unlock_pfsni(rw_lock_t *L) {
+#ifdef UNIV_PFS_RWLOCK
+  ut_ad(L->pfs_psi == nullptr);
+#endif /* UNIV_PFS_RWLOCK */
+  rw_lock_sx_unlock_func(L);
+}
+static inline void rw_lock_sx_unlock_gen_pfsni(rw_lock_t *L, ulint P) {
+#ifdef UNIV_PFS_RWLOCK
+  ut_ad(L->pfs_psi == nullptr);
+#endif /* UNIV_PFS_RWLOCK */
+  rw_lock_sx_unlock_func(L);
+}
+#endif /* UNIV_DEBUG */
+
+static ALWAYS_INLINE void rw_lock_x_lock_pfsni(rw_lock_t *M, ut::Location L) {
+#ifdef UNIV_PFS_RWLOCK
+  ut_ad(M->pfs_psi == nullptr);
+#endif /* UNIV_PFS_RWLOCK */
+  rw_lock_x_lock_func(M, 0, L);
+}
+
+static ALWAYS_INLINE void rw_lock_x_lock_gen_pfsni(rw_lock_t *M, ulint P,
+                                                   ut::Location L) {
+#ifdef UNIV_PFS_RWLOCK
+  ut_ad(M->pfs_psi == nullptr);
+#endif /* UNIV_PFS_RWLOCK */
+  rw_lock_x_lock_func(M, P, L);
+}
+
+static inline bool rw_lock_x_lock_nowait_pfsni(rw_lock_t *M, ut::Location L) {
+#ifdef UNIV_PFS_RWLOCK
+  ut_ad(M->pfs_psi == nullptr);
+#endif /* UNIV_PFS_RWLOCK */
+  return rw_lock_x_lock_func_nowait(M, L);
+}
+
+#ifdef UNIV_DEBUG
+static inline void rw_lock_x_unlock_gen_pfsni(rw_lock_t *L, ulint P) {
+#ifdef UNIV_PFS_RWLOCK
+  ut_ad(L->pfs_psi == nullptr);
+#endif /* UNIV_PFS_RWLOCK */
+  rw_lock_x_unlock_func(P, L);
+}
+#else
+static inline void rw_lock_x_unlock_gen_pfsni(rw_lock_t *L, ulint P) {
+#ifdef UNIV_PFS_RWLOCK
+  ut_ad(L->pfs_psi == nullptr);
+#endif /* UNIV_PFS_RWLOCK */
+  rw_lock_x_unlock_func(L);
+}
+#endif
+
+static ALWAYS_INLINE void rw_lock_s_unlock_pfsni(rw_lock_t *L) {
+  rw_lock_s_unlock_gen_pfsni(L, 0);
+}
+static ALWAYS_INLINE void rw_lock_x_unlock_pfsni(rw_lock_t *L) {
+  rw_lock_x_unlock_gen_pfsni(L, 0);
 }
 
 #include "sync0rw.ic"

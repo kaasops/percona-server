@@ -355,4 +355,238 @@ TEST(sync0rw, rw_lock_word_accounting) {
   os_event_global_destroy();
 }
 
+#ifdef UNIV_PFS_RWLOCK
+/* The two tests below exist only under UNIV_PFS_RWLOCK: the _pfsni family
+is built to bypass the PFS dispatch layer, and without UNIV_PFS_RWLOCK
+(e.g. built with -DDISABLE_PSI_RWLOCK=ON) the ordinary rw_lock_*() macros
+already take the same non-instrumented path the _pfsni functions take -
+there would be nothing left for a parity check to tell apart. Do not
+"simplify" this away in a future port: it is deliberate, not an oversight.
+*/
+
+TEST(sync0rw, rw_lock_pfsni_state_parity) {
+  /* Two identically-created locks: lock_a is driven exclusively through the
+  ordinary rw_lock_*() macros, lock_b through their _pfsni counterparts.
+  Every publicly observable piece of state is compared after each step, so
+  any behavioral divergence between the two families shows up immediately.
+  */
+
+  os_event_global_init();
+  sync_check_init(1);
+
+  auto *lock_a = static_cast<rw_lock_t *>(malloc(sizeof(rw_lock_t)));
+  auto *lock_b = static_cast<rw_lock_t *>(malloc(sizeof(rw_lock_t)));
+  rw_lock_create(PSI_NOT_INSTRUMENTED, lock_a, LATCH_ID_BUF_BLOCK_LOCK);
+  rw_lock_create(PSI_NOT_INSTRUMENTED, lock_b, LATCH_ID_BUF_BLOCK_LOCK);
+
+  auto expect_parity = [&] {
+    EXPECT_EQ(lock_a->lock_word.load(), lock_b->lock_word.load());
+    EXPECT_EQ(rw_lock_get_reader_count(lock_a),
+              rw_lock_get_reader_count(lock_b));
+    EXPECT_EQ(rw_lock_get_writer(lock_a), rw_lock_get_writer(lock_b));
+    EXPECT_EQ(rw_lock_get_sx_lock_count(lock_a),
+              rw_lock_get_sx_lock_count(lock_b));
+#ifdef UNIV_DEBUG
+    /* rw_lock_own()/rw_lock_own_flagged() are declared only under
+    UNIV_DEBUG (sync0rw.h), so this comparison has to be compiled out in
+    release builds rather than merely skipped at runtime. */
+    EXPECT_EQ(rw_lock_own(lock_a, RW_LOCK_S), rw_lock_own(lock_b, RW_LOCK_S));
+    EXPECT_EQ(rw_lock_own(lock_a, RW_LOCK_X), rw_lock_own(lock_b, RW_LOCK_X));
+    EXPECT_EQ(rw_lock_own(lock_a, RW_LOCK_SX), rw_lock_own(lock_b, RW_LOCK_SX));
+    EXPECT_EQ(rw_lock_own_flagged(lock_a, RW_LOCK_FLAG_S),
+              rw_lock_own_flagged(lock_b, RW_LOCK_FLAG_S));
+    EXPECT_EQ(rw_lock_own_flagged(lock_a, RW_LOCK_FLAG_X),
+              rw_lock_own_flagged(lock_b, RW_LOCK_FLAG_X));
+    EXPECT_EQ(rw_lock_own_flagged(lock_a, RW_LOCK_FLAG_SX),
+              rw_lock_own_flagged(lock_b, RW_LOCK_FLAG_SX));
+    EXPECT_EQ(rw_lock_own_flagged(
+                  lock_a, RW_LOCK_FLAG_S | RW_LOCK_FLAG_X | RW_LOCK_FLAG_SX),
+              rw_lock_own_flagged(
+                  lock_b, RW_LOCK_FLAG_S | RW_LOCK_FLAG_X | RW_LOCK_FLAG_SX));
+#endif /* UNIV_DEBUG */
+  };
+
+  expect_parity();
+
+  /* S lock/unlock, plain form. */
+  rw_lock_s_lock(lock_a, UT_LOCATION_HERE);
+  rw_lock_s_lock_pfsni(lock_b, UT_LOCATION_HERE);
+  expect_parity();
+  rw_lock_s_unlock(lock_a);
+  rw_lock_s_unlock_pfsni(lock_b);
+  expect_parity();
+
+  /* S lock/unlock, _gen form. */
+  rw_lock_s_lock_gen(lock_a, 0, UT_LOCATION_HERE);
+  rw_lock_s_lock_gen_pfsni(lock_b, 0, UT_LOCATION_HERE);
+  expect_parity();
+  rw_lock_s_unlock_gen(lock_a, 0);
+  rw_lock_s_unlock_gen_pfsni(lock_b, 0);
+  expect_parity();
+
+  /* S _nowait lock (single owner, so it is expected to succeed), plain
+  unlock. Not repeated on the same lock without an intervening unlock: a
+  recursive S-lock on one latch trips the sync-debug recursion assert (see
+  rw_lock_word_accounting above). */
+  bool s_nowait_a = rw_lock_s_lock_nowait(lock_a, UT_LOCATION_HERE);
+  bool s_nowait_b = rw_lock_s_lock_nowait_pfsni(lock_b, UT_LOCATION_HERE);
+  EXPECT_EQ(s_nowait_a, s_nowait_b);
+  EXPECT_TRUE(s_nowait_a);
+  expect_parity();
+  rw_lock_s_unlock(lock_a);
+  rw_lock_s_unlock_pfsni(lock_b);
+  expect_parity();
+
+  /* SX lock/unlock, plain form. */
+  rw_lock_sx_lock(lock_a, UT_LOCATION_HERE);
+  rw_lock_sx_lock_pfsni(lock_b, UT_LOCATION_HERE);
+  expect_parity();
+  rw_lock_sx_unlock(lock_a);
+  rw_lock_sx_unlock_pfsni(lock_b);
+  expect_parity();
+
+  /* SX lock/unlock, _gen form. */
+  rw_lock_sx_lock_gen(lock_a, 0, UT_LOCATION_HERE);
+  rw_lock_sx_lock_gen_pfsni(lock_b, 0, UT_LOCATION_HERE);
+  expect_parity();
+  rw_lock_sx_unlock_gen(lock_a, 0);
+  rw_lock_sx_unlock_gen_pfsni(lock_b, 0);
+  expect_parity();
+
+  /* SX _nowait lock, plain unlock. */
+  bool sx_nowait_a = rw_lock_sx_lock_nowait(lock_a, 0, UT_LOCATION_HERE);
+  bool sx_nowait_b = rw_lock_sx_lock_nowait_pfsni(lock_b, 0, UT_LOCATION_HERE);
+  EXPECT_EQ(sx_nowait_a, sx_nowait_b);
+  EXPECT_TRUE(sx_nowait_a);
+  expect_parity();
+  rw_lock_sx_unlock(lock_a);
+  rw_lock_sx_unlock_pfsni(lock_b);
+  expect_parity();
+
+  /* X lock/unlock, plain form. */
+  rw_lock_x_lock(lock_a, UT_LOCATION_HERE);
+  rw_lock_x_lock_pfsni(lock_b, UT_LOCATION_HERE);
+  expect_parity();
+  rw_lock_x_unlock(lock_a);
+  rw_lock_x_unlock_pfsni(lock_b);
+  expect_parity();
+
+  /* X lock/unlock, _gen form. */
+  rw_lock_x_lock_gen(lock_a, 0, UT_LOCATION_HERE);
+  rw_lock_x_lock_gen_pfsni(lock_b, 0, UT_LOCATION_HERE);
+  expect_parity();
+  rw_lock_x_unlock_gen(lock_a, 0);
+  rw_lock_x_unlock_gen_pfsni(lock_b, 0);
+  expect_parity();
+
+  /* X _nowait lock, plain unlock. */
+  bool x_nowait_a = rw_lock_x_lock_nowait(lock_a, UT_LOCATION_HERE);
+  bool x_nowait_b = rw_lock_x_lock_nowait_pfsni(lock_b, UT_LOCATION_HERE);
+  EXPECT_EQ(x_nowait_a, x_nowait_b);
+  EXPECT_TRUE(x_nowait_a);
+  expect_parity();
+  rw_lock_x_unlock(lock_a);
+  rw_lock_x_unlock_pfsni(lock_b);
+  expect_parity();
+
+  rw_lock_free(lock_a);
+  rw_lock_free(lock_b);
+  free(lock_a);
+  free(lock_b);
+
+  sync_check_close();
+  os_event_global_destroy();
+}
+
+TEST(sync0rw, rw_lock_pfsni_concurrency) {
+  /* Drives a single lock through S/X/SX states using only the _pfsni
+  family, across three threads, and checks that the nowait variants report
+  the compatibility rules correctly at each transition:
+  - two readers (t1, t2) block a nowait X attempt (t3);
+  - after the readers release, an X holder (t3) blocks a nowait S attempt
+    (t1);
+  - once t3 downgrades to SX, a nowait S attempt (t1) succeeds (SX admits
+    readers) while a nowait X attempt (t2) still fails (SX excludes
+    writers). */
+
+  os_event_global_init();
+  sync_check_init(3);
+
+  auto *lock = static_cast<rw_lock_t *>(malloc(sizeof(rw_lock_t)));
+  rw_lock_create(PSI_NOT_INSTRUMENTED, lock, LATCH_ID_BUF_BLOCK_LOCK);
+
+  std::vector<phase_task> phases[] = {
+      /* t1 and t2 both take S. */
+      {
+          phase_task{1, [&] { rw_lock_s_lock_pfsni(lock, UT_LOCATION_HERE); }},
+          phase_task{2, [&] { rw_lock_s_lock_pfsni(lock, UT_LOCATION_HERE); }},
+      },
+      /* With two readers present, a nowait X attempt must fail. */
+      {
+          phase_task{1, [&] { EXPECT_EQ(rw_lock_get_reader_count(lock), 2); }},
+          phase_task{3,
+                     [&] {
+                       EXPECT_FALSE(rw_lock_x_lock_nowait_pfsni(
+                           lock, UT_LOCATION_HERE));
+                     }},
+      },
+      /* Readers release. */
+      {
+          phase_task{1, [&] { rw_lock_s_unlock_pfsni(lock); }},
+          phase_task{2, [&] { rw_lock_s_unlock_pfsni(lock); }},
+      },
+      /* t3 takes X (blocking task: completes before the next phase). */
+      {
+          phase_task{3, [&] { rw_lock_x_lock_pfsni(lock, UT_LOCATION_HERE); }},
+      },
+      /* With t3 holding X, a nowait S attempt must fail. */
+      {
+          phase_task{1,
+                     [&] {
+                       EXPECT_FALSE(rw_lock_s_lock_nowait_pfsni(
+                           lock, UT_LOCATION_HERE));
+                     }},
+      },
+      /* t3 downgrades X to SX. */
+      {
+          phase_task{3,
+                     [&] {
+                       rw_lock_x_unlock_pfsni(lock);
+                       rw_lock_sx_lock_pfsni(lock, UT_LOCATION_HERE);
+                     }},
+      },
+      /* SX admits readers: a nowait S attempt now succeeds (and actually
+      takes the lock, released in the cleanup phase below). */
+      {
+          phase_task{1,
+                     [&] {
+                       EXPECT_TRUE(rw_lock_s_lock_nowait_pfsni(
+                           lock, UT_LOCATION_HERE));
+                     }},
+      },
+      /* SX excludes writers: a nowait X attempt still fails. */
+      {
+          phase_task{2,
+                     [&] {
+                       EXPECT_FALSE(rw_lock_x_lock_nowait_pfsni(
+                           lock, UT_LOCATION_HERE));
+                     }},
+      },
+      /* Cleanup: release t1's S and t3's SX. */
+      {
+          phase_task{1, [&] { rw_lock_s_unlock_pfsni(lock); }},
+          phase_task{3, [&] { rw_lock_sx_unlock_pfsni(lock); }},
+      }};
+
+  execute_multithreaded_phase_plan(phases, UT_ARR_SIZE(phases));
+
+  rw_lock_free(lock);
+  free(lock);
+
+  sync_check_close();
+  os_event_global_destroy();
+}
+
+#endif /* UNIV_PFS_RWLOCK */
+
 }  // namespace innodb_sync0rw_unittest
