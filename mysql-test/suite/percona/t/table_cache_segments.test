@@ -35,8 +35,8 @@ SELECT COUNT_ALLOC = @@GLOBAL.table_open_cache_instances
 
 --echo #
 --echo # [DEC-24]: the unconditional startup line (ER_TABLE_CACHE_SEGMENTS,
---echo # MY-048132) was logged at this server's own startup.
+--echo # MY-048207) was logged at this server's own startup.
 --echo #
 SELECT COUNT(*) >= 1 AS segments_startup_line_logged
   FROM performance_schema.error_log
- WHERE error_code = 'MY-048132';
+ WHERE error_code = 'MY-048207';

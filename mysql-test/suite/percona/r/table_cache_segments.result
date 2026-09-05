@@ -28,10 +28,10 @@ count_alloc_matches_instances	bytes_alloc_is_multiple_of_count	nothing_freed
 1	1	1
 #
 # [DEC-24]: the unconditional startup line (ER_TABLE_CACHE_SEGMENTS,
-# MY-048132) was logged at this server's own startup.
+# MY-048207) was logged at this server's own startup.
 #
 SELECT COUNT(*) >= 1 AS segments_startup_line_logged
 FROM performance_schema.error_log
-WHERE error_code = 'MY-048132';
+WHERE error_code = 'MY-048207';
 segments_startup_line_logged
 1

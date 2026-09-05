@@ -141,11 +141,11 @@ SELECT prio,error_code,subsystem,data
 # MY-011070: ER_DEPRECATE_MSG_NO_REPLACEMENT
 # MY-011872,MY-011874: ER_IB_MSG_47,ER_IB_MSG_49, innodb_numa_interleave constructor and destructor, depends on platform
 # MY-015140: ER_IB_MSG_INNODB_FLUSH_METHOD, info emitted if default flush method is used on non-Windows platforms, depends on platform
-# MY-048120: ER_IB_MSG_CPU_CORES_INFO, CPU/NUMA topology dump, printed unconditionally at startup
-# MY-048122: ER_IB_MSG_BUFFER_POOL_INIT_COMPLETED, buffer pool init time/speed, printed unconditionally at startup (variable part: timing)
-# MY-048124: ER_TABLE_CACHE_INSTANCES_CAPPED, printed whenever the table cache instance cap engages (requested > physical cores)
-# MY-048132: ER_TABLE_CACHE_SEGMENTS, table cache segment allocation summary, printed unconditionally at startup
-# MY-048121 (ER_IB_MSG_BP_INSTANCES_CAPPED) is deliberately NOT filtered: the buffer
+# MY-048201: ER_IB_MSG_CPU_CORES_INFO, CPU/NUMA topology dump, printed unconditionally at startup
+# MY-048203: ER_IB_MSG_BUFFER_POOL_INIT_COMPLETED, buffer pool init time/speed, printed unconditionally at startup (variable part: timing)
+# MY-048206: ER_TABLE_CACHE_INSTANCES_CAPPED, printed whenever the table cache instance cap engages (requested > physical cores)
+# MY-048207: ER_TABLE_CACHE_SEGMENTS, table cache segment allocation summary, printed unconditionally at startup
+# MY-048202 (ER_IB_MSG_BP_INSTANCES_CAPPED) is deliberately NOT filtered: the buffer
 # pool instance cap cannot engage under this test's configuration (24M pool, see
 # mysql-test/include/default_mysqld.cnf: below 1G the server forces
 # innodb_buffer_pool_instances=1 even when set explicitly). Revisit if this test
@@ -165,7 +165,9 @@ SELECT prio,error_code,subsystem
                          "MY-013884", "MY-013908", "MY-013930", "MY-014013",
                          "MY-000068", "MY-014066", "MY-014067", "MY-014068",
                          "MY-013932", "MY-010101", "MY-010099", "MY-011070",
-                         "MY-048120", "MY-048122", "MY-048124", "MY-048132")
+                         "MY-011872", "MY-011874", "MY-015140",
+                         "MY-048201", "MY-048203", "MY-048206", "MY-048207",
+                         "MY-048209", "MY-048210")
  ORDER BY logged, error_code;
 
 --echo
@@ -192,10 +194,12 @@ SELECT prio,error_code,subsystem
 # MY-010099: ER_SEC_FILE_PRIV_DIRECTORY_INSECURE
 # MY-010101: ER_SEC_FILE_PRIV_DIRECTORY_PERMISSIONS
 # MY-011070: ER_DEPRECATE_MSG_NO_REPLACEMENT
-# MY-048120: ER_IB_MSG_CPU_CORES_INFO (variable part: topology dump)
-# MY-048122: ER_IB_MSG_BUFFER_POOL_INIT_COMPLETED (variable part: timing/speed)
-# MY-048124: ER_TABLE_CACHE_INSTANCES_CAPPED (variable part: requested/capped/core counts)
-# MY-048132: ER_TABLE_CACHE_SEGMENTS (variable part: segment count/bytes)
+# MY-048201: ER_IB_MSG_CPU_CORES_INFO (variable part: topology dump)
+# MY-048203: ER_IB_MSG_BUFFER_POOL_INIT_COMPLETED (variable part: timing/speed)
+# MY-048206: ER_TABLE_CACHE_INSTANCES_CAPPED (variable part: requested/capped/core counts)
+# MY-048207: ER_TABLE_CACHE_SEGMENTS (variable part: segment count/bytes)
+# MY-048209: ER_IB_MSG_TRX_SYS_NUMA_INTERLEAVE (variable part: node count/size)
+# MY-048210: ER_IB_MSG_BP_SOCKET_DISTRIBUTION (variable part: socket/instance map)
 SELECT prio,error_code,subsystem,data
   FROM performance_schema.error_log
  WHERE logged>=@startup
@@ -205,7 +209,9 @@ SELECT prio,error_code,subsystem,data
                          "MY-000067", "MY-010159", "MY-013595", "MY-013602",
                          "MY-010108", "MY-012363", "MY-013711", "MY-013908",
                          "MY-013930", "MY-000068", "MY-015015", "MY-010101",
-                         "MY-010099", "MY-011070", "MY-048120", "MY-048122",
+                         "MY-010099", "MY-011070", "MY-048201", "MY-048203",
+                         "MY-048206", "MY-048207", "MY-048209",
+                         "MY-048210")
  ORDER BY logged;
 
 --echo
