@@ -27,6 +27,18 @@
 #include <NdbMutex.h>
 #include <ndb_global.h>
 #include <cassert>
+/* gettimeofday() fallback below is only reachable when HAVE_CLOCK_GETTIME
+is not defined (observed under a ThreadSanitizer build configuration on
+this codebase's usual host - clock_gettime() itself is unaffected, the
+build's own feature probe for it did not define the macro), and nothing
+else in this translation unit's include chain declares it in that case.
+Guarded like the same header is guarded next to it in this directory
+(NdbGetRUsage.cpp): this file also has a _WIN32 branch below, and
+<sys/time.h> does not exist under MSVC. ndb_global.h above already pulls
+in my_config.h, which is where HAVE_SYS_TIME_H comes from. */
+#ifdef HAVE_SYS_TIME_H
+#include <sys/time.h>
+#endif
 #include "NdbTick.h"
 #include "ndb_config.h"
 
