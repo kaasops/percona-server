@@ -254,7 +254,18 @@ que_thr_t *que_fork_scheduler_round_robin(
       case QUE_THR_COMMAND_WAIT:
       case QUE_THR_COMPLETED:
         ut_a(!thr->is_active);
-        que_thr_init_command(thr);
+
+        /* que_thr_init_command(thr) equivalent, except for the
+        n_active_thrs counter updates: purge worker threads never let
+        thr->graph->n_active_thrs / trx->lock.n_active_thrs go above 0,
+        which lets que_run_threads_low() skip trx_mutex for this fork
+        type; see que_run_threads_low for the invariant this relies on. */
+        ut_ad(thr->graph->fork_type == QUE_FORK_PURGE);
+        thr->run_node = thr;
+        thr->prev_node = thr->common.parent;
+        ut_ad(thr->state != QUE_THR_RUNNING);
+        thr->is_active = true;
+        thr->state = QUE_THR_RUNNING;
         break;
 
       case QUE_THR_SUSPENDED:
@@ -968,6 +979,42 @@ static void que_run_threads_low(que_thr_t *thr) /*!< in: query thread */
     /*-------------------------*/
     next_thr = que_thr_step(thr);
     /*-------------------------*/
+
+    /* Purge worker threads share a single dummy transaction
+    (purge_sys_trx = true, trx id 0) that is never subject to a real
+    lock wait: it never enters TRX_QUE_LOCK_WAIT, so the resurrection
+    path through que_thr_stop()/que_thr_dec_refer_count() below is
+    unreachable for it, and its error_state stays DB_SUCCESS. The
+    n_active_thrs counters are also never touched for a purge fork (see
+    que_fork_scheduler_round_robin), so there is nothing on this path
+    that needs trx_mutex protection for purge, and no reader of
+    n_active_thrs on any purge code path (its only readers are
+    que_thr_stop_for_mysql*, the user-transaction commit/rollback path
+    in trx0trx.cc, and log0ddl.cc, none of which purge transactions go
+    through). Cross-thread visibility of thr's fields between the
+    purge coordinator and worker threads is instead established by the
+    single-owner handoff protocol around task submission:
+    srv_sys->tasks_mutex when a task is enqueued, and the worker's
+    seq_cst purge_sys->n_completed.fetch_add(1) paired with the
+    coordinator waiting for n_submitted == n_completed before starting
+    the next batch (trx_purge_wait_for_workers_to_complete): this
+    gives happens-before without any thread ever accessing thr
+    concurrently with another. So skip the trx_mutex-protected path
+    entirely for purge forks. */
+    if (thr->graph->fork_type == QUE_FORK_PURGE) {
+      ut_ad(thr->state != QUE_THR_RUNNING || next_thr == thr);
+      /* No code on the purge path ever writes trx->error_state —
+      all purge workers only read it, exactly like the pre-existing
+      unlocked ut_a at the end of que_thr_step(), so reading it here
+      without trx_mutex is safe. */
+      ut_ad(next_thr == nullptr || trx->error_state == DB_SUCCESS);
+
+      if (next_thr != thr) {
+        ut_a(next_thr == nullptr);
+        thr->is_active = false;
+      }
+      continue;
+    }
 
     trx_mutex_enter(trx);
 
