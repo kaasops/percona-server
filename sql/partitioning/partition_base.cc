@@ -55,6 +55,7 @@
 #ifndef NDEBUG
 #include "sql/sql_test.h"  // print_where
 #endif
+#include "sql/memory/aligned_atomic.h"  // memory::cache_line_size
 
 #include "mysql/psi/mysql_file.h"
 #include "pfs_file_provider.h"
@@ -1635,8 +1636,9 @@ int Partition_base::open(const char *name, int mode, uint test_if_locked,
 
         if (m_clone_base != nullptr) {
           uint ref_length = (*clone_base_file)->ref_length;
-          (*file)->ref =
-              (uchar *)m_clone_mem_root->Alloc(ALIGN_SIZE(ref_length) * 2);
+          (*file)->ref = (uchar *)m_clone_mem_root->Alloc_aligned(
+              MY_ALIGN(ALIGN_SIZE(ref_length) * 2, memory::cache_line_size()),
+              memory::cache_line_size());
         }
 
         if ((error = (*file)->ha_open(table, name_buff, mode, test_if_locked,

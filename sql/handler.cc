@@ -134,6 +134,7 @@
 #include "string_with_len.h"
 #include "template_utils.h"
 #include "uniques.h"  // Unique_on_insert
+#include "sql/memory/aligned_atomic.h"  // memory::cache_line_size
 
 /**
   @def MYSQL_TABLE_IO_WAIT
@@ -2865,8 +2866,9 @@ handler *handler::clone(const char *name, MEM_ROOT *mem_root) {
     on this->table->mem_root and we will not be able to reclaim that memory
     when the clone handler object is destroyed.
   */
-  if (!(new_handler->ref =
-            (uchar *)mem_root->Alloc(ALIGN_SIZE(ref_length) * 2)))
+  if (!(new_handler->ref = (uchar *)mem_root->Alloc_aligned(
+            MY_ALIGN(ALIGN_SIZE(ref_length) * 2, memory::cache_line_size()),
+            memory::cache_line_size())))
     goto err;
 
   new_handler->cloned = true;
@@ -3020,7 +3022,10 @@ int handler::ha_open(TABLE *table_arg, const char *name, int mode,
     (void)extra(HA_EXTRA_NO_READCHECK);  // Not needed in SQL
 
     /* ref is already allocated for us if we're called from handler::clone() */
-    if (!ref && !(ref = (uchar *)mem_root->Alloc(ALIGN_SIZE(ref_length) * 2))) {
+    if (!ref && !(ref = (uchar *)mem_root->Alloc_aligned(
+                      MY_ALIGN(ALIGN_SIZE(ref_length) * 2,
+                               memory::cache_line_size()),
+                      memory::cache_line_size()))) {
       ha_close();
       error = HA_ERR_OUT_OF_MEM;
     } else

@@ -121,6 +121,7 @@
 #include "strmake.h"
 #include "strxnmov.h"
 #include "typelib.h"
+#include "sql/memory/aligned_atomic.h"  // memory::cache_line_size
 
 using std::max;
 using std::min;
@@ -675,8 +676,9 @@ handler *ha_myisammrg::clone(const char *name, MEM_ROOT *mem_root) {
     on this->table->mem_root and we will not be able to reclaim that memory
     when the clone handler object is destroyed.
   */
-  if (!(new_handler->ref =
-            (uchar *)mem_root->Alloc(ALIGN_SIZE(ref_length) * 2))) {
+  if (!(new_handler->ref = (uchar *)mem_root->Alloc_aligned(
+            MY_ALIGN(ALIGN_SIZE(ref_length) * 2, memory::cache_line_size()),
+            memory::cache_line_size()))) {
     ::destroy_at(new_handler);
     return nullptr;
   }
