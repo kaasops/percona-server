@@ -776,65 +776,158 @@ void buf_page_print(const byte *read_buf, const page_size_t &page_size,
 extern mysql_pfs_key_t buffer_block_mutex_key;
 #endif /* !PFS_SKIP_BUFFER_MUTEX_RWLOCK */
 
-/** This function registers mutexes and rwlocks in buffer blocks with
- performance schema. If PFS_MAX_BUFFER_MUTEX_LOCK_REGISTER is
- defined to be a value less than chunk->size, then only mutexes
- and rwlocks in the first PFS_MAX_BUFFER_MUTEX_LOCK_REGISTER
- blocks are registered. */
-static void pfs_register_buffer_block(
-    buf_chunk_t *chunk) /*!< in/out: chunk of buffers */
-{
-  buf_block_t *block;
-  ulint num_to_register;
+/** Registers one buffer block's mutex and rw-locks with the performance
+schema. Called once per block, from buf_block_create_latches(),
+immediately after the latches it registers have been constructed.
 
-  block = chunk->blocks;
-
-  num_to_register = std::min(chunk->size, PFS_MAX_BUFFER_MUTEX_LOCK_REGISTER);
-
-  for (ulint i = 0; i < num_to_register; i++) {
+This used to be a per-chunk function (pfs_register_buffer_block(),
+iterating every block right after buf_chunk_init() eagerly constructed
+every block's latches). Under lazy latch construction that ordering is
+no longer available: buf_chunk_init() now only calls
+buf_block_init_light(), which does not construct block->mutex/lock -
+calling the old per-chunk registration there would register PSI
+metadata for a rw_lock_t/mutex that has not been constructed yet, ahead
+of buf_block_create_latches() actually constructing it later at first
+use. Registration is moved here, into buf_block_create_latches() itself,
+so it always runs strictly after construction, per block. The old
+function's PFS_MAX_BUFFER_MUTEX_LOCK_REGISTER cap ("register only the
+first K blocks of a chunk") has no counterpart here: it was already a
+no-op in this tree (defined as ULINT_MAX), and "first K blocks of a
+chunk" is not a meaningful concept once blocks are registered
+individually, lazily, in whatever order they are first used.
+@param[in,out]  block  buffer block whose latches to register */
+static void pfs_register_buffer_block_latches(buf_block_t *block) {
 #ifdef UNIV_PFS_MUTEX
-    BPageMutex *mutex;
-
-    mutex = &block->mutex;
+  BPageMutex *mutex = &block->mutex;
 
 #ifndef PFS_SKIP_BUFFER_MUTEX_RWLOCK
-    mutex->pfs_add(buffer_block_mutex_key);
+  mutex->pfs_add(buffer_block_mutex_key);
 #endif /* !PFS_SKIP_BUFFER_MUTEX_RWLOCK */
 
 #endif /* UNIV_PFS_MUTEX */
 
-    rw_lock_t *rwlock;
+  rw_lock_t *rwlock;
 
 #ifdef UNIV_PFS_RWLOCK
-    rwlock = &block->lock;
-    ut_a(!rwlock->pfs_psi);
+  rwlock = &block->lock;
+  ut_a(!rwlock->pfs_psi);
 
 #ifndef PFS_SKIP_BUFFER_MUTEX_RWLOCK
-    rwlock->pfs_psi = (PSI_server)
-                          ? PSI_server->init_rwlock(buf_block_lock_key, rwlock)
-                          : NULL;
+  rwlock->pfs_psi = (PSI_server)
+                        ? PSI_server->init_rwlock(buf_block_lock_key, rwlock)
+                        : NULL;
 #else
-    rwlock->pfs_psi =
-        (PSI_server) ? PSI_server->init_rwlock(PFS_NOT_INSTRUMENTED, rwlock)
-                     : NULL;
+  rwlock->pfs_psi =
+      (PSI_server) ? PSI_server->init_rwlock(PFS_NOT_INSTRUMENTED, rwlock)
+                   : NULL;
 #endif /* !PFS_SKIP_BUFFER_MUTEX_RWLOCK */
 
 #ifdef UNIV_DEBUG
-    rwlock = &block->debug_latch;
-    ut_a(!rwlock->pfs_psi);
-    rwlock->pfs_psi = (PSI_server) ? PSI_server->init_rwlock(
-                                         buf_block_debug_latch_key, rwlock)
-                                   : NULL;
+  rwlock = &block->debug_latch;
+  ut_a(!rwlock->pfs_psi);
+  rwlock->pfs_psi = (PSI_server) ? PSI_server->init_rwlock(
+                                       buf_block_debug_latch_key, rwlock)
+                                 : NULL;
 #endif /* UNIV_DEBUG */
 
 #endif /* UNIV_PFS_RWLOCK */
-    block++;
-  }
 }
 #endif /* PFS_GROUP_BUFFER_SYNC */
 
-/** Initializes a buffer control block when the buf_pool is created. */
-static void buf_block_init(
+/** Construct the latches (mutex + rw-locks) for a buffer block that was
+previously initialized with buf_block_init_light(). Shared by
+buf_block_ensure_latches_initialized() for the actual construction work. */
+static void buf_block_create_latches(buf_block_t *block) {
+  mutex_create(LATCH_ID_BUF_BLOCK_MUTEX, &block->mutex);
+
+#if defined PFS_SKIP_BUFFER_MUTEX_RWLOCK || defined PFS_GROUP_BUFFER_SYNC
+  /* If PFS_SKIP_BUFFER_MUTEX_RWLOCK is defined, skip registration
+  of buffer block rwlock with performance schema.
+
+  If PFS_GROUP_BUFFER_SYNC is defined, skip the registration here -
+  it happens below, after both latches exist, via
+  pfs_register_buffer_block_latches(). */
+
+  rw_lock_create(PFS_NOT_INSTRUMENTED, &block->lock, LATCH_ID_BUF_BLOCK_LOCK);
+
+  ut_d(rw_lock_create(PFS_NOT_INSTRUMENTED, &block->debug_latch,
+                      LATCH_ID_BUF_BLOCK_DEBUG));
+
+#else /* PFS_SKIP_BUFFER_MUTEX_RWLOCK || PFS_GROUP_BUFFER_SYNC */
+
+  rw_lock_create(buf_block_lock_key, &block->lock, LATCH_ID_BUF_BLOCK_LOCK);
+
+  ut_d(rw_lock_create(buf_block_debug_latch_key, &block->debug_latch,
+                      LATCH_ID_BUF_BLOCK_DEBUG));
+
+#endif /* PFS_SKIP_BUFFER_MUTEX_RWLOCK || PFS_GROUP_BUFFER_SYNC */
+
+  block->lock.is_block_lock = true;
+
+  ut_ad(rw_lock_validate(&(block->lock)));
+
+#ifdef PFS_GROUP_BUFFER_SYNC
+  /* Registration happens strictly after construction, and per block -
+  see pfs_register_buffer_block_latches() for why. */
+  pfs_register_buffer_block_latches(block);
+#endif /* PFS_GROUP_BUFFER_SYNC */
+}
+
+/** Ensure that the latches (mutex + rw-locks) for a buffer block are
+constructed exactly once, the first time the block is actually put to use.
+buf_chunk_init() only calls buf_block_init_light() for every block up
+front (cheap, no latch construction), which is what makes large buffer
+pool initialization fast; the (much smaller, in a freshly started server)
+set of blocks that end up actually used pay the latch-construction cost
+lazily, here, on first use.
+
+latch_state is a single byte with three states rather than a plain
+"initialized" flag so that a thread which loses the race to initialize a
+given block can tell "someone else is still constructing the latches"
+(BUF_BLOCK_LATCH_INITIALIZING) apart from "construction already
+finished, safe to use" (BUF_BLOCK_LATCH_READY): publishing readiness via
+a separate, later store (with release semantics) is what makes it safe
+for a concurrent caller to actually use block->mutex/block->lock once it
+observes BUF_BLOCK_LATCH_READY.
+@param[in,out]  block   buffer block */
+void buf_block_ensure_latches_initialized(buf_block_t *block) {
+  if (block->latch_state.load(std::memory_order_acquire) ==
+      BUF_BLOCK_LATCH_READY) {
+    return;
+  }
+
+  uint8_t expected = BUF_BLOCK_LATCH_UNINIT;
+  if (block->latch_state.compare_exchange_strong(
+          expected, BUF_BLOCK_LATCH_INITIALIZING, std::memory_order_acq_rel)) {
+    /* We won the race: we are the one constructing the latches. */
+    buf_block_create_latches(block);
+
+    /* Publish readiness last, with release semantics, so that other
+    threads spinning below only see BUF_BLOCK_LATCH_READY once
+    construction has fully completed and is visible to them. */
+    block->latch_state.store(BUF_BLOCK_LATCH_READY, std::memory_order_release);
+    return;
+  }
+
+  /* Another thread is constructing (or has already constructed) the
+  latches for this block. Spin until it publishes BUF_BLOCK_LATCH_READY.
+  Unlike the upstream comment this replaces ("just a handful of OS
+  calls"), rw_lock_create_func() inside that window also takes the
+  global rw_lock_list_mutex (sync0rw.cc) to link the new lock into
+  rw_lock_list - a real, if short, critical section, not merely a
+  syscall or two. */
+  while (block->latch_state.load(std::memory_order_acquire) !=
+         BUF_BLOCK_LATCH_READY) {
+    ut_delay(1);
+  }
+}
+
+/** Lightweight initialization of a buffer control block when the buf_pool
+is created: sets up bookkeeping fields but does not construct the block's
+mutex/rw-locks. Those are constructed lazily by
+buf_block_ensure_latches_initialized() the first time the block is
+actually put to use (see buf_page_init() and buf_LRU_get_free_only()). */
+static void buf_block_init_light(
     buf_pool_t *buf_pool, /*!< in: buffer pool instance */
     buf_block_t *block,   /*!< in: pointer to control block */
     byte *frame)          /*!< in: pointer to buffer frame */
@@ -872,33 +965,10 @@ static void buf_block_init(
 
   page_zip_des_init(&block->page.zip);
 
-  mutex_create(LATCH_ID_BUF_BLOCK_MUTEX, &block->mutex);
-
-#if defined PFS_SKIP_BUFFER_MUTEX_RWLOCK || defined PFS_GROUP_BUFFER_SYNC
-  /* If PFS_SKIP_BUFFER_MUTEX_RWLOCK is defined, skip registration
-  of buffer block rwlock with performance schema.
-
-  If PFS_GROUP_BUFFER_SYNC is defined, skip the registration
-  since buffer block rwlock will be registered later in
-  pfs_register_buffer_block(). */
-
-  rw_lock_create(PFS_NOT_INSTRUMENTED, &block->lock, LATCH_ID_BUF_BLOCK_LOCK);
-
-  ut_d(rw_lock_create(PFS_NOT_INSTRUMENTED, &block->debug_latch,
-                      LATCH_ID_BUF_BLOCK_DEBUG));
-
-#else /* PFS_SKIP_BUFFER_MUTEX_RWLOCK || PFS_GROUP_BUFFER_SYNC */
-
-  rw_lock_create(buf_block_lock_key, &block->lock, LATCH_ID_BUF_BLOCK_LOCK);
-
-  ut_d(rw_lock_create(buf_block_debug_latch_key, &block->debug_latch,
-                      LATCH_ID_BUF_BLOCK_DEBUG));
-
-#endif /* PFS_SKIP_BUFFER_MUTEX_RWLOCK || PFS_GROUP_BUFFER_SYNC */
-
-  block->lock.is_block_lock = true;
-
-  ut_ad(rw_lock_validate(&(block->lock)));
+  /* Latches (mutex, lock, debug_latch) are NOT constructed here - that
+  is done lazily, exactly once, by buf_block_ensure_latches_initialized()
+  on first real use of this block. */
+  block->latch_state.store(BUF_BLOCK_LATCH_UNINIT, std::memory_order_relaxed);
 }
 /* We maintain our private view of innobase_should_madvise_buf_pool() which we
 initialize at the beginning of buf_pool_init() and then update when the
@@ -1148,7 +1218,12 @@ static buf_chunk_t *buf_chunk_init(
   block = chunk->blocks;
 
   for (i = chunk->size; i--;) {
-    buf_block_init(buf_pool, block, frame);
+    /* buf_block_init_light() only sets up bookkeeping fields - it does
+    not construct block->mutex/lock. Those (and their PFS registration,
+    if PFS_GROUP_BUFFER_SYNC) are constructed lazily, per block, by
+    buf_block_ensure_latches_initialized() the first time each block is
+    actually put to use - see that function's comment. */
+    buf_block_init_light(buf_pool, block, frame);
     UNIV_MEM_INVALID(block->frame, UNIV_PAGE_SIZE);
 
     /* Add the block to the free list */
@@ -1172,9 +1247,6 @@ static buf_chunk_t *buf_chunk_init(
     mutex->unlock();
   }
 
-#ifdef PFS_GROUP_BUFFER_SYNC
-  pfs_register_buffer_block(chunk);
-#endif /* PFS_GROUP_BUFFER_SYNC */
   return (chunk);
 }
 
@@ -1403,10 +1475,22 @@ static void buf_pool_create(buf_pool_t *buf_pool, ulint buf_pool_size,
           buf_block_t *block = chunk->blocks;
 
           for (i = chunk->size; i--; block++) {
-            mutex_free(&block->mutex);
-            rw_lock_free(&block->lock);
+            /* Under lazy latch construction, blocks in a chunk that
+            buf_chunk_init() successfully initialized only went through
+            buf_block_init_light() - their mutex/lock were never
+            constructed unless something already reached them via
+            buf_block_ensure_latches_initialized(), which cannot have
+            happened yet at this point (the pool is not exposed for use
+            during buf_pool_create()). Freeing an unconstructed
+            mutex/rw_lock_t here would be undefined behavior, not a
+            no-op. */
+            if (block->latch_state.load(std::memory_order_acquire) ==
+                BUF_BLOCK_LATCH_READY) {
+              mutex_free(&block->mutex);
+              rw_lock_free(&block->lock);
 
-            ut_d(rw_lock_free(&block->debug_latch));
+              ut_d(rw_lock_free(&block->debug_latch));
+            }
           }
           buf_pool->deallocate_chunk(chunk);
         }
@@ -1539,10 +1623,17 @@ static void buf_pool_free_instance(buf_pool_t *buf_pool) {
     buf_block_t *block = chunk->blocks;
 
     for (ulint i = chunk->size; i--; block++) {
-      mutex_free(&block->mutex);
-      rw_lock_free(&block->lock);
+      /* Only blocks that actually reached
+      buf_block_ensure_latches_initialized() have a constructed
+      mutex/lock to free - see the identical guard in buf_pool_create()'s
+      OOM rollback. */
+      if (block->latch_state.load(std::memory_order_acquire) ==
+          BUF_BLOCK_LATCH_READY) {
+        mutex_free(&block->mutex);
+        rw_lock_free(&block->lock);
 
-      ut_d(rw_lock_free(&block->debug_latch));
+        ut_d(rw_lock_free(&block->debug_latch));
+      }
     }
 
     buf_pool->deallocate_chunk(chunk);
@@ -2631,10 +2722,17 @@ withdraw_retry:
         buf_block_t *block = chunk->blocks;
 
         for (ulint j = chunk->size; j--; block++) {
-          mutex_free(&block->mutex);
-          rw_lock_free(&block->lock);
+          /* Withdrawn chunks can contain blocks that were never taken
+          off the free list (never reached
+          buf_block_ensure_latches_initialized()) - same guard as
+          buf_pool_create()'s OOM rollback and buf_pool_free_instance(). */
+          if (block->latch_state.load(std::memory_order_acquire) ==
+              BUF_BLOCK_LATCH_READY) {
+            mutex_free(&block->mutex);
+            rw_lock_free(&block->lock);
 
-          ut_d(rw_lock_free(&block->debug_latch));
+            ut_d(rw_lock_free(&block->debug_latch));
+          }
         }
 
         buf_pool->deallocate_chunk(chunk);
@@ -3733,7 +3831,7 @@ buf_block_t *buf_block_from_ahi(const byte *ptr) {
 
   buf_block_t *block = &chunk->blocks[offs];
 
-  /* The function buf_chunk_init() invokes buf_block_init() so that
+  /* The function buf_chunk_init() invokes buf_block_init_light() so that
   block[n].frame == block->frame + n * UNIV_PAGE_SIZE.  Check it. */
   ut_ad(block->frame == page_align(ptr));
   /* Read the state of the block without holding a mutex.
@@ -5047,6 +5145,9 @@ static void buf_page_init(buf_pool_t *buf_pool, const page_id_t &page_id,
   buf_block_init_low(block);
 
   buf_page_init_low(&block->page);
+
+  /* Ensure latches are initialized before the block becomes accessible. */
+  buf_block_ensure_latches_initialized(block);
 
   /* Insert into the hash table of file pages */
 

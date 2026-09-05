@@ -1,0 +1,30 @@
+#
+# Cold start (default config - not this test's job to size the pool,
+# just to scan it before much of it has been touched) - most blocks
+# are still BUF_BLOCK_NOT_USED at this point.
+#
+unused blocks correctly reported as UNKNOWN at cold start: found
+#
+# Same scan, concurrently with DML that first-touches new blocks
+# (lazily constructing their latches while other blocks in the same
+# chunk are still untouched) - exercises the guard against a mixture
+# of BUF_BLOCK_NOT_USED and in-use blocks in the same scan, not just
+# an all-untouched pool.
+#
+SELECT COUNT(*) FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE INTO @discard;
+SELECT COUNT(*) FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE INTO @discard;
+SELECT COUNT(*) FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE INTO @discard;
+SELECT COUNT(*) FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE INTO @discard;
+SELECT COUNT(*) FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE INTO @discard;
+#
+# No crash and no server-side error above is the primary assertion
+# (mtr fails the test on either); this one additionally checks that
+# a page actually in use is not reported as UNKNOWN, so the guard
+# is not just "always say unknown" - a table just populated above
+# must have at least one non-UNKNOWN page (its own data/index
+# pages).
+#
+in-use pages correctly report a real page type: found
+#
+# Cleanup
+#

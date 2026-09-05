@@ -4486,20 +4486,58 @@ static void i_s_innodb_set_page_type(
  that are not initialized in the function will default to 0 */
 static void i_s_innodb_buffer_page_get_info(
     const buf_page_t *bpage,    /*!< in: buffer pool page to scan */
-    ulint pool_id,              /*!< in: buffer pool id */
-    ulint pos,                  /*!< in: buffer block position in
+    const buf_block_t *block,   /*!< in: bpage cast to buf_block_t by the
+                                caller when it is statically known to be
+                                one (the whole-chunk scan always has a real
+                                buf_block_t on hand already); nullptr from
+                                the LRU-list scan, where bpage may be a
+                                zip-page descriptor not embedded in a
+                                buf_block_t - see the latch_state check
+                                below for why this must come from the
+                                caller and not from a cast done in here */
+    ulint pool_id,               /*!< in: buffer pool id */
+    ulint pos,                   /*!< in: buffer block position in
                                 buffer pool or in the LRU list */
     buf_page_info_t *page_info) /*!< in: zero filled info structure;
                                 out: structure filled with scanned
                                 info */
 {
-  BPageMutex *mutex = buf_page_get_mutex(bpage);
-
   ut_ad(pool_id < MAX_BUFFER_POOLS);
 
   page_info->pool_id = pool_id;
 
   page_info->block_id = pos;
+
+  /* A block whose latches were never constructed (still BUF_BLOCK_NOT_USED,
+  never taken off the free list - lazy latch construction,
+  buf_block_init_light()) does not have a constructed mutex, and entering
+  it would touch an uninitialized MutexDebug magic number. This used to be
+  guarded by reading bpage->state (BUF_BLOCK_NOT_USED) first and only then
+  casting to buf_block_t, but that read of the plain (non-atomic) state
+  field outside any lock is itself a data race against writers such as
+  buf_page_init() - confirmed by a targeted ThreadSanitizer run during
+  development of this unit, reported on this exact line. It is also
+  unnecessary: whether bpage is embedded in a buf_block_t is already known
+  statically by the caller (see the block parameter above), so checking
+  latch_state - an atomic field, safe to read from any thread - is both
+  sufficient and race-free. block == nullptr (the LRU-list scan, whose
+  pages are always linked into the LRU list and therefore never
+  BUF_BLOCK_NOT_USED) skips this branch entirely and falls through to the
+  pre-existing mutex path unchanged. */
+  if (block != nullptr &&
+      block->latch_state.load(std::memory_order_acquire) !=
+          BUF_BLOCK_LATCH_READY) {
+    page_info->page_state = BUF_BLOCK_NOT_USED;
+    /* page_info is zero-initialized by the caller (mem_heap_zalloc()),
+    and index 0 of i_s_page_type[] is a real page type, not "unknown" -
+    leaving page_type untouched here would misreport an unused block
+    as that type instead of UNKNOWN, which is what the path below
+    reports for the same state. */
+    page_info->page_type = I_S_PAGE_TYPE_UNKNOWN;
+    return;
+  }
+
+  BPageMutex *mutex = buf_page_get_mutex(bpage);
 
   mutex_enter(mutex);
 
@@ -4623,8 +4661,8 @@ static int i_s_innodb_fill_buffer_pool(
 
       /* GO through each block in the chunk */
       for (n_blocks = num_to_process; n_blocks--; block++) {
-        i_s_innodb_buffer_page_get_info(&block->page, pool_id, block_id,
-                                        info_buffer + num_page);
+        i_s_innodb_buffer_page_get_info(&block->page, block, pool_id,
+                                        block_id, info_buffer + num_page);
         block_id++;
         num_page++;
       }
@@ -5062,7 +5100,7 @@ static int i_s_innodb_fill_buffer_lru(THD *thd, Table_ref *tables,
   while (bpage != nullptr) {
     /* Use the same function that collect buffer info for
     INNODB_BUFFER_PAGE to get buffer page info */
-    i_s_innodb_buffer_page_get_info(bpage, pool_id, lru_pos,
+    i_s_innodb_buffer_page_get_info(bpage, nullptr, pool_id, lru_pos,
                                     (info_buffer + lru_pos));
 
     bpage = UT_LIST_GET_PREV(LRU, bpage);

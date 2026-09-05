@@ -1229,6 +1229,15 @@ buf_block_t *buf_LRU_get_free_only(buf_pool_t *buf_pool) {
       a free block. */
       block->ahi.assert_empty();
 
+      /* Lazy latch initialization for this block taken from the free
+      list, before the state is published as BUF_BLOCK_READY_FOR_USE
+      below: the block is off the free list already and on no other
+      list yet, so nothing else can observe it here, but a concurrent
+      reader that finds it by state (not by list membership) must not
+      see READY_FOR_USE before the latches are actually constructed.
+      Latches are created exactly once. */
+      buf_block_ensure_latches_initialized(block);
+
       buf_block_set_state(block, BUF_BLOCK_READY_FOR_USE);
 
       UNIV_MEM_ALLOC(block->frame, UNIV_PAGE_SIZE);

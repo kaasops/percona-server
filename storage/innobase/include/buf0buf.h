@@ -1782,6 +1782,12 @@ struct alignas(alignof(uint64_t)) btr_search_prefix_info_t {
   }
 };
 
+/** Buffer block latch initialization states, see buf_block_t::latch_state
+and buf_block_ensure_latches_initialized(). */
+constexpr uint8_t BUF_BLOCK_LATCH_UNINIT = 0;
+constexpr uint8_t BUF_BLOCK_LATCH_INITIALIZING = 1;
+constexpr uint8_t BUF_BLOCK_LATCH_READY = 2;
+
 /** The buffer control block structure */
 struct buf_block_t {
   /** @name General fields */
@@ -1938,6 +1944,11 @@ struct buf_block_t {
   or (3) the block must belong to an intrinsic table */
   uint64_t modify_clock;
 
+  /** Lazy latch initialization state for this block: one of
+  BUF_BLOCK_LATCH_UNINIT, BUF_BLOCK_LATCH_INITIALIZING or
+  BUF_BLOCK_LATCH_READY. See buf_block_ensure_latches_initialized(). */
+  std::atomic<uint8_t> latch_state;
+
   /** @} */
 
   /** mutex protecting this block: state (also protected by the buffer
@@ -2061,6 +2072,12 @@ static inline uint64_t buf_pool_hash_zip(buf_block_t *b) {
   return buf_pool_hash_zip_frame(b->frame);
 }
 /** @} */
+
+/** Ensure that latches for a buffer block are initialized exactly once.
+This is called lazily when a block is first taken from the free list
+or when a page is initialized for read/create.
+@param[in,out]  block   buffer block */
+void buf_block_ensure_latches_initialized(buf_block_t *block);
 
 /** A "Hazard Pointer" class used to iterate over page lists
 inside the buffer pool. A hazard pointer is a buf_page_t pointer
@@ -2637,9 +2654,13 @@ Use these instead of accessing buffer pool mutexes directly. */
     mutex_exit(&(b)->flush_list_mutex); \
   } while (0)
 /** Acquire the block->mutex. */
-#define buf_page_mutex_enter(b) \
-  do {                          \
-    mutex_enter(&(b)->mutex);   \
+#define buf_page_mutex_enter(b)                                       \
+  do {                                                                \
+    /* block must be past lazy-latch construction before its mutex \
+    is touched */                                                     \
+    ut_ad((b)->latch_state.load(std::memory_order_relaxed) ==         \
+          BUF_BLOCK_LATCH_READY);                                     \
+    mutex_enter(&(b)->mutex);                                         \
   } while (0)
 
 /** Release the block->mutex. */
