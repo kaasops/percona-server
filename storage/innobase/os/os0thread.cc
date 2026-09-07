@@ -138,24 +138,19 @@ os_tid_t os_thread_get_tid() noexcept {
 #endif
 }
 
-/** Set relative scheduling priority for a given thread on Linux. Currently a
-no-op on other systems.
-@param[in]      thread_id               thread id
-@param[in]      relative_priority       system-specific priority value
-
-@return An actual thread priority after the update */
-[[nodiscard]]
-ulint os_thread_set_priority(os_tid_t thread_id,
-                             ulint relative_priority) noexcept {
+/** Applies a nice value to the given thread. Linux only, a no-op elsewhere.
+Failure is reported with ib::warn() and leaves the priority unchanged.
+@param[in] thread_id   thread id (os_thread_get_tid())
+@param[in] nice_value  target nice, -20..19 (including 0) */
+void os_thread_set_priority(os_tid_t thread_id, int nice_value) noexcept {
 #ifdef UNIV_LINUX
-  const lint thread_nice = 19 - relative_priority;
-  if (setpriority(PRIO_PROCESS, thread_id, thread_nice) == -1) {
-    ib::warn() << "Setting thread " << thread_id << " nice to " << thread_nice
+  if (setpriority(PRIO_PROCESS, thread_id, nice_value) == -1) {
+    ib::warn() << "Setting thread " << thread_id << " nice to " << nice_value
                << " failed, current nice "
                << getpriority(PRIO_PROCESS, thread_id) << ", errno " << errno;
   }
-  return (19 - getpriority(PRIO_PROCESS, thread_id));
 #else
-  return (relative_priority);
+  (void)thread_id;
+  (void)nice_value;
 #endif
 }

@@ -919,7 +919,8 @@ void log_checkpointer(log_t *log_ptr) {
 
   log_t &log = *log_ptr;
 
-  log_thread_apply_priority(srv_log_writer_threads_checkpoint_priority);
+  log_thread_apply_priority(srv_log_writer_threads_checkpoint_priority,
+                            srv_log_writer_threads_checkpoint_priority_is_set);
 
   ut_d(log.m_checkpointer_thd = create_internal_thd());
 

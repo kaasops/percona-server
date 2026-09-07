@@ -915,33 +915,10 @@ void log_background_threads_inactive_validate() {
   ut_a(!log_flusher_is_active());
 }
 
-void log_thread_apply_priority(int nice_value) {
-#ifdef UNIV_LINUX
-  /* 0 is the default for both innodb_log_writer_threads_priority and
-  innodb_log_writer_threads_checkpoint_priority, meaning "leave scheduling
-  priority alone" - matches upstream. Skipping the syscall entirely also
-  avoids the pointless setpriority() that the release-build code behind
-  innodb_sched_priority_* performs on every purge/IO/master thread start
-  (os_thread_set_priority(tid, 19) there degenerates into
-  setpriority(..., 0)); and when the server process itself runs at a
-  positive nice, that no-op request would additionally fail with EACCES
-  and emit an ib::warn. */
-  if (nice_value == 0) {
-    return;
+void log_thread_apply_priority(int nice_value, bool is_set) {
+  if (is_set) {
+    os_thread_set_priority(os_thread_get_tid(), nice_value);
   }
-
-  const auto relative = static_cast<ulint>(19 - nice_value);
-  const auto actual_priority =
-      os_thread_set_priority(os_thread_get_tid(), relative);
-  if (UNIV_UNLIKELY(actual_priority != relative)) {
-    /* os_thread_set_priority() has already reported the failure (thread
-    id, target nice, current nice, errno) - nothing to add here. The
-    comparison exists so that the [[nodiscard]] result is not dropped
-    silently. */
-  }
-#else  /* !UNIV_LINUX */
-  (void)nice_value;
-#endif /* UNIV_LINUX */
 }
 
 /** Validates the relation between the two redo log thread priority

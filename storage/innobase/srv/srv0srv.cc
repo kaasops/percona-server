@@ -546,23 +546,13 @@ ulong srv_adaptive_flushing_lwm = 10;
 /* Number of iterations over which adaptive flushing is averaged. */
 ulong srv_flushing_avg_loops = 30;
 
-/* The tids of the purge threads */
-os_tid_t srv_purge_tids[MAX_PURGE_THREADS];
+/** Explicit nice value; the matching is_set flag controls application. */
+int srv_purge_threads_priority = 0;
+bool srv_purge_threads_priority_is_set = false;
 
-/* The tids of the I/O threads */
-os_tid_t srv_io_tids[SRV_MAX_N_IO_THREADS];
-
-/* The tid of the master thread */
-os_tid_t srv_master_tid;
-
-/* The relative scheduling priority of the purge threads */
-ulint srv_sched_priority_purge = 19;
-
-/* The relative scheduling priority of the I/O threads */
-ulint srv_sched_priority_io = 19;
-
-/* The relative scheduling priority of the master thread */
-ulint srv_sched_priority_master = 19;
+/** Explicit nice value; the matching is_set flag controls application. */
+int srv_io_threads_priority = 0;
+bool srv_io_threads_priority_is_set = false;
 
 /* The relative priority of the current thread.  If 0, low priority; if 1, high
 priority.  */
@@ -3170,22 +3160,15 @@ static bool srv_task_execute(void) {
   return (thr != nullptr);
 }
 
-static std::atomic<ulint> purge_tid_i(0);
-
 /** Worker thread that reads tasks from the work queue and executes them. */
 void srv_worker_thread() {
   srv_slot_t *slot;
 
   ut_ad(!srv_read_only_mode);
   ut_a(srv_force_recovery < SRV_FORCE_NO_BACKGROUND);
-  const auto tid_i = purge_tid_i.fetch_add(1, std::memory_order_relaxed);
-  srv_purge_tids[tid_i] = os_thread_get_tid();
-  const auto actual_priority =
-      os_thread_set_priority(srv_purge_tids[tid_i], srv_sched_priority_purge);
-  if (UNIV_UNLIKELY(actual_priority != srv_sched_priority_purge))
-    ib::warn() << "Failed to set purge thread priority to "
-               << srv_sched_priority_master << " the current priority is "
-               << actual_priority;
+  if (srv_purge_threads_priority_is_set) {
+    os_thread_set_priority(os_thread_get_tid(), srv_purge_threads_priority);
+  }
 
   THD *thd = create_internal_thd();
 
@@ -3445,13 +3428,9 @@ void srv_purge_coordinator_thread() {
   ut_a(trx_purge_state() == PURGE_STATE_INIT);
   ut_a(srv_force_recovery < SRV_FORCE_NO_BACKGROUND);
 
-  srv_purge_tids[0] = os_thread_get_tid();
-  const auto actual_priority =
-      os_thread_set_priority(srv_purge_tids[0], srv_sched_priority_purge);
-  if (UNIV_UNLIKELY(actual_priority != srv_sched_priority_purge))
-    ib::warn() << "Failed to set purge coordinator thread priority to "
-               << srv_sched_priority_master << " the current priority is "
-               << actual_priority;
+  if (srv_purge_threads_priority_is_set) {
+    os_thread_set_priority(os_thread_get_tid(), srv_purge_threads_priority);
+  }
 
   rw_lock_x_lock(&purge_sys->latch, UT_LOCATION_HERE);
 

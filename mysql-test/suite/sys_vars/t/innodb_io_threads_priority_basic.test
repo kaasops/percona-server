@@ -1,0 +1,27 @@
+###############################################################################
+# Variable Name: innodb_io_threads_priority                                  #
+# Scope: GLOBAL                                                              #
+# Access Type: Static (read only)                                            #
+# Data Type: numeric                                                         #
+# Default Value: 0                                                           #
+# Range: -20 - 19                                                            #
+#                                                                            #
+# Description: Nice value applied at thread start to the InnoDB I/O          #
+#              handler threads (ibuf, read and write).                       #
+###############################################################################
+
+SELECT @@global.innodb_io_threads_priority;
+
+--error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SET @@global.innodb_io_threads_priority = -15;
+
+--error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SET @@session.innodb_io_threads_priority = -15;
+
+--error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SET PERSIST innodb_io_threads_priority = -15;
+
+SELECT @@global.innodb_io_threads_priority;
+
+SELECT VARIABLE_VALUE FROM performance_schema.global_variables
+  WHERE VARIABLE_NAME='innodb_io_threads_priority';

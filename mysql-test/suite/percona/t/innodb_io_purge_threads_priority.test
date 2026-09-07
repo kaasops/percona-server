@@ -1,0 +1,377 @@
+#
+# [INT02] Set the scheduling priority of the InnoDB I/O handler and
+# purge threads (innodb_io_threads_priority, innodb_purge_threads_priority).
+#
+# Three scenarios, each doing its own restart (assert_grep.inc resets its
+# match window on MTR's own "CURRENT_TEST:" marker, not on server
+# restarts, so relying on a restart done by an earlier scenario would
+# make the match window ambiguous - see mysql-test-run.pl mark_log()):
+#  (0) negative control - both options omitted, no
+#      "Setting thread ... nice to" line at all, every I/O, purge and
+#      master thread keeps the nice value inherited from the process;
+#  (1) both sysvars set, positive values only (no privilege needed) -
+#      every I/O thread gets the I/O nice, every purge thread gets the
+#      purge nice, master and the main thread stay at the baseline
+#      recorded in scenario (0);
+#  (2) final restart back to defaults, asserts nothing - see below.
+#
+
+--source include/have_perfschema.inc
+--source include/linux.inc
+
+--let $error_log = $MYSQLTEST_VARDIR/log/mysqld.1.err
+# Non-$-prefixed copy: mysqltest only exports a --let variable to the OS
+# environment (and therefore to $ENV{...} in --perl blocks) when its name
+# has no leading $ - see client/mysqltest.cc var_set().
+--let error_log = $error_log
+
+--let $pid_file_tmp = $MYSQLTEST_VARDIR/tmp/_io_purge_pid.txt
+--let $verify_tmp = $MYSQLTEST_VARDIR/tmp/_io_purge_verify.txt
+--let verify_tmp = $verify_tmp
+
+--echo #
+--echo # Scenario (0): negative control - both priority options are
+--echo # omitted, so no "Setting thread ... nice to" line is
+--echo # printed at all, and every I/O, purge and master thread keeps
+--echo # whatever nice value it inherited from the process (compared
+--echo # against the observed nice of the main thread, not a hardcoded
+--echo # 0 - MTR itself may not start mysqld at nice 0).
+--echo # --innodb-purge-threads=2 forces a purge worker thread to exist:
+--echo # the default is 1 purge thread on <=16 CPU hosts, which is only
+--echo # the coordinator (srv_start_purge_threads() creates worker
+--echo # threads for i=1..purge_threads-1, srv0start.cc).
+--echo #
+--let $restart_parameters = restart: --innodb-purge-threads=2
+--source include/restart_mysqld.inc
+
+--let $assert_text = scenario (0), step 0: area after this restart contains a completed start
+--let $assert_file = $error_log
+--let $assert_only_after = starting as process
+--let $assert_select = ready for connections\. Version:
+# assert_grep.inc requires exactly one of assert_match/assert_count/
+# assert_count_condition to be non-empty; mysqltest variables persist
+# across --source calls. $assert_count is set explicitly before every
+# assert_grep call below. $assert_count_condition is set here and
+# cleared at the next assert_grep call below; after that it is never
+# touched again and stays empty for the remaining asserts below, since
+# none of them need it.
+--let $assert_count =
+--let $assert_count_condition = >= 1
+--source include/assert_grep.inc
+
+--let $assert_text = scenario (0): no thread nice-setting attempt while both options are omitted
+--let $assert_file = $error_log
+--let $assert_only_after = starting as process
+--let $assert_select = Setting thread .* nice to
+--let $assert_count = 0
+--let $assert_count_condition =
+--source include/assert_grep.inc
+
+--let $pid_file_path = `SELECT @@GLOBAL.pid_file`
+--let pid_file_path = $pid_file_path
+--let pid_file_tmp = $pid_file_tmp
+--perl
+  use strict;
+  use warnings;
+  open(my $pf, "<", $ENV{pid_file_path})
+    or die("Unable to open pid file $ENV{pid_file_path}: $!\n");
+  my $pid = <$pf>;
+  close($pf);
+  chomp($pid);
+  $pid =~ s/^\s+|\s+$//g;
+
+  # One /proc path form throughout the test: /proc/<pid>/task/<tid>/stat,
+  # field 19 = nice. <pid> is reused here both as the process id and as
+  # the id of the "main" (first) thread.
+  open(my $sf, "<", "/proc/$pid/task/$pid/stat")
+    or die("Unable to open /proc/$pid/task/$pid/stat: $!\n");
+  my $line = <$sf>;
+  close($sf);
+  # comm (field 2) is parenthesized and may itself contain spaces; find
+  # the last ')' and split whatever follows it on whitespace instead of
+  # trying to regex-match the field boundaries around comm directly.
+  my $rparen = rindex($line, ")");
+  my @f = split(' ', substr($line, $rparen + 1));
+  # f[0] is field 3 (state); field 19 (nice) is f[16].
+  my $nice = $f[16];
+
+  open(my $out, ">", $ENV{pid_file_tmp})
+    or die("Unable to write $ENV{pid_file_tmp}: $!\n");
+  print $out "$pid,$nice";
+  close($out);
+EOF
+--let $_io_purge_pid_and_nice = `SELECT LOAD_FILE('$pid_file_tmp')`
+--remove_file $pid_file_tmp
+--let $redo_pid = `SELECT SUBSTRING_INDEX('$_io_purge_pid_and_nice', ',', 1)`
+--let $redo_main_nice = `SELECT SUBSTRING_INDEX('$_io_purge_pid_and_nice', ',', -1)`
+
+--let $io_thread_count = `SELECT COUNT(*) FROM performance_schema.threads WHERE NAME IN ('thread/innodb/io_ibuf_thread', 'thread/innodb/io_read_thread', 'thread/innodb/io_write_thread')`
+--let $io_thread_expected = `SELECT 1 + @@GLOBAL.innodb_read_io_threads + @@GLOBAL.innodb_write_io_threads`
+if ($io_thread_count != $io_thread_expected) {
+  --die scenario (0), step 0: expected $io_thread_expected InnoDB I/O threads in performance_schema.threads, got $io_thread_count
+}
+
+--let $purge_thread_count = `SELECT COUNT(*) FROM performance_schema.threads WHERE NAME IN ('thread/innodb/srv_purge_thread', 'thread/innodb/srv_worker_thread')`
+if ($purge_thread_count != 2) {
+  --die scenario (0), step 0: expected 2 InnoDB purge threads in performance_schema.threads, got $purge_thread_count
+}
+
+# All I/O, purge and master threads at their default (untouched) priority:
+# every one of them must equal the main thread's nice recorded above.
+--let $all_tids = `SELECT GROUP_CONCAT(THREAD_OS_ID) FROM performance_schema.threads WHERE NAME IN ('thread/innodb/io_ibuf_thread', 'thread/innodb/io_read_thread', 'thread/innodb/io_write_thread', 'thread/innodb/srv_purge_thread', 'thread/innodb/srv_worker_thread', 'thread/innodb/srv_master_thread')`
+
+--let redo_pid = $redo_pid
+--let redo_tids = $all_tids
+--let redo_expected = $redo_main_nice
+--perl
+  use strict;
+  use warnings;
+  my $pid = $ENV{redo_pid};
+  my @tids = split(/,/, $ENV{redo_tids});
+  my $expected = $ENV{redo_expected};
+
+  my $read_nice = sub {
+    my ($tid) = @_;
+    open(my $fh, "<", "/proc/$pid/task/$tid/stat")
+      or die("Unable to open /proc/$pid/task/$tid/stat: $!\n");
+    my $l = <$fh>;
+    close($fh);
+    my $rp = rindex($l, ")");
+    my @f = split(' ', substr($l, $rp + 1));
+    return $f[16];
+  };
+
+  my @mismatches;
+  # Bounded retry (up to 20 x 100ms): the PFS row for a thread can appear
+  # before the thread has executed its own first line (where nice is
+  # applied) - this closes exactly that startup race, it is not a fixed
+  # sleep and does not wait forever.
+  for (my $attempt = 0; $attempt < 20; $attempt++) {
+    @mismatches = ();
+    foreach my $tid (@tids) {
+      my $actual = $read_nice->($tid);
+      push(@mismatches, "tid $tid: expected $expected, got $actual")
+        if ($actual != $expected);
+    }
+    last unless @mismatches;
+    select(undef, undef, undef, 0.1);
+  }
+
+  open(my $out, ">", $ENV{verify_tmp})
+    or die("Unable to write $ENV{verify_tmp}: $!\n");
+  print $out (@mismatches ? join('; ', @mismatches) : "ok");
+  close($out);
+EOF
+--let $redo_result = `SELECT LOAD_FILE('$verify_tmp')`
+--remove_file $verify_tmp
+if ($redo_result != 'ok') {
+  --echo scenario (0): nice mismatch: $redo_result
+  --die scenario (0): nice mismatch
+}
+
+--echo #
+--echo # Scenario (1): both sysvars set to distinct positive values (no
+--echo # privilege needed to raise nice) - every I/O thread gets the I/O
+--echo # nice, every purge thread (coordinator and workers) gets the
+--echo # purge nice, and the master and main threads stay at the
+--echo # baseline recorded in scenario (0). Distinct values so a bug
+--echo # reading the wrong sysvar in either group would be caught; both
+--echo # are above that baseline, since raising a nice needs no privilege
+--echo # while lowering one does.
+--echo #
+if (`SELECT $redo_main_nice + 7 > 19`) {
+  --skip process nice too high: baseline + 7 exceeds the option range (-20..19)
+}
+--let $prio_io = `SELECT $redo_main_nice + 5`
+--let $prio_purge = `SELECT $redo_main_nice + 7`
+--let $restart_parameters = restart: --innodb-io-threads-priority=$prio_io --innodb-purge-threads-priority=$prio_purge --innodb-purge-threads=2
+--let $do_not_echo_parameters = 1
+--source include/restart_mysqld.inc
+--let $do_not_echo_parameters = 0
+
+--let $pid_file_path = `SELECT @@GLOBAL.pid_file`
+--let pid_file_path = $pid_file_path
+--let pid_file_tmp = $pid_file_tmp
+--perl
+  use strict;
+  use warnings;
+  open(my $pf, "<", $ENV{pid_file_path})
+    or die("Unable to open pid file $ENV{pid_file_path}: $!\n");
+  my $pid = <$pf>;
+  close($pf);
+  chomp($pid);
+  $pid =~ s/^\s+|\s+$//g;
+  open(my $out, ">", $ENV{pid_file_tmp})
+    or die("Unable to write $ENV{pid_file_tmp}: $!\n");
+  print $out $pid;
+  close($out);
+EOF
+--let $redo_pid = `SELECT LOAD_FILE('$pid_file_tmp')`
+--remove_file $pid_file_tmp
+
+--let $io_thread_count = `SELECT COUNT(*) FROM performance_schema.threads WHERE NAME IN ('thread/innodb/io_ibuf_thread', 'thread/innodb/io_read_thread', 'thread/innodb/io_write_thread')`
+--let $io_thread_expected = `SELECT 1 + @@GLOBAL.innodb_read_io_threads + @@GLOBAL.innodb_write_io_threads`
+if ($io_thread_count != $io_thread_expected) {
+  --die scenario (1), step 0: expected $io_thread_expected InnoDB I/O threads in performance_schema.threads, got $io_thread_count
+}
+
+--let $purge_thread_count = `SELECT COUNT(*) FROM performance_schema.threads WHERE NAME IN ('thread/innodb/srv_purge_thread', 'thread/innodb/srv_worker_thread')`
+if ($purge_thread_count != 2) {
+  --die scenario (1), step 0: expected 2 InnoDB purge threads in performance_schema.threads, got $purge_thread_count
+}
+
+--let $io_tids = `SELECT GROUP_CONCAT(THREAD_OS_ID) FROM performance_schema.threads WHERE NAME IN ('thread/innodb/io_ibuf_thread', 'thread/innodb/io_read_thread', 'thread/innodb/io_write_thread')`
+
+--let redo_pid = $redo_pid
+--let redo_tids = $io_tids
+--let redo_expected = $prio_io
+--perl
+  use strict;
+  use warnings;
+  my $pid = $ENV{redo_pid};
+  my @tids = split(/,/, $ENV{redo_tids});
+  my $expected = $ENV{redo_expected};
+
+  my $read_nice = sub {
+    my ($tid) = @_;
+    open(my $fh, "<", "/proc/$pid/task/$tid/stat")
+      or die("Unable to open /proc/$pid/task/$tid/stat: $!\n");
+    my $l = <$fh>;
+    close($fh);
+    my $rp = rindex($l, ")");
+    my @f = split(' ', substr($l, $rp + 1));
+    return $f[16];
+  };
+
+  my @mismatches;
+  for (my $attempt = 0; $attempt < 20; $attempt++) {
+    @mismatches = ();
+    foreach my $tid (@tids) {
+      my $actual = $read_nice->($tid);
+      push(@mismatches, "tid $tid: expected $expected, got $actual")
+        if ($actual != $expected);
+    }
+    last unless @mismatches;
+    select(undef, undef, undef, 0.1);
+  }
+
+  open(my $out, ">", $ENV{verify_tmp})
+    or die("Unable to write $ENV{verify_tmp}: $!\n");
+  print $out (@mismatches ? join('; ', @mismatches) : "ok");
+  close($out);
+EOF
+--let $redo_result = `SELECT LOAD_FILE('$verify_tmp')`
+--remove_file $verify_tmp
+if ($redo_result != 'ok') {
+  --echo scenario (1): I/O thread nice mismatch: $redo_result
+  --die scenario (1): I/O thread nice mismatch
+}
+
+--let $purge_tids = `SELECT GROUP_CONCAT(THREAD_OS_ID) FROM performance_schema.threads WHERE NAME IN ('thread/innodb/srv_purge_thread', 'thread/innodb/srv_worker_thread')`
+
+--let redo_pid = $redo_pid
+--let redo_tids = $purge_tids
+--let redo_expected = $prio_purge
+--perl
+  use strict;
+  use warnings;
+  my $pid = $ENV{redo_pid};
+  my @tids = split(/,/, $ENV{redo_tids});
+  my $expected = $ENV{redo_expected};
+
+  my $read_nice = sub {
+    my ($tid) = @_;
+    open(my $fh, "<", "/proc/$pid/task/$tid/stat")
+      or die("Unable to open /proc/$pid/task/$tid/stat: $!\n");
+    my $l = <$fh>;
+    close($fh);
+    my $rp = rindex($l, ")");
+    my @f = split(' ', substr($l, $rp + 1));
+    return $f[16];
+  };
+
+  my @mismatches;
+  for (my $attempt = 0; $attempt < 20; $attempt++) {
+    @mismatches = ();
+    foreach my $tid (@tids) {
+      my $actual = $read_nice->($tid);
+      push(@mismatches, "tid $tid: expected $expected, got $actual")
+        if ($actual != $expected);
+    }
+    last unless @mismatches;
+    select(undef, undef, undef, 0.1);
+  }
+
+  open(my $out, ">", $ENV{verify_tmp})
+    or die("Unable to write $ENV{verify_tmp}: $!\n");
+  print $out (@mismatches ? join('; ', @mismatches) : "ok");
+  close($out);
+EOF
+--let $redo_result = `SELECT LOAD_FILE('$verify_tmp')`
+--remove_file $verify_tmp
+if ($redo_result != 'ok') {
+  --echo scenario (1): purge thread nice mismatch: $redo_result
+  --die scenario (1): purge thread nice mismatch
+}
+
+--let $master_and_main_tids = `SELECT GROUP_CONCAT(THREAD_OS_ID) FROM performance_schema.threads WHERE NAME = 'thread/innodb/srv_master_thread'`
+--let $master_and_main_tids = $master_and_main_tids,$redo_pid
+
+--let redo_pid = $redo_pid
+--let redo_tids = $master_and_main_tids
+--let redo_expected = $redo_main_nice
+--perl
+  use strict;
+  use warnings;
+  my $pid = $ENV{redo_pid};
+  my @tids = split(/,/, $ENV{redo_tids});
+  my $expected = $ENV{redo_expected};
+
+  my $read_nice = sub {
+    my ($tid) = @_;
+    open(my $fh, "<", "/proc/$pid/task/$tid/stat")
+      or die("Unable to open /proc/$pid/task/$tid/stat: $!\n");
+    my $l = <$fh>;
+    close($fh);
+    my $rp = rindex($l, ")");
+    my @f = split(' ', substr($l, $rp + 1));
+    return $f[16];
+  };
+
+  my @mismatches;
+  for (my $attempt = 0; $attempt < 20; $attempt++) {
+    @mismatches = ();
+    foreach my $tid (@tids) {
+      my $actual = $read_nice->($tid);
+      push(@mismatches, "tid $tid: expected $expected, got $actual")
+        if ($actual != $expected);
+    }
+    last unless @mismatches;
+    select(undef, undef, undef, 0.1);
+  }
+
+  open(my $out, ">", $ENV{verify_tmp})
+    or die("Unable to write $ENV{verify_tmp}: $!\n");
+  print $out (@mismatches ? join('; ', @mismatches) : "ok");
+  close($out);
+EOF
+--let $redo_result = `SELECT LOAD_FILE('$verify_tmp')`
+--remove_file $verify_tmp
+if ($redo_result != 'ok') {
+  --echo scenario (1): master/main thread nice mismatch: $redo_result
+  --die scenario (1): master/main thread nice mismatch
+}
+
+--echo #
+--echo # Scenario (2): final restart back to default options - required
+--echo # for the mutation gate, which needs the next test in the
+--echo # queue to be able to reuse this server: while \$restart_opts is
+--echo # left set (a non-default my.cnf line still applied), MTR always
+--echo # restarts the next queued test, and check_testcase() also does
+--echo # not run for a server with \$restart_opts set. The bare "restart:"
+--echo # form (colon, nothing after) clears \$restart_opts entirely - see
+--echo # mysql-test-run.pl's parsing of the .expect file. Nothing is
+--echo # asserted here on purpose.
+--echo #
+--let $restart_parameters = restart:
+--source include/restart_mysqld.inc

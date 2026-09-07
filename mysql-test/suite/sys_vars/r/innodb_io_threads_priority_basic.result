@@ -1,0 +1,16 @@
+SELECT @@global.innodb_io_threads_priority;
+@@global.innodb_io_threads_priority
+0
+SET @@global.innodb_io_threads_priority = -15;
+ERROR HY000: Variable 'innodb_io_threads_priority' is a read only variable
+SET @@session.innodb_io_threads_priority = -15;
+ERROR HY000: Variable 'innodb_io_threads_priority' is a read only variable
+SET PERSIST innodb_io_threads_priority = -15;
+ERROR HY000: Variable 'innodb_io_threads_priority' is a read only variable
+SELECT @@global.innodb_io_threads_priority;
+@@global.innodb_io_threads_priority
+0
+SELECT VARIABLE_VALUE FROM performance_schema.global_variables
+WHERE VARIABLE_NAME='innodb_io_threads_priority';
+VARIABLE_VALUE
+0

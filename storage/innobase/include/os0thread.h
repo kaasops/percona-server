@@ -197,13 +197,10 @@ os_thread_get_curr_id().
 @return current thread identifier */
 [[nodiscard]] os_tid_t os_thread_get_tid() noexcept;
 
-/** Set relative scheduling priority for a given thread on
-Linux. Currently a no-op on other systems.
-@param[in]	thread_id	thread id
-@param[in]	relative_priority	system-specific priority value
-@return An actual thread priority after the update  */
-[[nodiscard]]
-unsigned long int os_thread_set_priority(
-    os_tid_t thread_id, unsigned long int relative_priority) noexcept;
+/** Applies a nice value to the given thread. Linux only, a no-op elsewhere.
+Failure is reported with ib::warn() and leaves the priority unchanged.
+@param[in] thread_id   thread id (os_thread_get_tid())
+@param[in] nice_value  target nice, -20..19 (including 0) */
+void os_thread_set_priority(os_tid_t thread_id, int nice_value) noexcept;
 
 #endif /* !os0thread_h */

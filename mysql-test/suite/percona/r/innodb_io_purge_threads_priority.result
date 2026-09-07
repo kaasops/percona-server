@@ -1,0 +1,38 @@
+#
+# Scenario (0): negative control - both priority options are
+# omitted, so no "Setting thread ... nice to" line is
+# printed at all, and every I/O, purge and master thread keeps
+# whatever nice value it inherited from the process (compared
+# against the observed nice of the main thread, not a hardcoded
+# 0 - MTR itself may not start mysqld at nice 0).
+# --innodb-purge-threads=2 forces a purge worker thread to exist:
+# the default is 1 purge thread on <=16 CPU hosts, which is only
+# the coordinator (srv_start_purge_threads() creates worker
+# threads for i=1..purge_threads-1, srv0start.cc).
+#
+# restart: --innodb-purge-threads=2
+include/assert_grep.inc [scenario (0), step 0: area after this restart contains a completed start]
+include/assert_grep.inc [scenario (0): no thread nice-setting attempt while both options are omitted]
+#
+# Scenario (1): both sysvars set to distinct positive values (no
+# privilege needed to raise nice) - every I/O thread gets the I/O
+# nice, every purge thread (coordinator and workers) gets the
+# purge nice, and the master and main threads stay at the
+# baseline recorded in scenario (0). Distinct values so a bug
+# reading the wrong sysvar in either group would be caught; both
+# are above that baseline, since raising a nice needs no privilege
+# while lowering one does.
+#
+# restart
+#
+# Scenario (2): final restart back to default options - required
+# for the mutation gate, which needs the next test in the
+# queue to be able to reuse this server: while $restart_opts is
+# left set (a non-default my.cnf line still applied), MTR always
+# restarts the next queued test, and check_testcase() also does
+# not run for a server with $restart_opts set. The bare "restart:"
+# form (colon, nothing after) clears $restart_opts entirely - see
+# mysql-test-run.pl's parsing of the .expect file. Nothing is
+# asserted here on purpose.
+#
+# restart:
