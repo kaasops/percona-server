@@ -1,0 +1,97 @@
+# An omitted option inherits the process nice; a configured one applies its
+# own value. Every value is derived from the nice the server actually runs at
+# and only ever raises it, so no privilege is needed and the test holds at any
+# process nice - run it repeatedly at different ones (0, 5, 0 and so on).
+--source include/linux.inc
+--source include/have_perfschema.inc
+--source include/have_binlog_format_row.inc
+--disable_query_log
+--disable_result_log
+--let $include_silent=1
+--let $rpl_connection_silent=1
+--source include/rpl/init_source_replica.inc
+--source include/rpl/connection_replica.inc
+--let $rpl_server_number=2
+--let $rpl_omit_print_server_parameters=1
+# No overrides.
+--let $rpl_server_parameters=--skip-replica-start --replica-parallel-workers=2 --innodb-purge-threads=2
+--source include/rpl/restart_server.inc
+--source include/rpl/connection_replica.inc
+--source include/rpl/start_replica.inc
+--let $nice_expected=inherit,inherit,inherit,inherit,inherit,inherit,inherit
+--source include/check_thread_nice.inc
+# All seven configured; the redo pair deliberately violates the recommended
+# ordering, which warns but must not change either value.
+CALL mtr.add_suppression("redo log thread priority");
+if (`SELECT $process_nice + 7 > 19`) {
+  --skip process nice too high: baseline + 7 exceeds the option range (-20..19)
+}
+--let $p1=`SELECT $process_nice + 1`
+--let $p2=`SELECT $process_nice + 2`
+--let $p3=`SELECT $process_nice + 3`
+--let $p4=`SELECT $process_nice + 4`
+--let $p5=`SELECT $process_nice + 5`
+--let $p6=`SELECT $process_nice + 6`
+--let $p7=`SELECT $process_nice + 7`
+--let $rpl_server_parameters=--skip-replica-start --replica-parallel-workers=2 --innodb-purge-threads=2 --innodb-log-writer-threads-priority=$p1 --innodb-log-writer-threads-checkpoint-priority=$p2 --innodb-io-threads-priority=$p3 --innodb-purge-threads-priority=$p4 --replica-io-thread-priority=$p5 --replica-coordinator-thread-priority=$p6 --replica-worker-threads-priority=$p7
+--source include/rpl/restart_server.inc
+--source include/rpl/connection_replica.inc
+--source include/rpl/start_replica.inc
+--let $nice_expected=$p1,$p2,$p3,$p4,$p5,$p6,$p7
+--source include/check_thread_nice.inc
+# Partial overrides leave other groups inherited.
+--let $rpl_server_parameters=--skip-replica-start --replica-parallel-workers=2 --innodb-purge-threads=2 --innodb-log-writer-threads-priority=$p1 --innodb-io-threads-priority=$p3 --replica-io-thread-priority=$p5
+--source include/rpl/restart_server.inc
+--source include/rpl/connection_replica.inc
+--source include/rpl/start_replica.inc
+--let $nice_expected=$p1,inherit,$p3,inherit,$p5,inherit,inherit
+--source include/check_thread_nice.inc
+# Distinct values detect cross-wired options.
+--let $rpl_server_parameters=--skip-replica-start --replica-parallel-workers=2 --innodb-purge-threads=2 --innodb-log-writer-threads-priority=$p2 --innodb-log-writer-threads-checkpoint-priority=$p1 --innodb-io-threads-priority=$p3 --innodb-purge-threads-priority=$p4 --replica-io-thread-priority=$p5 --replica-coordinator-thread-priority=$p6 --replica-worker-threads-priority=$p7
+--source include/rpl/restart_server.inc
+--source include/rpl/connection_replica.inc
+--source include/rpl/start_replica.inc
+--let $nice_expected=$p2,$p1,$p3,$p4,$p5,$p6,$p7
+--source include/check_thread_nice.inc
+# Cached flags survive replication thread recreation.
+--source include/rpl/stop_replica.inc
+--source include/rpl/start_replica.inc
+--source include/check_thread_nice.inc
+# A persisted value counts as configured after restart.
+--eval SET PERSIST_ONLY innodb_log_writer_threads_priority=$p1
+--eval SET PERSIST_ONLY innodb_log_writer_threads_checkpoint_priority=$p2
+--eval SET PERSIST_ONLY innodb_io_threads_priority=$p3
+--eval SET PERSIST_ONLY innodb_purge_threads_priority=$p4
+--eval SET PERSIST_ONLY replica_io_thread_priority=$p5
+--eval SET PERSIST_ONLY replica_coordinator_thread_priority=$p6
+--eval SET PERSIST_ONLY replica_worker_threads_priority=$p7
+--let $rpl_server_parameters=--skip-replica-start --replica-parallel-workers=2 --innodb-purge-threads=2
+--source include/rpl/restart_server.inc
+--source include/rpl/connection_replica.inc
+--source include/rpl/start_replica.inc
+--let $nice_expected=$p1,$p2,$p3,$p4,$p5,$p6,$p7
+--source include/check_thread_nice.inc
+RESET PERSIST innodb_log_writer_threads_priority;
+RESET PERSIST innodb_log_writer_threads_checkpoint_priority;
+RESET PERSIST innodb_io_threads_priority;
+RESET PERSIST innodb_purge_threads_priority;
+RESET PERSIST replica_io_thread_priority;
+RESET PERSIST replica_coordinator_thread_priority;
+RESET PERSIST replica_worker_threads_priority;
+--let $rpl_server_parameters=--skip-replica-start --replica-parallel-workers=2 --innodb-purge-threads=2
+--source include/rpl/restart_server.inc
+--source include/rpl/connection_replica.inc
+--source include/rpl/start_replica.inc
+--let $nice_expected=inherit,inherit,inherit,inherit,inherit,inherit,inherit
+--source include/check_thread_nice.inc
+--source include/rpl/stop_replica.inc
+--let $rpl_server_parameters=
+--source include/rpl/restart_server.inc
+--source include/rpl/connection_replica.inc
+--source include/rpl/start_replica.inc
+--source include/rpl/deinit.inc
+--let $rpl_connection_silent=0
+--let $include_silent=0
+--enable_result_log
+--enable_query_log
+--echo All seven thread priority options verified.
