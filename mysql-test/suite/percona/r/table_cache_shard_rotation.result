@@ -70,3 +70,11 @@ a	b
 FLUSH TABLES;
 SET SESSION debug = '-d,table_cache_rotate_shard';
 DROP TABLE child, parent, t5, t2, t1;
+#
+# 7. Table_cache_manager::init_cpu_shard_map() logs exactly one
+#    ER_TABLE_CACHE_SHARD_MAP line at this server's own startup
+#    (this test's -master.opt forces a fresh start with a known
+#    table_open_cache_instances, so "starting as process" scopes the
+#    grep to that one boot and not to an earlier test's server).
+#
+include/assert_grep.inc [table cache sharding key line is logged exactly once at startup]

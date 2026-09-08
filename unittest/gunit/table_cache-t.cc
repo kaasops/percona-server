@@ -23,6 +23,10 @@
 
 #include <gtest/gtest.h>
 #include <sys/types.h>
+#include <unistd.h>
+
+#include <algorithm>
+#include <vector>
 
 #include "lex_string.h"
 #include "my_config.h"  // CPU_PAGE_SIZE
@@ -32,6 +36,10 @@
 #include "sql/table_cache.h"
 #include "storage/example/ha_example.h"
 #include "unittest/gunit/test_utils.h"
+
+#ifdef __linux__
+#include <sched.h>
+#endif
 
 /*
   We need example_hton to be able short-cut creation of example
@@ -1871,5 +1879,333 @@ TEST(TableCachePerInstanceLimitTest, GuardsAgainstZeroInstances) {
 TEST(TableCachePerInstanceLimitTest, PassesThroughWhenNotTruncatedToZero) {
   EXPECT_EQ(2U, table_cache_per_instance_limit(128, 64));
 }
+
+/*
+  Coverage for Table_cache_manager::build_cpu_shard_ordinals() and
+  summarize_shard_map() - both pure functions, exercised with synthetic
+  Sql_machine_topology snapshots rather than sql_machine_topology()/real
+  sysfs, so results do not depend on this host's actual topology.
+*/
+
+namespace {
+
+/**
+  Build a synthetic topology of node_count NUMA nodes, each with
+  cores_per_node physical cores of threads_per_core HT siblings each -
+  one socket per node (id-aligned), so tests only need to reason about
+  nodes. Logical CPU ids are assigned sequentially, node by node.
+*/
+Sql_machine_topology build_synthetic_topology(uint32_t node_count,
+                                              uint32_t cores_per_node,
+                                              uint32_t threads_per_core) {
+  Sql_machine_topology topology;
+
+  topology.cpu.initialized = true;
+  topology.cpu.smt_enabled = threads_per_core > 1;
+  topology.cpu.threads_per_core = threads_per_core;
+  topology.numa.initialized = true;
+  topology.numa.nodes_count = node_count;
+
+  uint32_t next_cpu = 0;
+  for (uint32_t node = 0; node < node_count; ++node) {
+    Sql_cpu_socket socket;
+    socket.socket_id = node;
+
+    Sql_numa_node numa_node;
+    numa_node.node_id = node;
+
+    for (uint32_t core = 0; core < cores_per_node; ++core) {
+      Sql_cpu_core cpu_core;
+      cpu_core.core_id = core;
+
+      for (uint32_t t = 0; t < threads_per_core; ++t) {
+        cpu_core.logical_cpu_ids.push_back(next_cpu);
+        numa_node.logical_cpu_ids.push_back(next_cpu);
+
+        if (topology.numa.cpu_to_node.size() <= next_cpu) {
+          topology.numa.cpu_to_node.resize(next_cpu + 1, -1);
+        }
+        topology.numa.cpu_to_node[next_cpu] = static_cast<int32_t>(node);
+
+        ++next_cpu;
+      }
+
+      socket.cores.push_back(cpu_core);
+    }
+
+    topology.cpu.sockets.push_back(socket);
+    topology.numa.nodes.push_back(numa_node);
+  }
+
+  topology.cpu.sockets_count = node_count;
+  topology.cpu.physical_cores = node_count * cores_per_node;
+  topology.cpu.logical_cpus = next_cpu;
+
+  return topology;
+}
+
+}  // namespace
+
+TEST(TableCacheCpuShardOrdinalsTest, EmptyWhenCpuTopologyUnavailable) {
+  Sql_machine_topology topology;  // cpu.initialized == false by default.
+  EXPECT_TRUE(
+      Table_cache_manager::build_cpu_shard_ordinals(topology).empty());
+}
+
+TEST(TableCacheCpuShardOrdinalsTest, HtSiblingsShareOneOrdinal) {
+  // 2 nodes x 2 cores x 2 HT siblings.
+  const Sql_machine_topology topology = build_synthetic_topology(2, 2, 2);
+  const std::vector<int> ordinals =
+      Table_cache_manager::build_cpu_shard_ordinals(topology);
+
+  ASSERT_EQ(8U, ordinals.size());
+  // cpu 0,1 are the two HT siblings of node 0's first core.
+  EXPECT_EQ(ordinals[0], ordinals[1]);
+  // cpu 2,3 are node 0's second core - a different physical core, so a
+  // different ordinal from the first core's.
+  EXPECT_EQ(ordinals[2], ordinals[3]);
+  EXPECT_NE(ordinals[0], ordinals[2]);
+}
+
+TEST(TableCacheCpuShardOrdinalsTest, NodeConfinementHoldsWhenInstancesMultipleOfNodes) {
+  // 2 nodes x 2 cores x 2 HT, instances = 2 (multiple of N = 2 nodes).
+  const Sql_machine_topology topology = build_synthetic_topology(2, 2, 2);
+  const std::vector<int> ordinals =
+      Table_cache_manager::build_cpu_shard_ordinals(topology);
+  const ulong instances = 2;
+
+  // Every logical CPU's shard (ordinal % instances) must equal the dense
+  // index of the NUMA node it belongs to (cpu_to_node here, since node
+  // ids are 0/1 and already dense).
+  for (uint32_t cpu_id = 0; cpu_id < ordinals.size(); ++cpu_id) {
+    ASSERT_GE(ordinals[cpu_id], 0) << "cpu_id=" << cpu_id;
+    const uint32_t shard = static_cast<uint32_t>(ordinals[cpu_id]) % instances;
+    const int32_t node = sql_numa_cpu_to_node(topology.numa, cpu_id);
+    ASSERT_GE(node, 0) << "cpu_id=" << cpu_id;
+    EXPECT_EQ(static_cast<uint32_t>(node), shard) << "cpu_id=" << cpu_id;
+  }
+}
+
+TEST(TableCacheCpuShardOrdinalsTest,
+    NodeConfinementHoldsForLargerInstanceCountsAsWell) {
+  // 2 nodes x 4 cores x 2 HT = 16 logical CPUs, N = 2 nodes; instances
+  // 4 and 8 are both multiples of N, but now strictly greater than N -
+  // the invariant that actually holds is shard % N == node (proven for
+  // any instances that's a multiple of N: ordinal = rank*N + node, so
+  // ordinal mod (k*N) = (rank mod k)*N + node, whose value mod N is
+  // node), not shard == node - that equality is a coincidence of the
+  // instances == N case already covered by the sibling test above.
+  const Sql_machine_topology topology = build_synthetic_topology(2, 4, 2);
+  const std::vector<int> ordinals =
+      Table_cache_manager::build_cpu_shard_ordinals(topology);
+  const uint32_t node_count = 2;
+
+  for (ulong instances : {4UL, 8UL}) {
+    for (uint32_t cpu_id = 0; cpu_id < ordinals.size(); ++cpu_id) {
+      const uint32_t shard =
+          static_cast<uint32_t>(ordinals[cpu_id]) % instances;
+      const int32_t node = sql_numa_cpu_to_node(topology.numa, cpu_id);
+      ASSERT_GE(node, 0) << "cpu_id=" << cpu_id;
+      EXPECT_EQ(static_cast<uint32_t>(node), shard % node_count)
+          << "cpu_id=" << cpu_id << " instances=" << instances;
+    }
+  }
+}
+
+TEST(TableCacheCpuShardOrdinalsTest, DegeneratesToSocketMajorWithoutMultiNodeNuma) {
+  // A single-node snapshot (a realistic shape - single-socket/single-node
+  // hosts are common) must not attempt node-minor numbering - it falls
+  // back to a fixed socket-major sequential core index.
+  Sql_machine_topology topology = build_synthetic_topology(1, 2, 2);
+  const std::vector<int> ordinals =
+      Table_cache_manager::build_cpu_shard_ordinals(topology);
+
+  ASSERT_EQ(4U, ordinals.size());
+  EXPECT_EQ(0, ordinals[0]);
+  EXPECT_EQ(0, ordinals[1]);
+  EXPECT_EQ(1, ordinals[2]);
+  EXPECT_EQ(1, ordinals[3]);
+}
+
+TEST(TableCacheShardMapSummaryTest, ReportsCpuKeyAndConfinementWhenMultiple) {
+  const Sql_machine_topology topology = build_synthetic_topology(2, 2, 2);
+  const std::vector<int> ordinals =
+      Table_cache_manager::build_cpu_shard_ordinals(topology);
+
+  const Shard_map_summary summary =
+      Table_cache_manager::summarize_shard_map(ordinals, topology.numa, 2);
+
+  EXPECT_TRUE(summary.key_is_cpu);
+  EXPECT_EQ(2U, summary.shards);
+  EXPECT_EQ(4U, summary.phys_cores);  // 2 nodes x 2 cores.
+  EXPECT_EQ(2U, summary.nodes_with_cpus);
+  EXPECT_TRUE(summary.node_confined);
+}
+
+TEST(TableCacheShardMapSummaryTest, NotConfinedWhenInstancesNotMultipleOfNodes) {
+  const Sql_machine_topology topology = build_synthetic_topology(2, 2, 2);
+  const std::vector<int> ordinals =
+      Table_cache_manager::build_cpu_shard_ordinals(topology);
+
+  // 3 is not a multiple of N = 2 nodes: the confinement property is not
+  // claimed for this combination (see build_cpu_shard_ordinals()'s
+  // contract) and summarize_shard_map() must say so.
+  const Shard_map_summary summary =
+      Table_cache_manager::summarize_shard_map(ordinals, topology.numa, 3);
+
+  EXPECT_FALSE(summary.node_confined);
+}
+
+TEST(TableCacheShardMapSummaryTest, KeyIsNotCpuWhenMapIsEmpty) {
+  const Sql_numa_snapshot empty_numa;
+  const Shard_map_summary summary =
+      Table_cache_manager::summarize_shard_map({}, empty_numa, 16);
+
+  EXPECT_FALSE(summary.key_is_cpu);
+  EXPECT_EQ(0U, summary.phys_cores);
+}
+
+/*
+  Coverage for Table_cache_manager::resolve_shard() - all four branches.
+*/
+
+TEST(TableCacheResolveShardTest, BranchA_ReusesCachedShardWithoutMigration) {
+  const std::vector<int> ordinals = {5, 5, 7, 7};
+  const Shard_resolution r =
+      Table_cache_manager::resolve_shard(/*cpu_id=*/1, /*last_cpu_id=*/1,
+                                         /*cached_shard=*/1, ordinals,
+                                         /*instances=*/4, /*tid=*/999);
+  EXPECT_EQ(1U, r.shard);
+  EXPECT_FALSE(r.cache_result);
+}
+
+TEST(TableCacheResolveShardTest, BranchB_ResolvesFreshShardFromOrdinals) {
+  const std::vector<int> ordinals = {5, 5, 7, 7};
+  // cpu_id (2) != last_cpu_id (1): migration - re-derive from the map.
+  const Shard_resolution r =
+      Table_cache_manager::resolve_shard(/*cpu_id=*/2, /*last_cpu_id=*/1,
+                                         /*cached_shard=*/1, ordinals,
+                                         /*instances=*/4, /*tid=*/999);
+  EXPECT_EQ(7U % 4U, r.shard);
+  EXPECT_TRUE(r.cache_result);
+}
+
+TEST(TableCacheResolveShardTest, BranchC_KeepsLastKnownShardWhenCpuUnresolvable) {
+  const std::vector<int> ordinals = {5, 5, 7, 7};
+  // cpu_id out of range for ordinals: unresolvable, but cached_shard (2)
+  // is still a valid index.
+  const Shard_resolution r =
+      Table_cache_manager::resolve_shard(/*cpu_id=*/99, /*last_cpu_id=*/1,
+                                         /*cached_shard=*/2, ordinals,
+                                         /*instances=*/4, /*tid=*/999);
+  EXPECT_EQ(2U, r.shard);
+  EXPECT_FALSE(r.cache_result);
+}
+
+TEST(TableCacheResolveShardTest, BranchD_LegacyFallbackDoesNotCacheResult) {
+  // Neither the current CPU (negative: unresolvable) nor a cached shard
+  // (-1: unknown) is available - legacy thread_id() modulo instances,
+  // and the result must not be flagged for memoization (this is the
+  // branch gunit relies on staying non-memoizing, see class-level
+  // comment on cache_index_for_thread()).
+  const Shard_resolution r =
+      Table_cache_manager::resolve_shard(/*cpu_id=*/-1, /*last_cpu_id=*/-1,
+                                         /*cached_shard=*/-1, /*ordinals=*/{},
+                                         /*instances=*/4, /*tid=*/999);
+  EXPECT_EQ(999U % 4U, r.shard);
+  EXPECT_FALSE(r.cache_result);
+}
+
+/*
+  Connection-level coverage for the shim -> cache_index_for_thread() ->
+  resolve_shard() path, using
+  Table_cache_manager::set_cpu_shard_ordinals_for_tests() as the only
+  test seam: it replaces the process-wide ordinal map, so the test gets a
+  predictable shard on any host without needing to control which core it
+  actually runs on. A reimplementation of cache_index_for_thread() that
+  ignores the map and falls back to tid % instances would give the SAME
+  shard on both halves of this test regardless of which map is
+  installed - the pairing (0 then 1) is what catches exactly that
+  regression.
+*/
+#ifdef __linux__
+
+class TableCacheCpuShardConnectionTest : public TableCacheBasicTest {
+ protected:
+  void SetUp() override {
+    TableCacheBasicTest::SetUp();
+    saved_table_cache_instances_ = table_cache_instances;
+  }
+
+  // Runs on every exit path from the test body - normal return, an
+  // ASSERT_*/FAIL failure, or GTEST_SKIP() - not just a clean fall-through,
+  // which a plain save/restore pair inside the test body would miss.
+  // merge_large_tests-t runs every SERVER_TESTS fixture in one process
+  // (unittest/gunit/CMakeLists.txt): a synthetic map or a changed
+  // table_cache_instances left behind here would make neighboring
+  // fixtures' (dd_cache-t, mdl_sync-t, locking_service-t) results depend
+  // on run order.
+  void TearDown() override {
+    table_cache_instances = saved_table_cache_instances_;
+    Table_cache_manager::set_cpu_shard_ordinals_for_tests({});
+    TableCacheBasicTest::TearDown();
+  }
+
+ private:
+  ulong saved_table_cache_instances_{0};
+};
+
+TEST_F(TableCacheCpuShardConnectionTest, ConnectionShardFollowsInstalledOrdinalMap) {
+  THD *thd = get_thd(0);
+  // TableCacheBasicTest::SetUp() runs MAX_THREADS fixture THDs' own
+  // store_globals() in a loop, so current_thd is left pointing at the
+  // last one - re-establish it for thd here, since
+  // cache_index_for_thread()'s memoizing write asserts thd == current_thd.
+  thd->store_globals();
+
+  // Restored by TearDown() regardless of how this test body exits.
+  table_cache_instances = 2;
+
+  // Probe the environment directly (not through the resolver) so a
+  // negative result can be told apart from a resolver bug below.
+  const int probe_cpu_id = sched_getcpu();
+  if (probe_cpu_id < 0) {
+    GTEST_SKIP() << "sched_getcpu() did not resolve a CPU id in this "
+                    "environment - not a resolver defect";
+  }
+
+  // A generous, uniform map: every plausible logical CPU id maps to
+  // ordinal 0, so the result does not depend on which core this process
+  // actually lands on. sysconf(_SC_NPROCESSORS_CONF) counts configured
+  // (not just online) CPUs; doubled for headroom.
+  const long nproc = sysconf(_SC_NPROCESSORS_CONF);
+  const size_t map_size = std::max<size_t>(
+      1024, static_cast<size_t>(nproc > 0 ? nproc : 0) * 2);
+  Table_cache_manager::set_cpu_shard_ordinals_for_tests(
+      std::vector<int>(map_size, 0));
+
+  Table_cache *cache = table_cache_manager.get_cache(thd);
+  EXPECT_EQ(0U, table_cache_manager.cache_index(cache));
+
+  // The environment resolved a real CPU id (probe_cpu_id >= 0) and the
+  // installed map comfortably covers it - if last_cpu_id() is still
+  // unset, resolve_shard() took branch (d) instead of (b), which is a
+  // resolver defect, not an environment limitation.
+  ASSERT_GE(thd->last_cpu_id(), 0)
+      << "resolve_shard() did not read the installed ordinal map even "
+         "though sched_getcpu() resolved cpu_id="
+      << probe_cpu_id << " and the map covers " << map_size << " ids";
+
+  thd->set_cpu_shard(-1);
+  thd->set_last_cpu_id(-1);
+
+  Table_cache_manager::set_cpu_shard_ordinals_for_tests(
+      std::vector<int>(map_size, 1));
+
+  Table_cache *cache_2 = table_cache_manager.get_cache(thd);
+  EXPECT_EQ(1U, table_cache_manager.cache_index(cache_2));
+}
+
+#endif  // __linux__
 
 }  // namespace table_cache_unittest

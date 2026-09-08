@@ -145,6 +145,7 @@ SELECT prio,error_code,subsystem,data
 # MY-048203: ER_IB_MSG_BUFFER_POOL_INIT_COMPLETED, buffer pool init time/speed, printed unconditionally at startup (variable part: timing)
 # MY-048206: ER_TABLE_CACHE_INSTANCES_CAPPED, printed whenever the table cache instance cap engages (requested > physical cores)
 # MY-048207: ER_TABLE_CACHE_SEGMENTS, table cache segment allocation summary, printed unconditionally at startup
+# MY-048212: ER_TABLE_CACHE_SHARD_MAP, table cache sharding key/shard count, printed unconditionally at startup
 # MY-048202 (ER_IB_MSG_BP_INSTANCES_CAPPED) is deliberately NOT filtered: the buffer
 # pool instance cap cannot engage under this test's configuration (24M pool, see
 # mysql-test/include/default_mysqld.cnf: below 1G the server forces
@@ -167,7 +168,7 @@ SELECT prio,error_code,subsystem
                          "MY-013932", "MY-010101", "MY-010099", "MY-011070",
                          "MY-011872", "MY-011874", "MY-015140",
                          "MY-048201", "MY-048203", "MY-048206", "MY-048207",
-                         "MY-048209", "MY-048210")
+                         "MY-048209", "MY-048210", "MY-048212")
  ORDER BY logged, error_code;
 
 --echo
@@ -200,6 +201,7 @@ SELECT prio,error_code,subsystem
 # MY-048207: ER_TABLE_CACHE_SEGMENTS (variable part: segment count/bytes)
 # MY-048209: ER_IB_MSG_TRX_SYS_NUMA_INTERLEAVE (variable part: node count/size)
 # MY-048210: ER_IB_MSG_BP_SOCKET_DISTRIBUTION (variable part: socket/instance map)
+# MY-048212: ER_TABLE_CACHE_SHARD_MAP (variable part: shard/core/node counts)
 SELECT prio,error_code,subsystem,data
   FROM performance_schema.error_log
  WHERE logged>=@startup
@@ -211,7 +213,7 @@ SELECT prio,error_code,subsystem,data
                          "MY-013930", "MY-000068", "MY-015015", "MY-010101",
                          "MY-010099", "MY-011070", "MY-048201", "MY-048203",
                          "MY-048206", "MY-048207", "MY-048209",
-                         "MY-048210")
+                         "MY-048210", "MY-048212")
  ORDER BY logged;
 
 --echo

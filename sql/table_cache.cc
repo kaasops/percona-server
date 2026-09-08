@@ -47,6 +47,10 @@
 #include "thr_lock.h"
 #include "thr_mutex.h"
 
+#ifdef __linux__
+#include <sched.h>
+#endif
+
 /**
   Container for all table cache instances in the system.
 */
@@ -369,6 +373,240 @@ void Table_cache_manager::resolve_instance_count() {
       table_cache_per_instance_limit(table_cache_triggers, effective);
 }
 
+namespace {
+
+/**
+  Process-wide CPU-shard ordinal map, indexed by logical CPU id. Empty
+  until Table_cache_manager::init_cpu_shard_map() runs (production: once,
+  from init_server_components(), after table_cache_instances is final) or
+  a test calls Table_cache_manager::set_cpu_shard_ordinals_for_tests() -
+  both write through this same static, so cache_index_for_thread() never
+  reads a different copy than whichever of the two last populated it.
+  Empty in every gunit fixture that never calls either (the map stays
+  empty, so Table_cache_manager::resolve_shard() always takes branch (d)
+  there - see that function's contract).
+*/
+std::vector<int> cpu_shard_ordinals;
+
+const std::vector<int> &shard_ordinals() noexcept { return cpu_shard_ordinals; }
+
+/* sched_getcpu() is only declared/implemented for Linux targets in this
+tree (HAVE_SCHED_GETCPU is set only in other subsystems' own directory
+scopes - InnoDB's innodb.cmake, RocksDB's build macro - never for
+sql_main) - this is a platform guard, not a build-profile one, so
+current_cpu_id() takes the same shape on debug and release. */
+#ifdef __linux__
+int current_cpu_id() noexcept { return sched_getcpu(); }
+#else
+int current_cpu_id() noexcept { return -1; }
+#endif
+
+}  // namespace
+
+/**
+  @sa Table_cache_manager::build_cpu_shard_ordinals() in table_cache.h for
+  the contract.
+*/
+std::vector<int> Table_cache_manager::build_cpu_shard_ordinals(
+    const Sql_machine_topology &topology) {
+  std::vector<int> ordinals;
+
+  const Sql_cpu_topology &cpu = topology.cpu;
+  if (!cpu.initialized) return ordinals;
+
+  int max_cpu_id = -1;
+  for (const auto &socket : cpu.sockets) {
+    for (const auto &core : socket.cores) {
+      for (uint32_t cpu_id : core.logical_cpu_ids) {
+        if (static_cast<int>(cpu_id) > max_cpu_id)
+          max_cpu_id = static_cast<int>(cpu_id);
+      }
+    }
+  }
+  if (max_cpu_id < 0) return ordinals;
+
+  ordinals.assign(static_cast<size_t>(max_cpu_id) + 1, -1);
+
+  /* Nodes that still have CPUs after the affinity filter, in ascending
+  node_id order - this list doubles as the node -> dense-index map used
+  below. Sorted explicitly rather than trusting snapshot order: nothing
+  in the Sql_numa_snapshot contract promises online_nodes is sorted. */
+  std::vector<uint32_t> node_ids_with_cpus;
+  if (topology.numa.initialized) {
+    for (const auto &node : topology.numa.nodes) {
+      if (!node.logical_cpu_ids.empty())
+        node_ids_with_cpus.push_back(node.node_id);
+    }
+    std::sort(node_ids_with_cpus.begin(), node_ids_with_cpus.end());
+  }
+  const size_t node_count = node_ids_with_cpus.size();
+
+  if (node_count <= 1) {
+    /* No usable multi-node NUMA snapshot: degenerate to a fixed
+    socket-major numbering - sequential physical-core index, sockets and
+    cores visited in the ascending id order they are already stored in
+    (see build_cpu_topology_from_sysfs(): sockets_map is a std::map, so
+    both the socket and the per-socket core iteration below are already
+    ascending by id). */
+    int core_index = 0;
+    for (const auto &socket : cpu.sockets) {
+      for (const auto &core : socket.cores) {
+        for (uint32_t cpu_id : core.logical_cpu_ids) {
+          ordinals[cpu_id] = core_index;
+        }
+        ++core_index;
+      }
+    }
+    return ordinals;
+  }
+
+  /* Node-minor (interleaved) numbering: ordinal = core_rank_in_node * N +
+  dense_node_index. Sockets/cores are visited in ascending id order (see
+  above), and a stable per-node counter over that single sweep yields
+  per-node core ranks in that same ascending order - this is what the
+  "cores in ascending id order" part of the contract reduces to, without
+  needing a single global scalar id for a physical core. */
+  std::vector<uint32_t> rank_in_node(node_count, 0);
+  for (const auto &socket : cpu.sockets) {
+    for (const auto &core : socket.cores) {
+      if (core.logical_cpu_ids.empty()) continue;
+
+      /* A physical core's HT siblings always share one NUMA node, so any
+      representative logical CPU id resolves the whole core's node. */
+      const uint32_t representative_cpu = core.logical_cpu_ids.front();
+      const int32_t node_id =
+          sql_numa_cpu_to_node(topology.numa, representative_cpu);
+      if (node_id < 0) continue;  // Core not covered by the NUMA snapshot.
+
+      const auto node_it = std::lower_bound(
+          node_ids_with_cpus.begin(), node_ids_with_cpus.end(),
+          static_cast<uint32_t>(node_id));
+      if (node_it == node_ids_with_cpus.end() ||
+          *node_it != static_cast<uint32_t>(node_id)) {
+        continue;  // Node had no CPUs left after the affinity filter.
+      }
+
+      const size_t dense_node_index =
+          static_cast<size_t>(node_it - node_ids_with_cpus.begin());
+      const uint32_t ordinal =
+          rank_in_node[dense_node_index] * static_cast<uint32_t>(node_count) +
+          static_cast<uint32_t>(dense_node_index);
+      ++rank_in_node[dense_node_index];
+
+      for (uint32_t cpu_id : core.logical_cpu_ids) {
+        ordinals[cpu_id] = static_cast<int>(ordinal);
+      }
+    }
+  }
+
+  return ordinals;
+}
+
+/**
+  @sa Table_cache_manager::summarize_shard_map() in table_cache.h for the
+  contract.
+*/
+Shard_map_summary Table_cache_manager::summarize_shard_map(
+    const std::vector<int> &ordinals, const Sql_numa_snapshot &numa,
+    ulong instances) {
+  Shard_map_summary summary{};
+  summary.key_is_cpu = !ordinals.empty();
+  summary.shards = instances;
+
+  /* Distinct ordinal values, not the count of populated entries: HT
+  siblings of the same core share an ordinal, so counting entries would
+  overcount physical cores by the SMT factor. */
+  std::vector<int> distinct_ordinals;
+  distinct_ordinals.reserve(ordinals.size());
+  for (int ordinal : ordinals) {
+    if (ordinal >= 0) distinct_ordinals.push_back(ordinal);
+  }
+  std::sort(distinct_ordinals.begin(), distinct_ordinals.end());
+  distinct_ordinals.erase(
+      std::unique(distinct_ordinals.begin(), distinct_ordinals.end()),
+      distinct_ordinals.end());
+  summary.phys_cores = distinct_ordinals.size();
+
+  ulong nodes_with_cpus = 0;
+  if (numa.initialized) {
+    for (const auto &node : numa.nodes) {
+      if (!node.logical_cpu_ids.empty()) ++nodes_with_cpus;
+    }
+  }
+  summary.nodes_with_cpus = nodes_with_cpus;
+
+  summary.node_confined = summary.key_is_cpu && nodes_with_cpus > 1 &&
+                          (instances % nodes_with_cpus == 0);
+
+  return summary;
+}
+
+/**
+  @sa Table_cache_manager::resolve_shard() in table_cache.h for the
+  contract.
+*/
+Shard_resolution Table_cache_manager::resolve_shard(
+    int cpu_id, int last_cpu_id, int cached_shard,
+    const std::vector<int> &ordinals, ulong instances, my_thread_id tid) {
+  const bool cached_valid =
+      cached_shard >= 0 && static_cast<ulong>(cached_shard) < instances;
+
+  // (a) No migration since the last resolution: the cached shard is still
+  // current - reuse it, no write.
+  if (cpu_id >= 0 && cached_valid && cpu_id == last_cpu_id) {
+    return {static_cast<uint>(cached_shard), false};
+  }
+
+  // (b) Current CPU resolves through the ordinal map: the only branch
+  // that produces a fresh (cpu_id, shard) pair worth memoizing.
+  if (cpu_id >= 0 && static_cast<size_t>(cpu_id) < ordinals.size() &&
+      ordinals[cpu_id] >= 0) {
+    const uint shard = static_cast<uint>(
+        static_cast<ulong>(ordinals[cpu_id]) % instances);
+    return {shard, true};
+  }
+
+  // (c) Current CPU unresolvable (non-Linux, or a CPU absent from the
+  // topology snapshot), but the last known shard is still a valid index:
+  // prefer it over flapping to the thread_id()-based mapping.
+  if (cached_valid) {
+    return {static_cast<uint>(cached_shard), false};
+  }
+
+  // (d) Legacy fallback: neither the current CPU nor a cached shard is
+  // available. Deliberately not memoized - in gunit, where ordinals is
+  // always empty (init_cpu_shard_map() never runs there), this is the
+  // only branch ever taken, so its non-memoization is what keeps every
+  // existing gunit TABLE-cache test's behavior unchanged by this change.
+  return {static_cast<uint>(tid % instances), false};
+}
+
+/**
+  @sa Table_cache_manager::init_cpu_shard_map() in table_cache.h for the
+  contract.
+*/
+void Table_cache_manager::init_cpu_shard_map() {
+  cpu_shard_ordinals = build_cpu_shard_ordinals(sql_machine_topology());
+
+  const Shard_map_summary summary = summarize_shard_map(
+      cpu_shard_ordinals, sql_machine_topology().numa, table_cache_instances);
+
+  LogErr(SYSTEM_LEVEL, ER_TABLE_CACHE_SHARD_MAP,
+         summary.key_is_cpu ? "physical CPU core"
+                            : "thread id (CPU topology unavailable)",
+         summary.shards, summary.phys_cores, summary.nodes_with_cpus,
+         summary.node_confined ? "yes" : "no");
+}
+
+/**
+  @sa Table_cache_manager::set_cpu_shard_ordinals_for_tests() in
+  table_cache.h for the contract.
+*/
+void Table_cache_manager::set_cpu_shard_ordinals_for_tests(
+    std::vector<int> ordinals) {
+  cpu_shard_ordinals = std::move(ordinals);
+}
+
 /**
   Compute index of table cache instance for the given thread.
   @sa Table_cache_manager::cache_index_for_thread() in table_cache.h for
@@ -378,9 +616,9 @@ uint Table_cache_manager::cache_index_for_thread(THD *thd) const {
   const ulong instances = table_cache_instances;
   /* resolve_instance_count() (called once from init_server_components(),
   before table_def_init()) clamps table_cache_instances to
-  [1, MAX_TABLE_CACHES] and nothing lowers it afterwards - unlike the
-  donor this was adapted from, which couldn't assume that and clamped a
-  possible 0 to 1 here instead. */
+  [1, MAX_TABLE_CACHES] and nothing lowers it afterwards, so a plain
+  assert suffices here - a reference implementation without that
+  guarantee would instead need to clamp a possible 0 to 1. */
   assert(instances >= 1);
 
   /* Test-only: force a different shard on every resolution so that the
@@ -394,7 +632,31 @@ uint Table_cache_manager::cache_index_for_thread(THD *thd) const {
            static_cast<uint>(instances);
   });
 
-  return static_cast<uint>(thd->thread_id() % instances);
+  const int cpu_id = current_cpu_id();
+  const Shard_resolution resolution =
+      resolve_shard(cpu_id, thd->last_cpu_id(), thd->cpu_shard(),
+                    shard_ordinals(), instances, thd->thread_id());
+
+  if (resolution.cache_result) {
+    /* thd must be the calling thread's own THD: nothing locks
+    THD::m_cpu_shard/m_last_cpu_id (by design - they are a single
+    thread's own hot-path memoization, not shared state), so writing into
+    a THD other than current_thd from here would race that thread's own
+    reads/writes of the same fields. The assert turns an unknown caller
+    passing a foreign THD into a diagnosable debug crash instead of a
+    silent data race; the "if" is what keeps a release build safe once
+    the assert compiles away - it skips the memoization rather than
+    racing the write. Branches (a)/(c)/(d) never reach here at all, and
+    in gunit (empty ordinals) branch (b) itself is unreachable, so no
+    existing test exercises this guard either way. */
+    assert(thd == current_thd);
+    if (thd == current_thd) {
+      thd->set_cpu_shard(static_cast<int>(resolution.shard));
+      thd->set_last_cpu_id(cpu_id);
+    }
+  }
+
+  return resolution.shard;
 }
 
 /**

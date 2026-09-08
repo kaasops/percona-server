@@ -8119,6 +8119,13 @@ static int init_server_components() {
   like the rest of this function's real initialization work. */
   if (!is_help_or_validate_option()) {
     Table_cache_manager::resolve_instance_count();
+    /* Must run after resolve_instance_count() has fixed
+    table_cache_instances (the ordinal map is reduced modulo it) and
+    before any thread can open a table (the map has to be there for
+    cache_index_for_thread()'s first call) - this is the one call site,
+    see Table_cache_manager::init_cpu_shard_map() for why it isn't folded
+    into resolve_instance_count() or init() themselves. */
+    Table_cache_manager::init_cpu_shard_map();
   }
   if (table_def_init() || hostname_cache_init(host_cache_size))
     unireg_abort(MYSQLD_ABORT_EXIT);

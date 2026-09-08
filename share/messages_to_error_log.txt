@@ -13246,3 +13246,5 @@ ER_IB_MSG_BP_SOCKET_DISTRIBUTION
 ER_RPL_REPLICA_THREAD_PRIORITY_FAILED
   eng "Failed to set the scheduling priority of the replication %s thread to nice %d (errno %d). The thread keeps the priority it inherited; lowering it requires CAP_SYS_NICE or a sufficient RLIMIT_NICE."
 
+ER_TABLE_CACHE_SHARD_MAP
+  eng "table cache sharding: key = %s, %lu shard(s), %lu physical core(s), %lu NUMA node(s) with CPUs, shards confined to NUMA nodes: %s"

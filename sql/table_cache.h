@@ -34,6 +34,7 @@
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include "lex_string.h"
 #include "my_base.h"
@@ -43,6 +44,7 @@
 #include "mysql/components/services/bits/psi_mutex_bits.h"
 #include "mysql/psi/mysql_mutex.h"
 #include "sql/aggregated_stats.h"
+#include "sql/cpu_topology.h"
 #include "sql/handler.h"
 #include "sql/sql_base.h"
 #include "sql/sql_class.h"
@@ -52,6 +54,37 @@
 #include "sql/table_trigger_dispatcher.h"
 
 class Table_cache_element;
+
+/**
+  Summary of a resolved CPU-shard ordinal map, computed by
+  Table_cache_manager::summarize_shard_map() and used both to build the
+  ER_TABLE_CACHE_SHARD_MAP startup log line and to drive gunit assertions
+  on the same values without parsing that line back out of the error log.
+*/
+struct Shard_map_summary {
+  /** False when the ordinal map is empty (no CPU topology available, or
+  gunit, where init_cpu_shard_map() never runs) - the shard key is then
+  thread_id(), not the physical CPU core. */
+  bool key_is_cpu;
+  ulong shards;
+  ulong phys_cores;
+  ulong nodes_with_cpus;
+  /** True when table_cache_instances is a multiple of nodes_with_cpus and
+  key_is_cpu: every shard is then reachable from cores of exactly one NUMA
+  node. */
+  bool node_confined;
+};
+
+/**
+  Outcome of one Table_cache_manager::resolve_shard() call: which shard to
+  use, and whether it is fresh enough to memoize back onto the THD.
+*/
+struct Shard_resolution {
+  uint shard;
+  /** True only for the CPU-resolved branch (b) - the other three branches
+  deliberately are not memoized, see resolve_shard()'s contract. */
+  bool cache_result;
+};
 
 extern ulong table_cache_size, table_cache_size_per_instance,
     table_cache_instances, table_cache_triggers,
@@ -306,6 +339,101 @@ class Table_cache_manager {
                                                 bool topology_ok,
                                                 ulong phys_cores);
 
+  /**
+    Compute the CPU-shard ordinal map from a machine topology snapshot.
+    Pure function: reads only its argument, so gunit can drive it with
+    synthetic topologies without going through sql_machine_topology()/real
+    sysfs.
+
+    HT siblings of the same physical core share an ordinal. Numbering is
+    node-minor (interleaved): ordinal = core_rank_within_node * N +
+    dense_node_index, where N is the number of NUMA nodes that still have
+    CPUs after the affinity filter and nodes/cores are visited in
+    ascending id order - this is what makes shard % N equal to a fixed
+    node's dense index whenever table_cache_instances is a multiple of N.
+    A node-major (block) numbering does not have this property: reducing
+    it modulo an instance count that isn't itself a multiple of the total
+    core count mixes cores from different nodes into the same shard.
+    Falls back to a fixed socket-major numbering (sequential physical-core
+    index, sockets/cores in ascending id order) when there is no usable
+    multi-node NUMA snapshot (N <= 1). Returns an empty map when the CPU
+    topology itself is unavailable.
+
+    @param topology  Machine CPU/NUMA topology snapshot.
+    @return Map from logical CPU id to shard ordinal (-1 for CPU ids the
+            snapshot has no data for), or an empty vector if
+            topology.cpu.initialized is false.
+  */
+  static std::vector<int> build_cpu_shard_ordinals(
+      const Sql_machine_topology &topology);
+
+  /**
+    Summarize a shard ordinal map for logging/testing - the numbers behind
+    the ER_TABLE_CACHE_SHARD_MAP startup line. Pure function.
+
+    @param ordinals   Map produced by build_cpu_shard_ordinals(), or an
+                       externally-supplied one (gunit).
+    @param numa       NUMA snapshot to count nodes-with-CPUs against.
+    @param instances  Resolved table_cache_instances.
+  */
+  static Shard_map_summary summarize_shard_map(const std::vector<int> &ordinals,
+                                               const Sql_numa_snapshot &numa,
+                                               ulong instances);
+
+  /**
+    Pure resolution formula behind cache_index_for_thread(): decide which
+    shard a thread should land in, given a just-observed current CPU id
+    and the thread's previously cached state. Four branches:
+
+    (a) cpu_id matches last_cpu_id and cached_shard is a valid index: no
+        migration since the last resolution - reuse the cached shard,
+        no write.
+    (b) cpu_id resolves through ordinals: the only branch that produces a
+        fresh (cpu_id, shard) pair worth memoizing.
+    (c) cpu_id unresolvable (non-Linux, or absent from ordinals) but
+        cached_shard is still valid: prefer it over flapping to the
+        thread_id()-based mapping, no write.
+    (d) Neither available: legacy thread_id() modulo instances, no write
+        - deliberately not memoized, which is what keeps this branch
+        reachable in gunit, where ordinals is always empty (see
+        cache_index_for_thread()'s class-level comment).
+
+    @param cpu_id       Current logical CPU id, or negative if unknown.
+    @param last_cpu_id  THD::last_cpu_id() - CPU id at the last resolution.
+    @param cached_shard THD::cpu_shard() - shard at the last resolution.
+    @param ordinals     Map produced by build_cpu_shard_ordinals().
+    @param instances    Resolved table_cache_instances (>= 1).
+    @param tid          Thread id, for the legacy fallback.
+  */
+  static Shard_resolution resolve_shard(int cpu_id, int last_cpu_id,
+                                        int cached_shard,
+                                        const std::vector<int> &ordinals,
+                                        ulong instances, my_thread_id tid);
+
+  /**
+    Build the process-wide CPU-shard ordinal map and log the sharding key
+    it uses (ER_TABLE_CACHE_SHARD_MAP, SYSTEM_LEVEL). Called exactly once,
+    from init_server_components() after resolve_instance_count() has
+    fixed table_cache_instances - see the call site in mysqld.cc for why
+    it isn't folded into init() or resolve_instance_count() themselves
+    (both run repeatedly from gunit fixtures, which never initialize the
+    error-log subsystem).
+  */
+  static void init_cpu_shard_map();
+
+  /**
+    Test-only: replace the process-wide CPU-shard ordinal map wholesale.
+    Deliberately unconditional - no #ifndef NDEBUG guard: in a release
+    build it simply has no caller outside unittest/, and the hot path
+    (cache_index_for_thread()) reads the very same static this writes, so
+    there is no separate release-only code path to diverge from what
+    gunit exercises. Not thread-safe by construction: callers are
+    expected to be a single-threaded gunit test, run before any table is
+    opened (see TableCacheBasicTest, table_cache-t.cc) - never call this
+    while another thread might be resolving a shard.
+  */
+  static void set_cpu_shard_ordinals_for_tests(std::vector<int> ordinals);
+
   bool init();
   void destroy();
 
@@ -377,12 +505,19 @@ class Table_cache_manager {
   /**
     Compute index of table cache instance for the given thread.
 
-    Currently just thread_id() modulo instances (same mapping get_cache()
-    used inline before this method existed) - pulled out into its own
-    function so DBUG_EXECUTE_IF("table_cache_rotate_shard", ...) has one
-    place to force a different shard on every call, for
-    percona.table_cache_shard_rotation. CPU-based shard selection lands in
-    a later change.
+    Re-verifies the cached THD::cpu_shard() against the thread's current
+    CPU (THD::last_cpu_id()) on every call and re-derives it after
+    migration: on Linux, from the thread's current physical CPU core via
+    the process-wide ordinal map built by init_cpu_shard_map()/
+    set_cpu_shard_ordinals_for_tests() (caching both the shard and the CPU
+    id back into the THD), so table opens from threads scheduled on the
+    same or a hyper-threading-sibling core land in the same shard. Falls
+    back to the last known good shard, or to the legacy thread_id() modulo
+    instances mapping, if the current CPU cannot be resolved - see
+    resolve_shard() for the exact branch contract. `thd` must be the
+    calling thread's own THD - the memoizing write asserts
+    thd == current_thd and is skipped (not raced) when that doesn't hold
+    in a release build.
   */
   uint cache_index_for_thread(THD *thd) const;
 
