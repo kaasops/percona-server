@@ -73,8 +73,7 @@ dberr_t File_reader::prepare() noexcept {
     }
   }
 
-  m_aligned_buffer = ut::make_unique_aligned<byte[]>(
-      ut::make_psi_memory_key(mem_key_ddl), UNIV_SECTOR_SIZE, m_buffer_size);
+  m_aligned_buffer = ddl::alloc_io_buffer(m_buffer_size);
 
   if (!m_aligned_buffer) {
     return DB_OUT_OF_MEMORY;
@@ -83,9 +82,7 @@ dberr_t File_reader::prepare() noexcept {
   m_io_buffer = {m_aligned_buffer.get(), m_buffer_size};
 
   if (log_tmp_is_encrypted()) {
-    m_aligned_buffer_crypt =
-        ut::make_unique_aligned<byte[]>(ut::make_psi_memory_key(mem_key_ddl),
-                                        UNIV_SECTOR_SIZE, m_io_buffer.second);
+    m_aligned_buffer_crypt = ddl::alloc_io_buffer(m_io_buffer.second);
 
     if (!m_aligned_buffer_crypt) {
       return DB_OUT_OF_MEMORY;

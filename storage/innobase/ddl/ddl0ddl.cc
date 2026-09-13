@@ -52,6 +52,13 @@ namespace ddl {
 @param[in,out] index            Index that failed to build. */
 static void index_build_failed(dict_index_t *index) noexcept;
 
+size_t io_buffer_alignment() noexcept { return UNIV_SECTOR_SIZE; }
+
+ut::unique_ptr_aligned<byte[]> alloc_io_buffer(size_t size) noexcept {
+  return ut::make_unique_aligned<byte[]>(ut::make_psi_memory_key(mem_key_ddl),
+                                         io_buffer_alignment(), size);
+}
+
 doc_id_t Fetch_sequence::fetch(const dtuple_t *dtuple) noexcept {
   const auto doc_field =
       dtuple_get_nth_field(dtuple, m_index->table->fts->doc_col);
@@ -92,6 +99,13 @@ void Dup::report(const dfield_t *dfield) noexcept {
 dberr_t pread(os_fd_t fd, void *ptr, size_t len, os_offset_t offset,
               void *crypt_buf, /*!< in: crypt buf or NULL */
               space_id_t space_id) noexcept {
+  /* O_DIRECT: buffer address, offset and length must be aligned. */
+  ut_ad(reinterpret_cast<uintptr_t>(ptr) % io_buffer_alignment() == 0);
+  ut_ad(crypt_buf == nullptr ||
+        reinterpret_cast<uintptr_t>(crypt_buf) % io_buffer_alignment() == 0);
+  ut_ad(len % io_buffer_alignment() == 0 &&
+        offset % io_buffer_alignment() == 0);
+
   IORequest request;
 
   /* Merge sort pages are never compressed. */
@@ -130,6 +144,13 @@ dberr_t pread(os_fd_t fd, void *ptr, size_t len, os_offset_t offset,
 dberr_t pwrite(os_fd_t fd, void *ptr, size_t len, os_offset_t offset,
                void *crypt_buf,                /*!< in: crypt buf or NULL */
                space_id_t space_id) noexcept { /*!< in: tablespace id */
+  /* crypt_buf replaces ptr as the I/O source once encrypted. */
+  ut_ad(reinterpret_cast<uintptr_t>(ptr) % io_buffer_alignment() == 0);
+  ut_ad(crypt_buf == nullptr ||
+        reinterpret_cast<uintptr_t>(crypt_buf) % io_buffer_alignment() == 0);
+  ut_ad(len % io_buffer_alignment() == 0 &&
+        offset % io_buffer_alignment() == 0);
+
   IF_ENABLED("ddl_write_failure", return DB_IO_ERROR;)
 
   IORequest request(IORequest::WRITE);

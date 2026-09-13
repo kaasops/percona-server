@@ -381,9 +381,7 @@ dberr_t FTS::Parser::init(size_t n_threads) noexcept {
       return DB_OUT_OF_MEMORY;
     }
 
-    handler->m_aligned_buffer =
-        ut::make_unique_aligned<byte[]>(ut::make_psi_memory_key(mem_key_ddl),
-                                        UNIV_SECTOR_SIZE, buffer_size.first);
+    handler->m_aligned_buffer = ddl::alloc_io_buffer(buffer_size.first);
 
     if (!handler->m_aligned_buffer) {
       return DB_OUT_OF_MEMORY;
@@ -392,9 +390,7 @@ dberr_t FTS::Parser::init(size_t n_threads) noexcept {
     handler->m_io_buffer = {handler->m_aligned_buffer.get(), buffer_size.first};
 
     if (log_tmp_is_encrypted()) {
-      handler->m_aligned_buffer_crypt =
-          ut::make_unique_aligned<byte[]>(ut::make_psi_memory_key(mem_key_ddl),
-                                          UNIV_SECTOR_SIZE, buffer_size.first);
+      handler->m_aligned_buffer_crypt = ddl::alloc_io_buffer(buffer_size.first);
 
       if (!handler->m_aligned_buffer_crypt) {
         return DB_OUT_OF_MEMORY;
