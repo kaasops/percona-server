@@ -52,7 +52,12 @@ namespace ddl {
 @param[in,out] index            Index that failed to build. */
 static void index_build_failed(dict_index_t *index) noexcept;
 
-size_t io_buffer_alignment() noexcept { return UNIV_SECTOR_SIZE; }
+ulong io_alignment{512};
+
+size_t io_buffer_alignment() noexcept {
+  ut_ad(is_valid_io_alignment(io_alignment));
+  return io_alignment;
+}
 
 ut::unique_ptr_aligned<byte[]> alloc_io_buffer(size_t size) noexcept {
   return ut::make_unique_aligned<byte[]>(ut::make_psi_memory_key(mem_key_ddl),

@@ -13248,3 +13248,6 @@ ER_RPL_REPLICA_THREAD_PRIORITY_FAILED
 
 ER_TABLE_CACHE_SHARD_MAP
   eng "table cache sharding: key = %s, %lu shard(s), %lu physical core(s), %lu NUMA node(s) with CPUs, shards confined to NUMA nodes: %s"
+
+ER_IB_MSG_DDL_IO_ALIGNMENT_INVALID
+  eng "innodb_ddl_io_alignment=%lu is not supported; valid values are 512 and 4096. Correct the value in the option file or on the command line."

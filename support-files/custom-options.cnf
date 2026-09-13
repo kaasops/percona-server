@@ -179,3 +179,20 @@ loose-innodb_io_threads_priority = -15
 # DEFAULT: 0 (when omitted, inherit; when explicitly set, nice 0)
 # RECOMMENDED: -15 -- the value this patchset ships with.
 loose-innodb_purge_threads_priority = -15
+
+# DESCRIPTION: Alignment of the buffers online DDL uses for its temporary
+#   sort/merge files. Only matters with innodb_disable_sort_file_cache = ON
+#   (direct I/O on those files): the kernel requires the buffer address to
+#   be a multiple of the device's logical sector; upstream aligns to 512
+#   while offsets and lengths are already multiples of 4096. On a tmpdir
+#   device with a 4096-byte logical sector (blockdev --getss) the 512
+#   alignment fails ALTER with errno 22 (EINVAL), non-deterministically.
+#   READONLY. Only 512 and 4096 are accepted; any other value stops the
+#   server at startup with an explicit error.log line (mysqld
+#   --validate-config does not check it: InnoDB is not initialized there).
+#   A/B on one build: 512 reproduces the failure on a 4Kn tmpdir device,
+#   4096 does not.
+# DEFAULT: 512 (upstream behaviour)
+# RECOMMENDED: 4096 -- valid on every device (a 4096-aligned address is
+#   also 512-aligned); costs at most ~3.5 KiB of padding per DDL buffer.
+loose-innodb_ddl_io_alignment = 4096

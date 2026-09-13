@@ -1,0 +1,1 @@
+--innodb_ddl_io_alignment=4096 --innodb_disable_sort_file_cache=ON

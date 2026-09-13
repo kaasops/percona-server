@@ -1,0 +1,14 @@
+SELECT @@GLOBAL.innodb_ddl_io_alignment;
+@@GLOBAL.innodb_ddl_io_alignment
+512
+SET @@global.innodb_ddl_io_alignment = 4096;
+ERROR HY000: Variable 'innodb_ddl_io_alignment' is a read only variable
+SET @@session.innodb_ddl_io_alignment = 4096;
+ERROR HY000: Variable 'innodb_ddl_io_alignment' is a read only variable
+SELECT @@global.innodb_ddl_io_alignment;
+@@global.innodb_ddl_io_alignment
+512
+SELECT VARIABLE_VALUE FROM performance_schema.global_variables
+WHERE VARIABLE_NAME='innodb_ddl_io_alignment';
+VARIABLE_VALUE
+512

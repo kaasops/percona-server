@@ -77,6 +77,7 @@ let $total_excluded_vars=`SELECT COUNT(*) FROM performance_schema.global_variabl
 'gtid_purged_for_tailing',
 'innodb_doublewrite_sync_page_flush_slots',
 'innodb_buffer_pool_parallel_init_threads',
+'innodb_ddl_io_alignment',
 'replica_coordinator_thread_priority',
 'replica_io_thread_priority',
 'replica_worker_threads_priority',

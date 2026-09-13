@@ -73,8 +73,37 @@ size_t io_buffer_alignment() noexcept;
 @return empty unique_ptr on OOM, as ut::make_unique_aligned. */
 ut::unique_ptr_aligned<byte[]> alloc_io_buffer(size_t size) noexcept;
 
-/* I/O offsets and lengths are multiples of IO_BLOCK_SIZE. */
-static_assert(IO_BLOCK_SIZE % UNIV_SECTOR_SIZE == 0);
+/** Values accepted by innodb_ddl_io_alignment; index 0 is the upstream
+default. */
+constexpr size_t IO_ALIGNMENTS[] = {512, 4096};
+
+/** innodb_ddl_io_alignment (READONLY sysvar). */
+extern ulong io_alignment;
+
+/** @return whether v is one of IO_ALIGNMENTS. */
+constexpr bool is_valid_io_alignment(size_t v) noexcept {
+  for (auto a : IO_ALIGNMENTS) {
+    if (a == v) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static_assert(IO_ALIGNMENTS[0] == UNIV_SECTOR_SIZE);
+
+/* Each alignment must be a power of two above alignof(std::max_align_t)
+(ut::make_unique_aligned), a multiple of the logical sector (O_DIRECT) and
+a divisor of IO_BLOCK_SIZE (the I/O offset and length unit). */
+static_assert([] {
+  for (auto v : IO_ALIGNMENTS) {
+    if ((v & (v - 1)) != 0 || v % UNIV_SECTOR_SIZE != 0 ||
+        IO_BLOCK_SIZE % v != 0 || v <= alignof(std::max_align_t)) {
+      return false;
+    }
+  }
+  return true;
+}());
 
 /** @brief Secondary buffer for I/O operations of merge records.
 

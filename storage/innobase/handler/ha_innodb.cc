@@ -5218,6 +5218,12 @@ static int innodb_init_params() {
     return HA_ERR_INITIALIZATION;
   }
 
+  if (!ddl::is_valid_io_alignment(ddl::io_alignment)) {
+    log_errlog(ERROR_LEVEL, ER_IB_MSG_DDL_IO_ALIGNMENT_INVALID,
+               ddl::io_alignment);
+    return HA_ERR_INITIALIZATION;
+  }
+
   ut_a(srv_log_buffer_size % OS_FILE_LOG_BLOCK_SIZE == 0);
   ut_a(srv_log_buffer_size > 0);
 
@@ -23727,6 +23733,19 @@ static MYSQL_SYSVAR_LONG(fill_factor, ddl::fill_factor, PLUGIN_VAR_RQCMDARG,
                          "Percentage of B-tree page filled during bulk insert",
                          nullptr, nullptr, 100, 10, 100, 0);
 
+// Unbounded: my_getopt would clamp an invalid value instead of letting
+// innodb_init_params() reject it.
+static MYSQL_SYSVAR_ULONG(
+    ddl_io_alignment, ddl::io_alignment,
+    PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+    "Alignment in bytes of the buffers used for online DDL temporary"
+    " sort/merge file I/O. Valid values: 512 (default, upstream behaviour)"
+    " and 4096, required when innodb_disable_sort_file_cache=ON and the"
+    " temporary directory is on a device with a 4096-byte logical sector"
+    " (otherwise direct I/O fails with EINVAL). Any other value prevents"
+    " the server from starting. Read once at startup.",
+    nullptr, nullptr, 512 /* def */, 0 /* min */, ~0UL /* max */, 0 /* blk */);
+
 static MYSQL_SYSVAR_BOOL(
     ft_enable_diag_print, fts_enable_diag_print, PLUGIN_VAR_OPCMDARG,
     "Whether to enable additional FTS diagnostic printout ", nullptr, nullptr,
@@ -24567,6 +24586,7 @@ static SYS_VAR *innobase_system_variables[] = {
     MYSQL_SYSVAR(concurrency_tickets),
     MYSQL_SYSVAR(compression_level),
     MYSQL_SYSVAR(ddl_buffer_size),
+    MYSQL_SYSVAR(ddl_io_alignment),
     MYSQL_SYSVAR(ddl_threads),
     MYSQL_SYSVAR(data_file_path),
     MYSQL_SYSVAR(temp_data_file_path),

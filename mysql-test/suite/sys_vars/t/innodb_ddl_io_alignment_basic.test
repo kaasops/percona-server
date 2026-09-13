@@ -1,0 +1,29 @@
+###############################################################################
+# Variable Name: innodb_ddl_io_alignment                                    #
+# Scope: GLOBAL                                                              #
+# Access Type: Static (read only)                                            #
+# Data Type: numeric                                                        #
+# Default Value: 512                                                        #
+# Valid values: 512, 4096                                                   #
+#                                                                            #
+# Description: Alignment in bytes of the buffers used for online DDL        #
+#              temporary sort/merge file I/O.                               #
+###############################################################################
+
+# SET PERSIST is out of scope for this variable (project convention: not
+# used in production, not tested) - covered instead by
+# main.all_persisted_variables, which this variable is excluded from as a
+# READONLY sysvar.
+
+SELECT @@GLOBAL.innodb_ddl_io_alignment;
+
+--error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SET @@global.innodb_ddl_io_alignment = 4096;
+
+--error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SET @@session.innodb_ddl_io_alignment = 4096;
+
+SELECT @@global.innodb_ddl_io_alignment;
+
+SELECT VARIABLE_VALUE FROM performance_schema.global_variables
+  WHERE VARIABLE_NAME='innodb_ddl_io_alignment';
