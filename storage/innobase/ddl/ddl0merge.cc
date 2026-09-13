@@ -485,8 +485,7 @@ dberr_t Merge_file_sort::sort(Builder *builder,
   const auto io_buffer_size = ctx.merge_io_buffer_size(n_buffers);
 
   ut::unique_ptr_aligned<byte[]> aligned_buffer =
-      ut::make_unique_aligned<byte[]>(ut::make_psi_memory_key(mem_key_ddl),
-                                      UNIV_SECTOR_SIZE, io_buffer_size);
+      ddl::alloc_io_buffer(io_buffer_size);
 
   if (!aligned_buffer) {
     return DB_OUT_OF_MEMORY;
@@ -498,8 +497,7 @@ dberr_t Merge_file_sort::sort(Builder *builder,
   ut::unique_ptr_aligned<byte[]> aligned_buffer_crypt{};
 
   if (log_tmp_is_encrypted()) {
-    aligned_buffer_crypt = ut::make_unique_aligned<byte[]>(
-        ut::make_psi_memory_key(mem_key_ddl), UNIV_SECTOR_SIZE, io_buffer_size);
+    aligned_buffer_crypt = ddl::alloc_io_buffer(io_buffer_size);
 
     if (!aligned_buffer_crypt) {
       return DB_OUT_OF_MEMORY;

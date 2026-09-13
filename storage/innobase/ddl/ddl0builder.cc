@@ -673,9 +673,7 @@ dberr_t Builder::init(Cursor &cursor, size_t n_threads) noexcept {
 
     m_thread_ctxs.push_back(thread_ctx);
 
-    thread_ctx->m_aligned_buffer =
-        ut::make_unique_aligned<byte[]>(ut::make_psi_memory_key(mem_key_ddl),
-                                        UNIV_SECTOR_SIZE, buffer_size.second);
+    thread_ctx->m_aligned_buffer = ddl::alloc_io_buffer(buffer_size.second);
 
     if (!thread_ctx->m_aligned_buffer) {
       return DB_OUT_OF_MEMORY;
@@ -686,8 +684,7 @@ dberr_t Builder::init(Cursor &cursor, size_t n_threads) noexcept {
 
     if (log_tmp_is_encrypted()) {
       thread_ctx->m_aligned_buffer_crypt =
-          ut::make_unique_aligned<byte[]>(ut::make_psi_memory_key(mem_key_ddl),
-                                          UNIV_SECTOR_SIZE, buffer_size.second);
+          ddl::alloc_io_buffer(buffer_size.second);
 
       if (!thread_ctx->m_aligned_buffer_crypt) {
         return DB_OUT_OF_MEMORY;

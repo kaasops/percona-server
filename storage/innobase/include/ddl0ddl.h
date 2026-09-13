@@ -64,6 +64,21 @@ extern ulong fts_parser_threads;
 /** Minimum IO buffer size. */
 constexpr size_t IO_BLOCK_SIZE = 4 * 1024;
 
+/** Alignment (bytes) of DDL temp-file I/O buffers. O_DIRECT requires the
+buffer address, offset and length to be multiples of the logical sector. */
+size_t io_buffer_alignment() noexcept;
+
+/** Allocate a DDL temp-file I/O buffer (mem_key_ddl, io_buffer_alignment()).
+@param[in] size                 Size of the buffer, in bytes.
+@return empty unique_ptr on OOM, as ut::make_unique_aligned. */
+ut::unique_ptr_aligned<byte[]> alloc_io_buffer(size_t size) noexcept;
+
+/* IO_BLOCK_SIZE is the unit of I/O offset/length, io_buffer_alignment() is
+the (possibly coarser) address alignment; a length that is a multiple of
+IO_BLOCK_SIZE must also satisfy the alignment, or O_DIRECT writes could
+straddle a boundary that the allocator does not guarantee. */
+static_assert(IO_BLOCK_SIZE % UNIV_SECTOR_SIZE == 0);
+
 /** @brief Secondary buffer for I/O operations of merge records.
 
 This buffer is used for writing or reading a record that spans two
