@@ -3227,6 +3227,7 @@ int handler::ha_sample_init(void *&scan_ctx, double sampling_percentage,
   assert(inited == NONE);
 
   m_sampling_percentage = sampling_percentage;
+  m_sampling_rand_state = static_cast<uint64_t>(sampling_seed);
 
   int result = sample_init(scan_ctx, sampling_percentage, sampling_seed,
                            sampling_method, tablesample);
@@ -3278,7 +3279,8 @@ int handler::sample_next(void *scan_ctx [[maybe_unused]], uchar *buf) {
   // Temporary set inited to RND, since we are calling rnd_next().
   int res = rnd_next(buf);
 
-  while (!res && my_rnd_double() > (m_sampling_percentage / 100.0))
+  while (!res && my_rnd_double_seeded(&m_sampling_rand_state) >
+                     (m_sampling_percentage / 100.0))
     res = rnd_next(buf);
 
   return res;

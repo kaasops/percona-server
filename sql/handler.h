@@ -4636,6 +4636,9 @@ class handler {
 
   double m_sampling_percentage;
 
+  /** PRNG state for sample_next(), seeded from sampling_seed. */
+  uint64_t m_sampling_rand_state;
+
  private:
   /** Internal state of the batch instrumentation. */
   enum batch_mode_t {

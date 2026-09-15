@@ -1095,10 +1095,8 @@ static bool fill_value_maps(
   assert(sample_percentage <= 100.0);
   assert(fields.size() == value_maps.size());
 
-  /* TODO: Can remove. Seed is not used. Non-deterministic random-gen. */
   int sampling_seed = (unsigned int)(my_timer_cycles() & UINT_MAX);
 
-  /* This doesn't work for deterministic results. */
   DBUG_EXECUTE_IF("histogram_force_sampling", {
     sampling_seed = 1;
     sample_percentage = 50.0;

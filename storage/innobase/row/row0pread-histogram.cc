@@ -46,7 +46,8 @@ Histogram_sampler::Histogram_sampler(size_t max_threads, int sampling_seed,
     : m_parallel_reader(max_threads),
       m_sampling_method(sampling_method),
       m_sampling_percentage(sampling_percentage),
-      m_sampling_seed(sampling_seed) {
+      m_sampling_seed(sampling_seed),
+      m_rand_state(static_cast<uint64_t>(sampling_seed)) {
   ut_ad(max_threads == 1);
 
   m_start_buffer_event = os_event_create();
@@ -196,7 +197,7 @@ bool Histogram_sampler::skip() {
 
   switch (m_sampling_method) {
     case enum_sampling_method::SYSTEM: {
-      double rand = my_rnd_double() * 100.0;
+      double rand = my_rnd_double_seeded(&m_rand_state) * 100.0;
 
       DBUG_PRINT("histogram_sampler_buffering_print",
                  ("-> New page. Random value generated - %lf", rand));

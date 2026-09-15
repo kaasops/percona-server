@@ -98,4 +98,20 @@ static inline double my_rnd_double() {
   return my_rnd_double_fallback(value);
 }
 
+/**
+    Seeded splitmix64 PRNG returning a value in [0.0, 1.0). The same
+    initial state always produces the same sequence.
+
+    @param[in,out] state PRNG state owned by the caller; advanced in place.
+    @return next pseudo-random value in [0.0, 1.0)
+*/
+static inline double my_rnd_double_seeded(uint64_t *state) {
+  *state += 0x9E3779B97F4A7C15ULL;
+  uint64_t z = *state;
+  z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+  z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+  z = z ^ (z >> 31);
+  return (double)z / ((double)0x8000000000000000u * 2.0);
+}
+
 #endif /* MY_RANDOM_INCLUDED */

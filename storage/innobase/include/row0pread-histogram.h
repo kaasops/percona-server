@@ -169,6 +169,9 @@ class Histogram_sampler {
   /** Sampling seed to be used for sampling */
   int m_sampling_seed{};
 
+  /** PRNG state for skip(), seeded from m_sampling_seed. */
+  uint64_t m_rand_state{};
+
   /** Number of rows sampled */
   std::atomic_size_t m_n_sampled;
 };
