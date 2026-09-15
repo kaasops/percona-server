@@ -190,24 +190,6 @@ static rw_lock_debug_t *rw_lock_debug_create(void) {
 static void rw_lock_debug_free(rw_lock_debug_t *info) { ut::free(info); }
 #endif /* UNIV_DEBUG */
 
-void rw_lock_register_bulk(rw_lock_t **locks, ulint count) {
-  if (count == 0) {
-    return;
-  }
-
-  mutex_enter(&rw_lock_list_mutex);
-
-  for (ulint i = 0; i < count; ++i) {
-    rw_lock_t *lock = locks[i];
-
-    ut_ad(lock->magic_n == rw_lock_t::MAGIC_N);
-
-    UT_LIST_ADD_FIRST(rw_lock_list, lock);
-  }
-
-  mutex_exit(&rw_lock_list_mutex);
-}
-
 void rw_lock_init_only(rw_lock_t *lock, ut::Location clocation) {
 #if !defined(UNIV_PFS_RWLOCK)
   new (lock) rw_lock_t();

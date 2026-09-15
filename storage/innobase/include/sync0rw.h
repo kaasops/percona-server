@@ -126,9 +126,6 @@ void rw_lock_create_func(rw_lock_t *lock, ut::Location clocation);
 /** Initialize an rw_lock_t without registering it in the global rw_lock_list. */
 void rw_lock_init_only(rw_lock_t *lock, ut::Location clocation);
 
-/** Register an array of rw_lock_t in the global rw_lock_list under a single mutex. */
-void rw_lock_register_bulk(rw_lock_t **locks, ulint count);
-
 /** Calling this function is obligatory only if the memory buffer containing
  the rw-lock is freed. Removes an rw-lock object from the global list. The
  rw-lock is checked to be in the non-locked state. */

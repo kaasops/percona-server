@@ -432,7 +432,7 @@ on the io_type */
 #define MONITOR_RW_COUNTER(io_type, counter) \
   ((io_type == BUF_IO_READ) ? (counter##_READ) : (counter##_WRITTEN))
 
-/** Registers a chunk to buf_pool_chunk_map and global rw_lock_list.
+/** Registers a chunk to buf_pool_chunk_map.
 @param[in]  chunk   chunk of buffers */
 static void buf_pool_register_chunk(buf_chunk_t *chunk) {
   const byte *frame = chunk->blocks->frame;
