@@ -697,6 +697,32 @@ static dict_table_t *dd_table_open_on_id_low(THD *thd, MDL_ticket **mdl,
   return 0;
 }
 
+#ifndef UNIV_HOTBACKUP
+/** Remove a stale (discard_after_ddl) table from the dictionary cache
+while the caller holds dict_sys->lock in S mode. Removal requires X mode,
+so the lock is upgraded and the table is looked up and checked again,
+since it may have been removed or replaced while unlocked. The caller's
+S lock is restored before returning.
+@param[in]      table_id        id of the table suspected to be stale
+@param[in]      hash_value      hash value of table_id in table_id_hash */
+static void dd_table_remove_stale(table_id_t table_id, uint64_t hash_value) {
+  dict_sys_s_unlock();
+  dict_sys_mutex_enter();
+
+  dict_table_t *table;
+  HASH_SEARCH(id_hash, dict_sys->table_id_hash, hash_value, dict_table_t *,
+              table, ut_ad(table->cached), table->id == table_id);
+
+  if (table != nullptr && table->discard_after_ddl) {
+    btr_drop_ahi_for_table(table);
+    dict_table_remove_from_cache(table);
+  }
+
+  dict_sys_mutex_exit();
+  dict_sys_s_lock();
+}
+#endif /* !UNIV_HOTBACKUP */
+
 /** Open a persistent InnoDB table based on InnoDB table id, and
 hold Shared MDL lock on it.
 @param[in]      table_id                table identifier
@@ -850,8 +876,14 @@ reopen:
           ut_ad(ib_table == nullptr);
         } else if (ib_table->discard_after_ddl) {
 #ifndef UNIV_HOTBACKUP
-          btr_drop_ahi_for_table(ib_table);
-          dict_table_remove_from_cache(ib_table);
+          if (dict_locked && for_modification) {
+            /* dict_sys->lock is held in X mode. */
+            btr_drop_ahi_for_table(ib_table);
+            dict_table_remove_from_cache(ib_table);
+          } else {
+            /* dict_sys->lock is held in S mode; removal needs X mode. */
+            dd_table_remove_stale(table_id, hash_value);
+          }
 #endif /* !UNIV_HOTBACKUP */
           ib_table = nullptr;
 #ifndef UNIV_HOTBACKUP
