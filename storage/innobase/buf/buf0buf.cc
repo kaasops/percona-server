@@ -440,6 +440,8 @@ static void buf_pool_register_chunk(buf_chunk_t *chunk) {
   // Use frame address as shard key
   size_t shard_idx = reinterpret_cast<size_t>(frame) % CHUNK_MAP_SHARDS;
 
+  std::lock_guard<std::mutex> lock(chunk_map_mutexes[shard_idx]);
+
   buf_pool_chunk_map_t *map = buf_chunk_map_shards[shard_idx];
   ut_a(map != nullptr);
 
@@ -1186,14 +1188,6 @@ static buf_chunk_t *buf_chunk_init(
 
     block++;
     frame += UNIV_PAGE_SIZE;
-  }
-
-size_t shard_idx = reinterpret_cast<uintptr_t>(chunk->blocks->frame) % CHUNK_MAP_SHARDS;
-  std::lock_guard<std::mutex> lock(chunk_map_mutexes[shard_idx]);
-
-  if (buf_chunk_map_shards[shard_idx] == nullptr) {
-    buf_chunk_map_shards[shard_idx] =
-        ut::new_withkey<buf_pool_chunk_map_t>(UT_NEW_THIS_FILE_PSI_KEY);
   }
 
   buf_pool_register_chunk(chunk);
@@ -2692,6 +2686,7 @@ withdraw_retry:
       for (ulint j = 0; j < n_chunks_copy; j++) {
         const byte *frame = buf_pool->chunks[j].blocks->frame;
         size_t shard_idx = reinterpret_cast<size_t>(frame) % CHUNK_MAP_SHARDS;
+        std::lock_guard<std::mutex> lock(chunk_map_mutexes[shard_idx]);
         buf_pool_chunk_map_t *map = buf_chunk_map_shards[shard_idx];
         ut_a(map != nullptr);
         map->erase(frame);
