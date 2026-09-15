@@ -1720,6 +1720,10 @@ struct alignas(alignof(uint64_t)) btr_search_prefix_info_t {
   }
 };
 
+/** Lazy latch initialization state of a buf_block_t. NONE must be zero:
+no constructor runs for blocks carved out of chunk memory. */
+enum class latch_state_t : uint8_t { NONE = 0, CONSTRUCTING = 1, READY = 2 };
+
 /** The buffer control block structure */
 struct buf_block_t {
   /** @name General fields */
@@ -1871,7 +1875,7 @@ struct buf_block_t {
   or (3) the block must belong to an intrinsic table */
   uint64_t modify_clock;
 
-  std::atomic<bool> latches_initialized{};
+  std::atomic<latch_state_t> latch_state{latch_state_t::NONE};
 
   /** @} */
 

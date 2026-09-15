@@ -843,16 +843,22 @@ static void pfs_register_buffer_block(
 #endif /* PFS_GROUP_BUFFER_SYNC */
 
 /** Ensure that latches for a buffer block are initialized exactly once. */
-inline void
-buf_block_ensure_latches_initialized(buf_block_t *block) {
-  if (block->latches_initialized.load(std::memory_order_acquire)) {
+void buf_block_ensure_latches_initialized(buf_block_t *block) {
+  if (block->latch_state.load(std::memory_order_acquire) ==
+      latch_state_t::READY) {
     return;
   }
 
-  bool expected = false;
-  if (!block->latches_initialized.compare_exchange_strong(
-          expected, true, std::memory_order_acq_rel)) {
-    /* Another thread did the initialization. */
+  latch_state_t expected = latch_state_t::NONE;
+  if (!block->latch_state.compare_exchange_strong(
+          expected, latch_state_t::CONSTRUCTING, std::memory_order_relaxed,
+          std::memory_order_relaxed)) {
+    /* Another thread is constructing (or has already constructed) the
+    latches. Spin until it finishes. */
+    while (block->latch_state.load(std::memory_order_acquire) !=
+           latch_state_t::READY) {
+      UT_RELAX_CPU();
+    }
     return;
   }
 
@@ -876,6 +882,8 @@ buf_block_ensure_latches_initialized(buf_block_t *block) {
   block->lock.is_block_lock = true;
 
   ut_ad(rw_lock_validate(&block->lock));
+
+  block->latch_state.store(latch_state_t::READY, std::memory_order_release);
 }
 
 /** Lightweight initialization of a buffer control block: no latches created. */
@@ -916,7 +924,7 @@ static void buf_block_init_light(
   page_zip_des_init(&block->page.zip);
 
   /* Latches are NOT initialized here. */
-  block->latches_initialized.store(false, std::memory_order_relaxed);
+  block->latch_state.store(latch_state_t::NONE, std::memory_order_relaxed);
 }
 
 /* We maintain our private view of innobase_should_madvise_buf_pool() which we
@@ -1529,7 +1537,8 @@ static void buf_pool_free_instance(buf_pool_t *buf_pool) {
     buf_block_t *block = chunk->blocks;
 
     for (ulint i = chunk->size; i--; block++) {
-      if (block->latches_initialized.load(std::memory_order_acquire)) {
+      if (block->latch_state.load(std::memory_order_acquire) ==
+          latch_state_t::READY) {
         mutex_free(&block->mutex);
         rw_lock_free(&block->lock);
         ut_d(rw_lock_free(&block->debug_latch));
@@ -2616,7 +2625,8 @@ withdraw_retry:
         buf_block_t *block = chunk->blocks;
 
         for (ulint j = chunk->size; j--; block++) {
-          if (block->latches_initialized.load(std::memory_order_acquire)) {
+          if (block->latch_state.load(std::memory_order_acquire) ==
+              latch_state_t::READY) {
             mutex_free(&block->mutex);
             rw_lock_free(&block->lock);
             ut_d(rw_lock_free(&block->debug_latch));
