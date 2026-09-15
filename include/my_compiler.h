@@ -50,7 +50,9 @@
 */
 #ifdef HAVE_BUILTIN_EXPECT
 
-// __builtin_expect() might not affect for the caller code. should #define
+// Macros, not constexpr functions: a constexpr wrapper loses the caller's
+// branch-weight metadata under Clang LTO. The names may collide with other
+// likely()/unlikely() symbols, including in bundled third-party code.
 #define likely(x) __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)
 
