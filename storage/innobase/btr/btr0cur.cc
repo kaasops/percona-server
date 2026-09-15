@@ -125,12 +125,11 @@ throughput clearly from about 100000. */
 constexpr uint32_t BTR_CUR_FINE_HISTORY_LENGTH = 100000;
 
 /** Number of searches down the B-tree in btr_cur_search_to_nth_level(). */
-alignas(ut::INNODB_CACHE_LINE_SIZE)
-    std::array<uint64_t, BTR_CUR_COUNTER_SHARDING> btr_cur_n_non_sea{};
+std::array<btr_cur_shard_counter_t, BTR_CUR_COUNTER_SHARDING>
+    btr_cur_n_non_sea{};
 /** Number of successful adaptive hash index lookups in
 btr_cur_search_to_nth_level(). */
-alignas(ut::INNODB_CACHE_LINE_SIZE)
-    std::array<uint64_t, BTR_CUR_COUNTER_SHARDING> btr_cur_n_sea{};
+std::array<btr_cur_shard_counter_t, BTR_CUR_COUNTER_SHARDING> btr_cur_n_sea{};
 /** Old value of btr_cur_n_non_sea.  Copied by
 srv_refresh_innodb_monitor_stats().  Referenced by
 srv_printf_innodb_monitor(). */
@@ -812,11 +811,11 @@ void btr_cur_search_to_nth_level(
     ut_ad(cursor->up_match != ULINT_UNDEFINED || mode != PAGE_CUR_GE);
     ut_ad(cursor->up_match != ULINT_UNDEFINED || mode != PAGE_CUR_LE);
     ut_ad(cursor->low_match != ULINT_UNDEFINED || mode != PAGE_CUR_LE);
-    btr_cur_n_sea[BTR_CUR_COUNTER_INDEX]++;
+    btr_cur_n_sea[BTR_CUR_COUNTER_INDEX].value++;
 
     return;
   }
-  btr_cur_n_non_sea[BTR_CUR_COUNTER_INDEX]++;
+  btr_cur_n_non_sea[BTR_CUR_COUNTER_INDEX].value++;
   DBUG_EXECUTE_IF("non_ahi_search",
                   assert(!strcmp(index->table->name.m_name, "test/t1")););
 

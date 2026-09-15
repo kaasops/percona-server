@@ -1402,8 +1402,8 @@ static void srv_refresh_innodb_monitor_stats(void) {
   uint64_t btr_cur_n_sea_sum = 0;
   uint64_t btr_cur_n_non_sea_sum = 0;
   for (size_t i = 0; i < BTR_CUR_COUNTER_SHARDING; i++) {
-    btr_cur_n_sea_sum += btr_cur_n_sea[i];
-    btr_cur_n_non_sea_sum += btr_cur_n_non_sea[i];
+    btr_cur_n_sea_sum += btr_cur_n_sea[i].value;
+    btr_cur_n_non_sea_sum += btr_cur_n_non_sea[i].value;
   }
 
   btr_cur_n_sea_old = btr_cur_n_sea_sum;
@@ -1568,8 +1568,8 @@ bool srv_printf_innodb_monitor(FILE *file, bool nowait, ulint *trx_start_pos,
   uint64_t btr_cur_n_sea_sum = 0;
   uint64_t btr_cur_n_non_sea_sum = 0;
   for (size_t i = 0; i < BTR_CUR_COUNTER_SHARDING; i++) {
-    btr_cur_n_sea_sum += btr_cur_n_sea[i];
-    btr_cur_n_non_sea_sum += btr_cur_n_non_sea[i];
+    btr_cur_n_sea_sum += btr_cur_n_sea[i].value;
+    btr_cur_n_non_sea_sum += btr_cur_n_non_sea[i].value;
   }
 
   fprintf(file, "%.2f hash searches/s, %.2f non-hash searches/s\n",

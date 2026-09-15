@@ -2028,14 +2028,14 @@ void srv_mon_process_existing_counter(
     case MONITOR_OVLD_ADAPTIVE_HASH_SEARCH:
       value = 0;
       for (size_t i = 0; i < BTR_CUR_COUNTER_SHARDING; i++) {
-        value += btr_cur_n_sea[i];
+        value += btr_cur_n_sea[i].value;
       }
       break;
 
     case MONITOR_OVLD_ADAPTIVE_HASH_SEARCH_BTREE:
       value = 0;
       for (size_t i = 0; i < BTR_CUR_COUNTER_SHARDING; i++) {
-        value += btr_cur_n_non_sea[i];
+        value += btr_cur_n_non_sea[i].value;
       }
       break;
 

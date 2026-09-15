@@ -768,11 +768,17 @@ constexpr size_t BTR_CUR_COUNTER_SHARDING = 128;
 #else /* HAVE_OS_GETCPU */
 #define BTR_CUR_COUNTER_INDEX (ut::this_thread_hash % BTR_CUR_COUNTER_SHARDING)
 #endif /* HAVE_OS_GETCPU */
+/** Counter shard aligned to its own cache line to avoid false sharing. */
+struct alignas(ut::INNODB_CACHE_LINE_SIZE) btr_cur_shard_counter_t {
+  uint64_t value{0};
+};
 /** Number of searches down the B-tree in btr_cur_search_to_nth_level(). */
-extern std::array<uint64_t, BTR_CUR_COUNTER_SHARDING> btr_cur_n_non_sea;
+extern std::array<btr_cur_shard_counter_t, BTR_CUR_COUNTER_SHARDING>
+    btr_cur_n_non_sea;
 /** Number of successful adaptive hash index lookups in
 btr_cur_search_to_nth_level(). */
-extern std::array<uint64_t, BTR_CUR_COUNTER_SHARDING> btr_cur_n_sea;
+extern std::array<btr_cur_shard_counter_t, BTR_CUR_COUNTER_SHARDING>
+    btr_cur_n_sea;
 /** Old value of btr_cur_n_non_sea.  Copied by
 srv_refresh_innodb_monitor_stats().  Referenced by
 srv_printf_innodb_monitor(). */
