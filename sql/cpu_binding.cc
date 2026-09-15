@@ -440,9 +440,6 @@ static const char *cpu_binding_thread_role_option_name(ThreadRole role) {
 
 void cpu_binding_register_option(ThreadRole role, const char *raw_value) {
 
-  sql_print_warning("cpu_binding_register_option(): role=%s, raw_value=%s",
-    cpu_binding_role_name(role), raw_value);
-
   if (raw_value == nullptr)
     return;
 

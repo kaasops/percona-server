@@ -1,5 +1,6 @@
 percona-server (8.0.44-35~int04) unstable; urgency=medium
 
+  * [INT04] Stop logging a warning for every CPU binding option at startup
   * [INT04] Remove duplicate replica worker queue and coordinator nap options
   * [INT04] Switch bundled zlib to SIMD-enabled zlib-ng and drop extra/zlib
   * [INT04] Restore sampling determinism via a seeded PRNG
