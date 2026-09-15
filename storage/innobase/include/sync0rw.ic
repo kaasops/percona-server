@@ -215,7 +215,11 @@ bool rw_lock_lock_word_decr(rw_lock_t *lock, /*!< in/out: rw-lock */
 {
   int32_t local_lock_word;
 
-  local_lock_word = lock->lock_word.load(std::memory_order_acquire);
+  /* Re-check after the caller has set lock->waiters; the unlocker updates
+  lock_word before reading lock->waiters. memory_order_acquire does not
+  prevent this load from being reordered before that store, which could
+  miss a wake-up, so seq_cst is required here. */
+  local_lock_word = lock->lock_word.load();
   while (local_lock_word > threshold) {
     if (lock->lock_word.compare_exchange_strong(local_lock_word,
                                                 local_lock_word - amount)) {
