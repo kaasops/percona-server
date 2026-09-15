@@ -620,12 +620,7 @@ static inline void pfs_rw_lock_free_func(rw_lock_t *lock); /*!< in: rw-lock */
  is necessary only if the memory block containing it is freed.
  if MySQL performance schema is enabled and "UNIV_PFS_RWLOCK" is
  defined, the rwlock are instrumented with performance schema probes. */
-#ifdef UNIV_DEBUG
-#define rw_lock_create(K, L, ID) \
-  rw_lock_create_func((L), (ID), UT_LOCATION_HERE)
-#else /* UNIV_DEBUG */
 #define rw_lock_create(K, L, ID) rw_lock_create_func((L), UT_LOCATION_HERE)
-#endif /* UNIV_DEBUG */
 
 /** NOTE! The following macros should be used in rw locking and
  unlocking, not the corresponding function. */
