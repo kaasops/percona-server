@@ -1156,21 +1156,23 @@ int dd_table_open_on_dd_obj(THD *thd, dd::cache::Dictionary_client *client,
 
 #endif /* !UNIV_HOTBACKUP */
 
+/** dict_sys lock mode already held by the caller of dd_table_open_on_id(). */
+enum class dict_locked_mode_t { NOT_LOCKED, S_LOCKED, X_LOCKED };
+
 /** Open a persistent InnoDB table based on InnoDB table id, and
 hold Shared MDL lock on it.
 @param[in]      table_id                table identifier
 @param[in,out]  thd                     current MySQL connection (for mdl)
 @param[in,out]  mdl                     metadata lock (*mdl set if
 table_id was found) mdl=NULL if we are resurrecting table IX locks in recovery
-@param[in]      dict_locked             dict_sys mutex is held
+@param[in]      dict_locked_mode        dict_sys lock already held by caller
 @param[in]      check_corruption        check if the table is corrupted or not.
-@param[in]      for_modification        if false, dict_locked means s-lock.
 @return table
 @retval NULL if the table does not exist or cannot be opened */
 dict_table_t *dd_table_open_on_id(table_id_t table_id, THD *thd,
-                                  MDL_ticket **mdl, bool dict_locked,
-                                  bool check_corruption,
-                                  bool for_modification = true);
+                                  MDL_ticket **mdl,
+                                  dict_locked_mode_t dict_locked_mode,
+                                  bool check_corruption);
 
 /** Close an internal InnoDB table handle.
 @param[in,out]  table   InnoDB table handle

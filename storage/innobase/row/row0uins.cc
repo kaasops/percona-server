@@ -330,7 +330,8 @@ static void row_undo_ins_parse_undo_rec(undo_node_t *node, THD *thd,
 
   node->update = nullptr;
 
-  node->table = dd_table_open_on_id(table_id, thd, mdl, false, true);
+  node->table = dd_table_open_on_id(table_id, thd, mdl,
+                                    dict_locked_mode_t::NOT_LOCKED, true);
 
   /* Skip the UNDO if we can't find the table or the .ibd file. */
   if (node->table == nullptr) {

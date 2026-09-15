@@ -806,7 +806,8 @@ void trx_recovery_rollback(THD *thd) {
       ut_ad(false);
       continue;
     }
-    auto table = dd_table_open_on_id(table_id, nullptr, nullptr, false, true);
+    auto table = dd_table_open_on_id(table_id, nullptr, nullptr,
+                                     dict_locked_mode_t::NOT_LOCKED, true);
     if (table == nullptr) {
       continue;
     }

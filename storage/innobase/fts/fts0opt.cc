@@ -2347,7 +2347,8 @@ static dberr_t fts_optimize_table_bk(
     MDL_ticket *mdl = nullptr;
     THD *thd = current_thd;
 
-    table = dd_table_open_on_id(slot->table_id, thd, &mdl, false, true);
+    table = dd_table_open_on_id(slot->table_id, thd, &mdl,
+                                dict_locked_mode_t::NOT_LOCKED, true);
 
     if (table != nullptr) {
       fts_t *fts = table->fts;
@@ -2843,7 +2844,8 @@ void fts_optimize_sync_table(table_id_t table_id) {
   MDL_ticket *mdl = nullptr;
   THD *thd = current_thd;
 
-  table = dd_table_open_on_id(table_id, thd, &mdl, false, true);
+  table = dd_table_open_on_id(table_id, thd, &mdl,
+                              dict_locked_mode_t::NOT_LOCKED, true);
 
   if (table) {
     if (dict_table_has_fts_index(table) && table->fts->cache) {

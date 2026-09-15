@@ -2679,7 +2679,8 @@ static ib_err_t ib_cursor_open_table_using_id(
   dict_table_t *table;
   MDL_ticket *mdl = nullptr;
 
-  table = dd_table_open_on_id(table_id, ib_trx->mysql_thd, &mdl, false, true);
+  table = dd_table_open_on_id(table_id, ib_trx->mysql_thd, &mdl,
+                              dict_locked_mode_t::NOT_LOCKED, true);
 
   if (table == nullptr) {
     return (DB_TABLE_NOT_FOUND);

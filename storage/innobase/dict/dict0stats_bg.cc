@@ -279,7 +279,8 @@ static void dict_stats_process_entry_from_recalc_pool(THD *thd) {
   table->stats_bg_flag. This is for blocking other DDL, like drop
   table. */
   dict_sys_mutex_enter();
-  table = dd_table_open_on_id(table_id, thd, &mdl, true, true);
+  table = dd_table_open_on_id(table_id, thd, &mdl,
+                              dict_locked_mode_t::X_LOCKED, true);
 
   if (table == nullptr) {
     /* table does not exist, must have been DROPped

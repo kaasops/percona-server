@@ -444,7 +444,8 @@ static void dict_table_try_drop_aborted(
   trx_set_dict_operation(trx, TRX_DICT_OP_INDEX);
 
   if (table == nullptr) {
-    table = dd_table_open_on_id(table_id, nullptr, nullptr, true, true);
+    table = dd_table_open_on_id(table_id, nullptr, nullptr,
+                                dict_locked_mode_t::X_LOCKED, true);
 
     /* Decrement the ref count. The table is MDL locked, so should
     not be dropped */
@@ -5833,7 +5834,8 @@ void dict_sdi_close_table(dict_table_t *table) {
 @return dict_index_t structure or NULL*/
 dict_index_t *dict_sdi_get_index(space_id_t tablespace_id) {
   dict_table_t *table = dd_table_open_on_id(
-      dict_sdi_get_table_id(tablespace_id), nullptr, nullptr, true, true);
+      dict_sdi_get_table_id(tablespace_id), nullptr, nullptr,
+      dict_locked_mode_t::X_LOCKED, true);
 
   if (table != nullptr) {
     dict_sdi_close_table(table);
@@ -5860,9 +5862,11 @@ dict_table_t *dict_sdi_get_table(space_id_t tablespace_id, bool dict_locked,
       dict_sys_mutex_exit();
     }
   }
-  dict_table_t *table =
-      dd_table_open_on_id(dict_sdi_get_table_id(tablespace_id), nullptr,
-                          nullptr, dict_locked, true);
+  dict_table_t *table = dd_table_open_on_id(
+      dict_sdi_get_table_id(tablespace_id), nullptr, nullptr,
+      dict_locked ? dict_locked_mode_t::X_LOCKED
+                  : dict_locked_mode_t::NOT_LOCKED,
+      true);
 
   return (table);
 }

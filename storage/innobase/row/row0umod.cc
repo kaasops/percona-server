@@ -1223,7 +1223,8 @@ static void row_undo_mod_parse_undo_rec(undo_node_t *node, THD *thd,
   took here. Notably, there cannot be a race between ROLLBACK and
   DROP TEMPORARY TABLE, because temporary tables are
   private to a single connection. */
-  node->table = dd_table_open_on_id(table_id, thd, mdl, false, true);
+  node->table = dd_table_open_on_id(table_id, thd, mdl,
+                                    dict_locked_mode_t::NOT_LOCKED, true);
 
   if (node->table == nullptr) {
     /* Table was dropped */

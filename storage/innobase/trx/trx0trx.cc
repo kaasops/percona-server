@@ -797,7 +797,8 @@ void trx_resurrect_locks(bool all) {
     const table_id_set &tables = element.second;
 
     for (auto table_id : tables) {
-      auto table = dd_table_open_on_id(table_id, nullptr, nullptr, false, true);
+      auto table = dd_table_open_on_id(table_id, nullptr, nullptr,
+                                       dict_locked_mode_t::NOT_LOCKED, true);
 
       if (table == nullptr) {
         continue;

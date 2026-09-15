@@ -729,20 +729,19 @@ hold Shared MDL lock on it.
 @param[in,out]  thd                     current MySQL connection (for mdl)
 @param[in,out]  mdl                     metadata lock (*mdl set if
 table_id was found) mdl=NULL if we are resurrecting table IX locks in recovery
-@param[in]      dict_locked             dict_sys mutex is held
+@param[in]      dict_locked_mode        dict_sys lock already held by caller
 @param[in]      check_corruption        check if the table is corrupted or not.
-@param[in]      for_modification        if false, dict_locked means s-lock.
 @return table
 @retval NULL if the table does not exist or cannot be opened */
 dict_table_t *dd_table_open_on_id(table_id_t table_id, THD *thd,
-                                  MDL_ticket **mdl, bool dict_locked,
-                                  bool check_corruption,
-                                  bool for_modification) {
+                                  MDL_ticket **mdl,
+                                  dict_locked_mode_t dict_locked_mode,
+                                  bool check_corruption) {
   dict_table_t *ib_table;
   const auto hash_value = ut::hash_uint64(table_id);
   char full_name[MAX_FULL_NAME_LEN + 1];
 
-  if (!dict_locked) {
+  if (dict_locked_mode == dict_locked_mode_t::NOT_LOCKED) {
     dict_sys_s_lock();
   }
 
@@ -758,12 +757,18 @@ reopen:
 
       /* Create in-memory table object for SDI table */
       dict_index_t *sdi_index = dict_sdi_create_idx_in_mem(
-          space_id, false, 0, false, dict_locked && for_modification);
+          space_id, false, 0, false,
+          dict_locked_mode == dict_locked_mode_t::X_LOCKED);
 
       if (sdi_index == nullptr) {
-        if (!dict_locked) {
+        if (dict_locked_mode == dict_locked_mode_t::NOT_LOCKED) {
           dict_sys_s_unlock();
         }
+        ut_ad(dict_locked_mode == dict_locked_mode_t::X_LOCKED
+                  ? dict_sys_mutex_own()
+              : dict_locked_mode == dict_locked_mode_t::S_LOCKED
+                  ? dict_sys_s_lock_own()
+                  : !dict_sys_mutex_own() && !dict_sys_s_lock_own());
         return nullptr;
       }
 
@@ -772,12 +777,12 @@ reopen:
       ut_ad(ib_table != nullptr);
       ib_table->acquire();
 
-      if (!dict_locked) {
+      if (dict_locked_mode == dict_locked_mode_t::NOT_LOCKED) {
         /* dict_sdi_create_idx_in_mem() re-obtains with x-lock. */
         dict_sys_mutex_exit();
       }
     } else {
-      if (dict_locked && for_modification) {
+      if (dict_locked_mode == dict_locked_mode_t::X_LOCKED) {
         dict_sys_mutex_exit();
       } else {
         dict_sys_s_unlock();
@@ -785,12 +790,10 @@ reopen:
 
       ib_table = dd_table_open_on_id_low(thd, mdl, table_id);
 
-      if (dict_locked) {
-        if (for_modification) {
-          dict_sys_mutex_enter();
-        } else {
-          dict_sys_s_lock();
-        }
+      if (dict_locked_mode == dict_locked_mode_t::X_LOCKED) {
+        dict_sys_mutex_enter();
+      } else if (dict_locked_mode == dict_locked_mode_t::S_LOCKED) {
+        dict_sys_s_lock();
       }
     }
 #else  /* !UNIV_HOTBACKUP */
@@ -806,7 +809,7 @@ reopen:
       ib_table->acquire();
     }
 
-    if (!dict_locked) {
+    if (dict_locked_mode == dict_locked_mode_t::NOT_LOCKED) {
       dict_sys_s_unlock();
     }
   } else {
@@ -823,7 +826,7 @@ reopen:
 
       ut_ad(!ib_table->is_temporary());
 
-      if (dict_locked && for_modification) {
+      if (dict_locked_mode == dict_locked_mode_t::X_LOCKED) {
         dict_sys_mutex_exit();
       } else {
         dict_sys_s_unlock();
@@ -831,26 +834,37 @@ reopen:
 
 #ifndef UNIV_HOTBACKUP
       if (db_str.empty() || tbl_str.empty()) {
-        if (dict_locked) {
-          if (for_modification) {
-            dict_sys_mutex_enter();
-          } else {
-            dict_sys_s_lock();
-          }
+        if (dict_locked_mode == dict_locked_mode_t::X_LOCKED) {
+          dict_sys_mutex_enter();
+        } else if (dict_locked_mode == dict_locked_mode_t::S_LOCKED) {
+          dict_sys_s_lock();
         }
+        ut_ad(dict_locked_mode == dict_locked_mode_t::X_LOCKED
+                  ? dict_sys_mutex_own()
+              : dict_locked_mode == dict_locked_mode_t::S_LOCKED
+                  ? dict_sys_s_lock_own()
+                  : !dict_sys_mutex_own() && !dict_sys_s_lock_own());
         return nullptr;
       }
 
       if (dd_mdl_acquire(thd, mdl, db_str.c_str(), tbl_str.c_str())) {
-        if (dict_locked) {
+        /* Restore the lock mode the caller held. */
+        if (dict_locked_mode == dict_locked_mode_t::X_LOCKED) {
           dict_sys_mutex_enter();
+        } else if (dict_locked_mode == dict_locked_mode_t::S_LOCKED) {
+          dict_sys_s_lock();
         }
+        ut_ad(dict_locked_mode == dict_locked_mode_t::X_LOCKED
+                  ? dict_sys_mutex_own()
+              : dict_locked_mode == dict_locked_mode_t::S_LOCKED
+                  ? dict_sys_s_lock_own()
+                  : !dict_sys_mutex_own() && !dict_sys_s_lock_own());
         return nullptr;
       }
 #endif /* !UNIV_HOTBACKUP */
 
       /* Re-lookup the table after acquiring MDL. */
-      if (dict_locked && for_modification) {
+      if (dict_locked_mode == dict_locked_mode_t::X_LOCKED) {
         dict_sys_mutex_enter();
       } else {
         dict_sys_s_lock();
@@ -876,7 +890,7 @@ reopen:
           ut_ad(ib_table == nullptr);
         } else if (ib_table->discard_after_ddl) {
 #ifndef UNIV_HOTBACKUP
-          if (dict_locked && for_modification) {
+          if (dict_locked_mode == dict_locked_mode_t::X_LOCKED) {
             /* dict_sys->lock is held in X mode. */
             btr_drop_ahi_for_table(ib_table);
             dict_table_remove_from_cache(ib_table);
@@ -895,7 +909,7 @@ reopen:
         }
       }
 
-      if (dict_locked && for_modification) {
+      if (dict_locked_mode == dict_locked_mode_t::X_LOCKED) {
         dict_sys_mutex_exit();
       } else {
         dict_sys_s_unlock();
@@ -923,17 +937,18 @@ reopen:
     ut_a(not_hotbackup);
 #endif /* !UNIV_HOTBACKUP */
 
-    if (dict_locked) {
-      if (for_modification) {
-        dict_sys_mutex_enter();
-      } else {
-        dict_sys_s_lock();
-      }
+    if (dict_locked_mode == dict_locked_mode_t::X_LOCKED) {
+      dict_sys_mutex_enter();
+    } else if (dict_locked_mode == dict_locked_mode_t::S_LOCKED) {
+      dict_sys_s_lock();
     }
   }
 
-  ut_ad(dict_locked ==
-        (for_modification ? dict_sys_mutex_own() : dict_sys_s_lock_own()));
+  ut_ad(dict_locked_mode == dict_locked_mode_t::X_LOCKED
+            ? dict_sys_mutex_own()
+        : dict_locked_mode == dict_locked_mode_t::S_LOCKED
+            ? dict_sys_s_lock_own()
+            : !dict_sys_mutex_own() && !dict_sys_s_lock_own());
 
   return ib_table;
 }
@@ -5639,7 +5654,8 @@ const char *dd_process_dd_tables_rec_and_mtr_commit(
   mtr_commit(mtr);
   THD *thd = current_thd;
 
-  *table = dd_table_open_on_id(table_id, thd, mdl, true, false);
+  *table = dd_table_open_on_id(table_id, thd, mdl,
+                               dict_locked_mode_t::X_LOCKED, false);
 
   if (!(*table)) {
     err_msg = "Table not found";
@@ -5712,7 +5728,8 @@ const char *dd_process_dd_partitions_rec_and_mtr_commit(
   mtr_commit(mtr);
   THD *thd = current_thd;
 
-  *table = dd_table_open_on_id(table_id, thd, mdl, true, false);
+  *table = dd_table_open_on_id(table_id, thd, mdl,
+                               dict_locked_mode_t::X_LOCKED, false);
 
   if (!(*table)) {
     err_msg = "Table not found";
@@ -5810,7 +5827,8 @@ bool dd_process_dd_columns_rec(mem_heap_t *heap, const rec_t *rec,
 
     /* Commit before we try to load the table. */
     mtr_commit(mtr);
-    table = dd_table_open_on_id(*table_id, thd, &mdl, true, true);
+    table = dd_table_open_on_id(*table_id, thd, &mdl,
+                                 dict_locked_mode_t::X_LOCKED, true);
 
     if (!table) {
       delete p;
@@ -5964,7 +5982,8 @@ bool dd_process_dd_virtual_columns_rec(mem_heap_t *heap, const rec_t *rec,
 
     /* Commit before we try to load the table. */
     mtr_commit(mtr);
-    table = dd_table_open_on_id(*table_id, thd, &mdl, true, true);
+    table = dd_table_open_on_id(*table_id, thd, &mdl,
+                                 dict_locked_mode_t::X_LOCKED, true);
 
     if (!table) {
       delete p;
@@ -6096,7 +6115,8 @@ bool dd_process_dd_indexes_rec(mem_heap_t *heap, const rec_t *rec,
 
     /* Commit before load the table */
     mtr_commit(mtr);
-    table = dd_table_open_on_id(table_id, thd, mdl, true, true);
+    table = dd_table_open_on_id(table_id, thd, mdl,
+                                 dict_locked_mode_t::X_LOCKED, true);
 
     if (!table) {
       delete p;
@@ -6116,14 +6136,16 @@ bool dd_process_dd_indexes_rec(mem_heap_t *heap, const rec_t *rec,
 
       dd_table_close(table, thd, mdl, true);
 
-      *parent = dd_table_open_on_id(parent_id, thd, parent_mdl, true, true);
+      *parent = dd_table_open_on_id(parent_id, thd, parent_mdl,
+                                    dict_locked_mode_t::X_LOCKED, true);
 
       if (*parent == nullptr) {
         delete p;
         return false;
       }
 
-      table = dd_table_open_on_id(table_id, thd, mdl, true, true);
+      table = dd_table_open_on_id(table_id, thd, mdl,
+                                  dict_locked_mode_t::X_LOCKED, true);
 
       if (!table) {
         dd_table_close(*parent, thd, parent_mdl, true);

@@ -904,7 +904,8 @@ try_again:
         return (false);
       }
 
-      node->table = dd_table_open_on_id(table_id, thd, &node->mdl, false, true);
+      node->table = dd_table_open_on_id(table_id, thd, &node->mdl,
+                                        dict_locked_mode_t::NOT_LOCKED, true);
 
       if (node->table == nullptr) {
         /* Tablespace containing SDI table
@@ -919,8 +920,8 @@ try_again:
       node->mdl = no_mdl;
 
       dict_sys_s_lock();
-      node->table =
-          dd_table_open_on_id(table_id, thd, &node->mdl, true, true, false);
+      node->table = dd_table_open_on_id(
+          table_id, thd, &node->mdl, dict_locked_mode_t::S_LOCKED, true);
 
       if (node->table && node->table->is_temporary()) {
         /* Temp table does not do purge */
@@ -940,7 +941,8 @@ try_again:
 
           node->parent_mdl = nullptr;
           node->parent = dd_table_open_on_id(parent_id, thd, &node->parent_mdl,
-                                             false, true);
+                                             dict_locked_mode_t::NOT_LOCKED,
+                                             true);
 
           if (node->parent == nullptr) {
             goto err_exit;
@@ -948,8 +950,8 @@ try_again:
 
           ut_ad(node->parent_mdl != nullptr);
           node->mdl = nullptr;
-          node->table =
-              dd_table_open_on_id(table_id, thd, &node->mdl, false, true);
+          node->table = dd_table_open_on_id(
+              table_id, thd, &node->mdl, dict_locked_mode_t::NOT_LOCKED, true);
         }
         break;
       }
@@ -1377,7 +1379,8 @@ void purge_node_t::free_lob_pages() {
     const space_id_t space_id = page_id.space();
 
     MDL_ticket *mdl{};
-    dict_table_t *table = dd_table_open_on_id(table_id, thd, &mdl, false, true);
+    dict_table_t *table = dd_table_open_on_id(
+        table_id, thd, &mdl, dict_locked_mode_t::NOT_LOCKED, true);
 
     if (table == nullptr) {
       continue;
