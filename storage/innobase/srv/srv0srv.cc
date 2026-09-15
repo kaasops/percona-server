@@ -1733,13 +1733,15 @@ void srv_export_innodb_status(void) {
   ut_ad(export_vars.innodb_data_pending_fsyncs <=
         std::numeric_limits<ulint>::max() - 1000);
 
-  /*
-    We don't use AHI at all
-    commented out for now, later it can be put back
-    need to calculate the values in the loop across array
-  */
-  // export_vars.innodb_adaptive_hash_hash_searches = btr_cur_n_sea;
-  // export_vars.innodb_adaptive_hash_non_hash_searches = btr_cur_n_non_sea;
+  {
+    uint64_t n_sea = 0, n_non_sea = 0;
+    for (size_t j = 0; j < BTR_CUR_COUNTER_SHARDING; j++) {
+      n_sea += btr_cur_n_sea[j].value;
+      n_non_sea += btr_cur_n_non_sea[j].value;
+    }
+    export_vars.innodb_adaptive_hash_hash_searches = n_sea;
+    export_vars.innodb_adaptive_hash_non_hash_searches = n_non_sea;
+  }
 
   export_vars.innodb_background_log_sync = srv_log_writes_and_flush;
 
