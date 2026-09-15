@@ -176,6 +176,9 @@ unsigned long planned_threads) {
     planned_threads, cpu_binding_mode_name(entry.mode));
 
 #ifdef __linux__
+  // Every binding mode reads g_socket_cpusets.
+  init_socket_cpusets();
+
   if (!sql_cpu_topology.initialized) {
     sql_cpu_topology_init(&sql_cpu_topology);
     }
