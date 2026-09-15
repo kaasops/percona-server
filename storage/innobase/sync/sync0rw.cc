@@ -228,8 +228,14 @@ void rw_lock_init_only(rw_lock_t *lock, ut::Location clocation) {
   lock->is_block_lock = false;
 }
 
-void rw_lock_create_func(rw_lock_t *lock, ut::Location clocation) {
+void rw_lock_create_func(rw_lock_t *lock,
+                         IF_DEBUG(latch_id_t id, ) ut::Location clocation) {
   rw_lock_init_only(lock, clocation);
+
+#ifdef UNIV_DEBUG
+  lock->m_id = id;
+  ut_a(lock->m_id != LATCH_ID_NONE);
+#endif /* UNIV_DEBUG */
 
   mutex_enter(&rw_lock_list_mutex);
 

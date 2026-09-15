@@ -120,8 +120,10 @@ extern ib_mutex_t rw_lock_list_mutex;
  to the non-locked state. Explicit freeing of the rw-lock with rw_lock_free
  is necessary only if the memory block containing it is freed.
  @param[in] lock pointer to memory
+ @param[in] id latch_id
  @param[in] clocation location where created */
-void rw_lock_create_func(rw_lock_t *lock, ut::Location clocation);
+void rw_lock_create_func(rw_lock_t *lock,
+                         IF_DEBUG(latch_id_t id, ) ut::Location clocation);
 
 /** Initialize an rw_lock_t without registering it in the global rw_lock_list. */
 void rw_lock_init_only(rw_lock_t *lock, ut::Location clocation);
@@ -617,7 +619,12 @@ static inline void pfs_rw_lock_free_func(rw_lock_t *lock); /*!< in: rw-lock */
  is necessary only if the memory block containing it is freed.
  if MySQL performance schema is enabled and "UNIV_PFS_RWLOCK" is
  defined, the rwlock are instrumented with performance schema probes. */
+#ifdef UNIV_DEBUG
+#define rw_lock_create(K, L, ID) \
+  rw_lock_create_func((L), (ID), UT_LOCATION_HERE)
+#else /* UNIV_DEBUG */
 #define rw_lock_create(K, L, ID) rw_lock_create_func((L), UT_LOCATION_HERE)
+#endif /* UNIV_DEBUG */
 
 /** NOTE! The following macros should be used in rw locking and
  unlocking, not the corresponding function. */
