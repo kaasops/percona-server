@@ -342,7 +342,7 @@ inline void clear(Shards<COUNT, M_ORDER> &shards) noexcept {
 @param[in]     src              Source shard. */
 template <size_t COUNT, std::memory_order M_ORDER>
 inline void copy(Shards<COUNT, M_ORDER> &dst,
-                 const Shards<COUNT> &src) noexcept {
+                 const Shards<COUNT, M_ORDER> &src) noexcept {
   size_t i{0};
   for_each(src,
            [&](const Type count) { dst.m_arr[i++].m_n.store(count, M_ORDER); });
