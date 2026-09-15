@@ -4,6 +4,8 @@
 
 #include <pthread.h>
 #include <map>
+#include <array>
+#include <mutex>
 #include <sstream>
 #include <cctype>
 #include <cstdlib>
@@ -19,24 +21,23 @@ static CpuBindingParsedMap g_cpu_binding_parsed;
 
 struct RoleBindingPlan
   {
-  bool initialized;
-  cpu_set_t cpuset;          // used for ANY/FIXED
-  unsigned long bound_threads;
-  int last_socket;           // last socket used for SPARSE
+  std::once_flag once;
+  bool valid = false;        // plan was built successfully
+  cpu_set_t cpuset;          // used for ANY/FIXED; read-only after `once`
+  std::atomic<unsigned long> sparse_ticket{0}; // SPARSE round-robin position
 
   RoleBindingPlan()
-    : initialized(false),
-      bound_threads(0),
-      last_socket(-1)
   {
     CPU_ZERO(&cpuset);
   }
   };
 
-static std::map<ThreadRole, RoleBindingPlan> g_role_plan;
+static std::array<RoleBindingPlan,
+                   static_cast<size_t>(ThreadRole::ROLE_COUNT)> g_role_plans;
 //
 static std::vector<cpu_set_t> g_socket_cpusets;
-static bool g_socket_cpusets_initialized = false;
+static std::once_flag g_socket_cpusets_once;
+static bool g_socket_cpusets_ok = false;
 //
 static bool
 build_cpuset_for_socket(int socket, cpu_set_t &cpuset) {
@@ -82,36 +83,34 @@ build_cpuset_for_socket(int socket, cpu_set_t &cpuset) {
 static bool
 init_socket_cpusets() {
 #ifdef __linux__
-  if (g_socket_cpusets_initialized) {
-    return !g_socket_cpusets.empty();
-  }
-
-  if (!sql_cpu_topology.initialized) {
-    sql_cpu_topology_init(&sql_cpu_topology);
-  }
-
-  const auto &sockets = sql_cpu_topology.sockets;
-  g_socket_cpusets.clear();
-
-  if (sockets.empty()) {
-    sql_print_warning("cpu_binding: no sockets in topology");
-    g_socket_cpusets_initialized = true;
-    return false;
-  }
-
-  g_socket_cpusets.resize(sockets.size());
-  for (size_t i = 0; i < sockets.size(); ++i) {
-    cpu_set_t set;
-    if (!build_cpuset_for_socket(static_cast<int>(i), set)) {
-      CPU_ZERO(&g_socket_cpusets[i]);
-      continue;
+  std::call_once(g_socket_cpusets_once, [] {
+    if (!sql_cpu_topology.initialized) {
+      sql_cpu_topology_init(&sql_cpu_topology);
     }
-    g_socket_cpusets[i] = set;
-  }
 
-  g_socket_cpusets_initialized = true;
+    const auto &sockets = sql_cpu_topology.sockets;
+    g_socket_cpusets.clear();
 
-  return true;
+    if (sockets.empty()) {
+      sql_print_warning("cpu_binding: no sockets in topology");
+      g_socket_cpusets_ok = false;
+      return;
+    }
+
+    g_socket_cpusets.resize(sockets.size());
+    for (size_t i = 0; i < sockets.size(); ++i) {
+      cpu_set_t set;
+      if (!build_cpuset_for_socket(static_cast<int>(i), set)) {
+        CPU_ZERO(&g_socket_cpusets[i]);
+        continue;
+      }
+      g_socket_cpusets[i] = set;
+    }
+
+    g_socket_cpusets_ok = true;
+  });
+
+  return g_socket_cpusets_ok;
 #else
   return false;
 #endif
@@ -293,10 +292,10 @@ unsigned long planned_threads) {
   }
 
   const CpuBindingEntry &entry = it->second;
-  RoleBindingPlan &plan = g_role_plan[role];
+  RoleBindingPlan &plan = g_role_plans[static_cast<size_t>(role)];
 
   if (entry.mode != BindingMode::SPARSE) {
-    if (!plan.initialized) {
+    std::call_once(plan.once, [&] {
       cpu_set_t cpuset;
       CPU_ZERO(&cpuset);
 
@@ -310,11 +309,17 @@ unsigned long planned_threads) {
         sql_print_warning(
           "cpu_binding: empty cpuset for role=%s, skipping affinity",
           cpu_binding_role_name(role));
+        plan.valid = false;
         return;
       }
 
       plan.cpuset = cpuset;
-      plan.initialized = true;
+      plan.valid = true;
+    });
+
+    if (!plan.valid) {
+      // Already warned; the topology is fixed, so do not retry.
+      return;
     }
 
     int err = pthread_setaffinity_np(thread,
@@ -343,40 +348,39 @@ unsigned long planned_threads) {
     return;
   }
 
-  if (!plan.initialized) {
-    plan.initialized = true;
-    plan.bound_threads = 0;
-    plan.last_socket = -1;
+  size_t num_sockets = g_socket_cpusets.size();
+  size_t idx = static_cast<size_t>(
+    plan.sparse_ticket.fetch_add(1, std::memory_order_relaxed) % num_sockets);
+
+  const cpu_set_t *cpuset = nullptr;
+  for (size_t attempt = 0; attempt < num_sockets; ++attempt) {
+    size_t candidate = (idx + attempt) % num_sockets;
+    if (CPU_COUNT(&g_socket_cpusets[candidate]) > 0) {
+      cpuset = &g_socket_cpusets[candidate];
+      idx = candidate;
+      break;
+    }
   }
 
-  int num_sockets = static_cast<int>(g_socket_cpusets.size());
-  int next_socket = (plan.last_socket < 0)
-                      ? 0
-                      : (plan.last_socket + 1) % num_sockets;
-
-  const cpu_set_t &cpuset = g_socket_cpusets[static_cast<size_t>(next_socket)];
-  if (CPU_COUNT(&cpuset) == 0) {
+  if (cpuset == nullptr) {
     sql_print_warning(
-      "cpu_binding: SPARSE socket=%d has empty cpuset",
-      next_socket);
+      "cpu_binding: SPARSE socket=%zu has empty cpuset",
+      idx);
     return;
   }
 
   int err = pthread_setaffinity_np(thread,
     sizeof(cpu_set_t),
-    &cpuset);
+    cpuset);
   if (err != 0) {
     sql_print_warning(
       "Failed to set CPU affinity (SPARSE) for thread role=%d "
-      "(socket=%d), error=%d",
+      "(socket=%zu), error=%d",
       static_cast<int>(role),
-      next_socket,
+      idx,
       err);
     return;
   }
-
-  plan.bound_threads++;
-  plan.last_socket = next_socket;
 #else
   (void)role;
   (void)thread;

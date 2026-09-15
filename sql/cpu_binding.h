@@ -13,6 +13,7 @@ enum class ThreadRole
   REPLICA_WORKER,
   CLIENT_THREAD,
   BUFPOOL_LRU_T,
+  ROLE_COUNT,
   };
 
 enum class BindingMode
