@@ -1,3 +1,30 @@
+percona-server (8.0.44-35~int04) unstable; urgency=medium
+
+  * [INT04] Switch bundled zlib to SIMD-enabled zlib-ng and drop extra/zlib
+  * [INT04] Restore sampling determinism via a seeded PRNG
+  * [INT04] Restore the caller's dict_sys lock mode when opening a table by id fails
+  * [INT04] Document why likely() and unlikely() are macros
+  * [INT04] Use the destination memory order for sharded counter copy source
+  * [INT04] Restore seq_cst load in rw_lock_lock_word_decr()
+  * [INT04] Restore adaptive hash search status counters
+  * [INT04] Fix false sharing between adaptive hash search counter shards
+  * [INT04] Fix SIGILL in my_rnd_double() on CPUs without SSE4.2/ARMv8-CRC
+  * PS-10990 [8.0]: Crash on Item_cache::walk on specific join executed withing stored procedure
+  * Bug#36128964: Item_cache::walk at sql/item.cc
+  * [INT04] Revert "[INT03] guard against use-after-free in Item_cache::walk()"
+  * [INT04] Populate socket cpusets for ANY and FIXED CPU binding modes
+  * [INT04] Fix data races in CPU binding plan state
+  * [INT04] Enable innodb_large_page_populate by default
+  * [INT04] Remove unused rw_lock_register_bulk()
+  * [INT04] Fix rw_lock_create() in debug builds without PFS instrumentation
+  * [INT04] Synchronize all buffer pool chunk map updates
+  * [INT04] Fix double free in buffer pool creation rollback
+  * [INT04] Fix race in lazy buffer block latch initialization
+  * [INT04] Fix dict_sys cache corruption race in discard_after_ddl removal
+  * [INT04] Remove the PCLMULQDQ CRC32 implementation
+
+ -- Alexey Bychko <abychko@gmail.com>  Tue, 15 Sep 2026 16:33:09 +0300
+
 percona-server (8.0.44-35~int03) unstable; urgency=medium
 
   * [INT03] guard against use-after-free in Item_cache::walk()
