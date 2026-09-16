@@ -1932,7 +1932,22 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
     case COM_RESET_CONNECTION: {
       MYSQL_NOTIFY_STATEMENT_QUERY_ATTRIBUTES(thd->m_statement_psi, false);
       thd->status_var.com_other++;
+
+      if (opt_reset_connection_keep_sp_cache)
+        thd->m_skip_sp_cache_clear_on_cleanup = true;
+
+      auto reset_sp_cache_flag = create_scope_guard(
+          [thd]() { thd->m_skip_sp_cache_clear_on_cleanup = false; });
+
       thd->cleanup_connection();
+      /*
+        Count here, not in cleanup_connection(): the decision above is final
+        for this command. Re-read the THD-local flag rather than the global,
+        which another connection may have changed meanwhile.
+      */
+      if (thd->m_skip_sp_cache_clear_on_cleanup)
+        thd->status_var.sp_cache_resets_skipped++;
+
       my_ok(thd);
       break;
     }
@@ -1978,6 +1993,13 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
       int auth_rc;
       thd->status_var.com_other++;
 
+      /* Defer clearing until the authentication result and user are known. */
+      if (opt_reset_connection_keep_sp_cache)
+        thd->m_skip_sp_cache_clear_on_cleanup = true;
+
+      auto reset_sp_cache_flag_cu = create_scope_guard(
+          [thd]() { thd->m_skip_sp_cache_clear_on_cleanup = false; });
+
       thd->cleanup_connection();
       USER_CONN *save_user_connect =
           const_cast<USER_CONN *>(thd->get_user_connect());
@@ -2002,6 +2024,12 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
         thd->set_user_connect(save_user_connect);
         thd->reset_db(save_db);
 
+        /* Authentication failed: the connection is killed, so clear. */
+        if (thd->m_skip_sp_cache_clear_on_cleanup) {
+          sp_cache_clear(&thd->sp_proc_cache);
+          sp_cache_clear(&thd->sp_func_cache);
+        }
+
         my_error(ER_ACCESS_DENIED_CHANGE_USER_ERROR, MYF(0),
                  thd->security_context()->user().str,
                  thd->security_context()->host_or_ip().str,
@@ -2009,6 +2037,25 @@ bool dispatch_command(THD *thd, const COM_DATA *com_data,
         thd->killed = THD::KILL_CONNECTION;
         error = true;
       } else {
+        if (thd->m_skip_sp_cache_clear_on_cleanup) {
+          const LEX_CSTRING old_user = save_security_ctx.user();
+          const LEX_CSTRING new_user = thd->security_context()->user();
+          /*
+            Account names are case-sensitive identifiers, so compare
+            bytewise: a differently cased account is a different user.
+          */
+          const bool user_changed =
+              old_user.str == nullptr || new_user.str == nullptr ||
+              old_user.length != new_user.length ||
+              memcmp(old_user.str, new_user.str, old_user.length) != 0;
+          if (user_changed) {
+            sp_cache_clear(&thd->sp_proc_cache);
+            sp_cache_clear(&thd->sp_func_cache);
+          } else {
+            thd->status_var.sp_cache_resets_skipped++;
+          }
+        }
+
 #ifdef HAVE_PSI_THREAD_INTERFACE
         /* we've authenticated new user */
         PSI_THREAD_CALL(notify_session_change_user)(thd->get_psi());

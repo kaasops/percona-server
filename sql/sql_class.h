@@ -3050,6 +3050,12 @@ class THD : public MDL_context_owner,
   sp_cache *sp_proc_cache;
   sp_cache *sp_func_cache;
 
+  /**
+    When true, cleanup_connection() will not clear stored routine caches.
+    Intended for COM_RESET_CONNECTION/COM_CHANGE_USER handling only.
+  */
+  bool m_skip_sp_cache_clear_on_cleanup{false};
+
   /** number of name_const() substitutions, see sp_head.cc:subst_spvars() */
   uint query_name_consts;
 

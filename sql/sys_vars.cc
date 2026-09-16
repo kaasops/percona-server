@@ -488,6 +488,16 @@ static Sys_var_bool Sys_lo_debug_missing_key(
 
 #endif /* WITH_LOCK_ORDER */
 
+bool opt_reset_connection_keep_sp_cache = false;
+
+static Sys_var_bool Sys_reset_connection_keep_sp_cache(
+    "reset_connection_keep_sp_cache",
+    "Keep stored procedure and function caches across COM_RESET_CONNECTION "
+    "and COM_CHANGE_USER (when the authenticated user is unchanged)",
+    GLOBAL_VAR(opt_reset_connection_keep_sp_cache), CMD_LINE(OPT_ARG),
+    DEFAULT(false), NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(nullptr),
+    ON_UPDATE(nullptr));
+
 /* Sys_thread_affinity_main */
 
 char *opt_thread_affinity_main = nullptr;

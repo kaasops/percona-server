@@ -1205,8 +1205,11 @@ void THD::cleanup_connection(void) {
   init();
   stmt_map.reset();
   user_vars.clear();
-  sp_cache_clear(&sp_proc_cache);
-  sp_cache_clear(&sp_func_cache);
+
+  if (!m_skip_sp_cache_clear_on_cleanup) {
+    sp_cache_clear(&sp_proc_cache);
+    sp_cache_clear(&sp_func_cache);
+  }
 
   clear_error();
   // clear the warnings
@@ -1321,8 +1324,11 @@ void THD::cleanup(void) {
   */
   user_var_events.clear();
   close_temporary_tables(this);
-  sp_cache_clear(&sp_proc_cache);
-  sp_cache_clear(&sp_func_cache);
+
+  if (!m_skip_sp_cache_clear_on_cleanup) {
+    sp_cache_clear(&sp_proc_cache);
+    sp_cache_clear(&sp_func_cache);
+  }
 
   /*
     Actions above might generate events for the binary log, so we

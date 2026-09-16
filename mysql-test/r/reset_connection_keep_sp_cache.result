@@ -1,0 +1,97 @@
+#
+# Setup
+#
+USE test;
+CREATE PROCEDURE p1() SELECT 1;
+CREATE USER other_sp_cache_user IDENTIFIED BY 'pw12345';
+#
+# 1. Default (OFF): COM_RESET_CONNECTION still forces a cache reload
+#    on next call -- regression check for existing behaviour,
+#    unaffected by the new option.
+#
+SELECT @@global.reset_connection_keep_sp_cache;
+@@global.reset_connection_keep_sp_cache
+0
+CALL p1();
+1
+1
+SHOW SESSION STATUS LIKE 'Sp_cache_insert';
+Variable_name	Value
+Sp_cache_insert	1
+SHOW SESSION STATUS LIKE 'Sp_cache_insert';
+Variable_name	Value
+Sp_cache_insert	0
+SHOW SESSION STATUS LIKE 'Sp_cache_resets_skipped';
+Variable_name	Value
+Sp_cache_resets_skipped	0
+CALL p1();
+1
+1
+SHOW SESSION STATUS LIKE 'Sp_cache_insert';
+Variable_name	Value
+Sp_cache_insert	1
+#
+# 2. ON + COM_RESET_CONNECTION: cache is preserved across the reset.
+#
+SET GLOBAL reset_connection_keep_sp_cache = ON;
+CALL p1();
+1
+1
+SHOW SESSION STATUS LIKE 'Sp_cache_resets_skipped';
+Variable_name	Value
+Sp_cache_resets_skipped	1
+CALL p1();
+1
+1
+SHOW SESSION STATUS LIKE 'Sp_cache_insert';
+Variable_name	Value
+Sp_cache_insert	0
+#
+# 3. ON + COM_CHANGE_USER, same user: cache is preserved.
+# (bare --change_user re-authenticates as the current user/pass/db,
+# exercising COM_CHANGE_USER without an actual identity change.)
+#
+SHOW SESSION STATUS LIKE 'Sp_cache_resets_skipped';
+Variable_name	Value
+Sp_cache_resets_skipped	1
+CALL p1();
+1
+1
+SHOW SESSION STATUS LIKE 'Sp_cache_insert';
+Variable_name	Value
+Sp_cache_insert	0
+#
+# 4. ON + COM_CHANGE_USER, different user: cache is cleared despite
+#    ON, because the authenticated identity changed.
+#
+GRANT EXECUTE ON PROCEDURE test.p1 TO other_sp_cache_user;
+SHOW SESSION STATUS LIKE 'Sp_cache_resets_skipped';
+Variable_name	Value
+Sp_cache_resets_skipped	0
+CALL p1();
+1
+1
+SHOW SESSION STATUS LIKE 'Sp_cache_insert';
+Variable_name	Value
+Sp_cache_insert	1
+#
+# 5. ON + COM_CHANGE_USER, failed auth: the SP cache is always
+#    cleared and the connection is killed server-side regardless of
+#    the option. mysqltest's default --change_user reconnects
+#    transparently on failure, but that reconnect starts a brand
+#    new session -- only the error is asserted here, not counters
+#    of a session that no longer exists server-side.
+#
+# acl_authenticate() rejects the bad password and reports it via
+# ER_ACCESS_DENIED_ERROR before dispatch_command's own
+# ER_ACCESS_DENIED_CHANGE_USER_ERROR call is reached (pre-existing
+# behaviour, not introduced by this patch) -- so that is the error
+# actually observed on the wire; verified empirically (see coder
+# report for this unit).
+ERROR 28000: Access denied for user 'other_sp_cache_user'@'localhost' (using password: YES)
+#
+# Cleanup
+#
+SET GLOBAL reset_connection_keep_sp_cache = OFF;
+DROP USER other_sp_cache_user;
+DROP PROCEDURE p1;
