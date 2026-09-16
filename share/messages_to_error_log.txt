@@ -8937,24 +8937,6 @@ ER_IB_MSG_1133
 ER_IB_MSG_1134
   eng "Could not open or create the system tablespace. If you tried to add new data files to the system tablespace, and it failed here, you should now edit innodb_data_file_path in my.cnf back to what it was, and remove the new ibdata files InnoDB created in this failed attempt. InnoDB only wrote those files full of zeros, but did not yet use them in any way. But be careful: do not remove old data files which contain your precious data!"
 
-ER_IB_MSG_CPU_CORES_INFO
-  eng "%s"
-
-ER_IB_MSG_BUFFER_POOL_INIT_THREADS_CAPPED
-  eng "innodb_buffer_pool_parallel_init_threads (%lu) exceeds buffer pool instances (%lu). Capping to %lu threads."
-
-ER_IB_MSG_BUFFER_POOL_INSTANCE_INIT_PARAMS
-  eng "Parallel buffer pool initialization: instances=%lu, init threads=%lu, configured threads=%lu, buffer_pool_size=%.3lf%c"
-
-ER_IB_MSG_BUFFER_POOL_INSTANCE_INIT_COMPLETED
-  eng "Buffer pool instance %lu initialized in %d minutes %.3lf seconds"
-
-ER_IB_MSG_BUFFER_POOL_INIT_COMPLETED
-  eng "Buffer pool initialization completed in %d minutes %.3lf seconds. Speed: %.3lf GB/sec"
-
-ER_IB_MSG_BUFFER_POOL_INIT_FAILED
-  eng "Buffer pool initialization failed after %d minutes and %.3lf seconds"
-
 ER_IB_MSG_DATA_DIRECTORY_NOT_INITIALIZED_OR_CORRUPTED
   eng "Cannot create redo log files because data files are corrupt or the database was not shut down cleanly after creating the data files."
 
@@ -12517,6 +12499,24 @@ ER_LOG_NAME_NOT_MATCHING_SEC_LOG_PATH
 
 ER_SSL_FIPS_MODE_ENABLED
   eng "A FIPS-approved version of the OpenSSL cryptographic library has been detected in the operating system with a properly configured FIPS module available for loading. Percona Server for MySQL will load this module and run in FIPS mode."
+
+ER_IB_MSG_CPU_CORES_INFO
+  eng "%s"
+
+ER_IB_MSG_BUFFER_POOL_INIT_THREADS_CAPPED
+  eng "innodb_buffer_pool_parallel_init_threads (%lu) exceeds buffer pool instances (%lu). Capping to %lu threads."
+
+ER_IB_MSG_BUFFER_POOL_INSTANCE_INIT_PARAMS
+  eng "Parallel buffer pool initialization: instances=%lu, init threads=%lu, configured threads=%lu, buffer_pool_size=%.3lf%c"
+
+ER_IB_MSG_BUFFER_POOL_INSTANCE_INIT_COMPLETED
+  eng "Buffer pool instance %lu initialized in %d minutes %.3lf seconds"
+
+ER_IB_MSG_BUFFER_POOL_INIT_COMPLETED
+  eng "Buffer pool initialization completed in %d minutes %.3lf seconds. Speed: %.3lf GB/sec"
+
+ER_IB_MSG_BUFFER_POOL_INIT_FAILED
+  eng "Buffer pool initialization failed after %d minutes and %.3lf seconds"
 
 #
 # End of Percona Server 8.0 server error log messages
