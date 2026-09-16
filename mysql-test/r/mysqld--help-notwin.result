@@ -811,6 +811,8 @@ The following options may be given as the first argument:
  --min-examined-row-limit=# 
  Don't write queries to slow log that examine fewer rows
  than that
+ --mts-coordinator-basic-nap=# 
+ Basic nap time for coordinator in milliseconds (MTS).
  --myisam-block-size=# 
  Block size to be used for MyISAM index pages
  --myisam-data-pointer-size=# 
@@ -1286,6 +1288,9 @@ The following options may be given as the first argument:
  in parallel using the logical timestamps computed by the
  source, according to
  binlog_transaction_dependency_tracking.
+ --replica-parallel-worker-queue-len-max=# 
+ Maximum length of the worker queue for multithreaded
+ replica.
  --replica-parallel-workers=# 
  Number of worker threads for executing events in parallel
  --replica-pending-jobs-size-max=# 
@@ -1422,6 +1427,10 @@ The following options may be given as the first argument:
  When this option is enabled, connections attempted using
  insecure transport will be rejected.  Secure transports
  are SSL/TLS, Unix socket or Shared Memory (on Windows).
+ --reset-connection-keep-sp-cache 
+ Keep stored procedure and function caches across
+ COM_RESET_CONNECTION and COM_CHANGE_USER (when the
+ authenticated user is unchanged)
  --rpl-read-size=#   The size for reads done from the binlog and relay log. It
  must be a multiple of 4kb. Making it larger might help
  with IO stalls while reading these files when they are
@@ -1547,6 +1556,9 @@ The following options may be given as the first argument:
  --slave-parallel-type=name 
  This option is deprecated. Use replica_parallel_type
  instead.
+ --slave-parallel-worker-queue-len-max=# 
+ This option is deprecated. Use
+ replica_parallel_worker_queue_len_max instead.
  --slave-parallel-workers=# 
  This option is deprecated. Use replica_parallel_workers
  instead.
@@ -1701,6 +1713,21 @@ The following options may be given as the first argument:
  --tf-sequence-table-max-upper-bound=# 
  Maximum number of records PERCONA_SEQUENCE_TABLE() table
  function is allowed to generate.
+ --thread-affinity-bp-lru[=name] 
+ CPU binding for Buffer Pool LRU threads:
+ socket,core,thread; each field can be a number or
+ 'any/sparse'.
+ --thread-affinity-client[=name] 
+ CPU binding for client connection threads:
+ socket,core,thread; each field can be a number or
+ 'any/sparse'.
+ --thread-affinity-main[=name] 
+ CPU binding for main server thread: socket,core,thread;
+ each field can be a number or 'any'.
+ --thread-affinity-rpl[=name] 
+ CPU binding for all replication threads:
+ socket,core,thread; each field can be a number or
+ 'any/sparse'.
  --thread-cache-size=# 
  How many threads we should keep in a cache for reuse
  --thread-handling=name 
@@ -2003,6 +2030,7 @@ max-user-connections 0
 max-write-lock-count 18446744073709551615
 memlock FALSE
 min-examined-row-limit 0
+mts-coordinator-basic-nap 5
 myisam-block-size 1024
 myisam-data-pointer-size 6
 myisam-max-sort-file-size 9223372036853727232
@@ -2133,6 +2161,7 @@ replica-exec-mode STRICT
 replica-max-allowed-packet 1073741824
 replica-net-timeout 60
 replica-parallel-type LOGICAL_CLOCK
+replica-parallel-worker-queue-len-max 16384
 replica-parallel-workers 4
 replica-pending-jobs-size-max 134217728
 replica-preserve-commit-order TRUE
@@ -2148,6 +2177,7 @@ report-password (No default value)
 report-port 0
 report-user (No default value)
 require-secure-transport FALSE
+reset-connection-keep-sp-cache FALSE
 rpl-read-size 8192
 rpl-stop-replica-timeout 31536000
 rpl-stop-slave-timeout 31536000
@@ -2185,6 +2215,7 @@ slave-exec-mode STRICT
 slave-max-allowed-packet 1073741824
 slave-net-timeout 60
 slave-parallel-type LOGICAL_CLOCK
+slave-parallel-worker-queue-len-max 16384
 slave-parallel-workers 4
 slave-pending-jobs-size-max 134217728
 slave-preserve-commit-order TRUE
@@ -2223,6 +2254,10 @@ temptable-max-ram 1073741824
 temptable-use-mmap TRUE
 terminology-use-previous NONE
 tf-sequence-table-max-upper-bound 1048576
+thread-affinity-bp-lru (No default value)
+thread-affinity-client (No default value)
+thread-affinity-main (No default value)
+thread-affinity-rpl (No default value)
 thread-cache-size 9
 thread-handling one-thread-per-connection
 thread-stack 1048576

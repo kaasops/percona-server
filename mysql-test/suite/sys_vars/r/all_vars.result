@@ -40,8 +40,12 @@ init_replica
 init_replica
 init_slave
 init_slave
+innodb_buffer_pool_parallel_init_threads
+innodb_buffer_pool_parallel_init_threads
 innodb_dedicated_server
 innodb_dedicated_server
+innodb_large_page_populate
+innodb_large_page_populate
 innodb_log_spin_cpu_abs_lwm
 innodb_log_spin_cpu_abs_lwm
 innodb_log_spin_cpu_pct_hwm
@@ -64,6 +68,8 @@ master_verify_checksum
 master_verify_checksum
 max_length_for_sort_data
 max_length_for_sort_data
+mts_coordinator_basic_nap
+mts_coordinator_basic_nap
 optimizer_max_subgraph_pairs
 optimizer_max_subgraph_pairs
 partial_revokes
@@ -93,6 +99,8 @@ replica_net_timeout
 replica_net_timeout
 replica_parallel_type
 replica_parallel_type
+replica_parallel_worker_queue_len_max
+replica_parallel_worker_queue_len_max
 replica_parallel_workers
 replica_parallel_workers
 replica_pending_jobs_size_max
@@ -109,6 +117,8 @@ replication_optimize_for_static_plugin_config
 replication_optimize_for_static_plugin_config
 replication_sender_observe_commit_only
 replication_sender_observe_commit_only
+reset_connection_keep_sp_cache
+reset_connection_keep_sp_cache
 resultset_metadata
 rpl_stop_replica_timeout
 rpl_stop_replica_timeout
@@ -142,6 +152,8 @@ slave_net_timeout
 slave_net_timeout
 slave_parallel_type
 slave_parallel_type
+slave_parallel_worker_queue_len_max
+slave_parallel_worker_queue_len_max
 slave_parallel_workers
 slave_parallel_workers
 slave_pending_jobs_size_max
@@ -169,6 +181,14 @@ temptable_use_mmap
 temptable_use_mmap
 terminology_use_previous
 terminology_use_previous
+thread_affinity_bp_lru
+thread_affinity_bp_lru
+thread_affinity_client
+thread_affinity_client
+thread_affinity_main
+thread_affinity_main
+thread_affinity_rpl
+thread_affinity_rpl
 tls_ciphersuites
 tls_ciphersuites
 use_secondary_engine
