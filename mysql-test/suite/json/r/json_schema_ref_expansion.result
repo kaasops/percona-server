@@ -1,0 +1,60 @@
+#
+# Bug#39000847: Cap JSON Schema $ref expansion depth
+# Bug#39489024: Reject cyclic JSON schema references
+#
+# Preparing a schema whose local $ref references form a cycle, or
+# whose $ref expansion is too deep, must be rejected with an error
+# instead of recursing until the thread stack is exhausted.
+#
+# Cyclic references through each keyword that compiles a subschema.
+SELECT JSON_SCHEMA_VALID('{"$ref": "#"}', '{}');
+ERROR 22032: The JSON document exceeds the maximum depth.
+SELECT JSON_SCHEMA_VALID('{"allOf": [{"$ref": "#"}]}', '{}');
+ERROR 22032: The JSON document exceeds the maximum depth.
+SELECT JSON_SCHEMA_VALID('{"anyOf": [{"$ref": "#"}]}', '{}');
+ERROR 22032: The JSON document exceeds the maximum depth.
+SELECT JSON_SCHEMA_VALID('{"oneOf": [{"$ref": "#"}]}', '{}');
+ERROR 22032: The JSON document exceeds the maximum depth.
+SELECT JSON_SCHEMA_VALID('{"items": {"$ref": "#"}}', '[]');
+ERROR 22032: The JSON document exceeds the maximum depth.
+# A cycle between two definitions.
+SET @cycle = '{"definitions": {"a": {"allOf": [{"$ref": "#/definitions/b"}]},
+                               "b": {"allOf": [{"$ref": "#/definitions/a"}]}},
+               "$ref": "#/definitions/a"}';
+SELECT JSON_SCHEMA_VALID(@cycle, '{}');
+ERROR 22032: The JSON document exceeds the maximum depth.
+SELECT JSON_SCHEMA_VALIDATION_REPORT(@cycle, '{}');
+ERROR 22032: The JSON document exceeds the maximum depth.
+# The same schema used in a CHECK constraint.
+CREATE TABLE t1 (j JSON,
+CHECK (JSON_SCHEMA_VALID('{"allOf": [{"$ref": "#"}]}', j)));
+ERROR 22032: The JSON document exceeds the maximum depth.
+# A chain of references without a cycle: accepted while the
+# expansion depth stays within the limit, rejected beyond it.
+SET @saved_group_concat_max_len = @@session.group_concat_max_len;
+SET SESSION group_concat_max_len = 1000000;
+SET @steps = 5;
+SET @chain = (
+WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < @steps)
+SELECT CONCAT('{"definitions": {',
+GROUP_CONCAT(CONCAT('"d', n, '": {"properties": {"p": {"$ref": "#/definitions/d', n + 1, '"}}}')
+ORDER BY n),
+', "d', @steps + 1, '": {"type": "integer"}}, "$ref": "#/definitions/d1"}')
+FROM seq);
+SELECT JSON_SCHEMA_VALID(@chain, '{"p": {"p": {"p": {"p": {"p": 1}}}}}') AS valid;
+valid
+1
+SELECT JSON_SCHEMA_VALID(@chain, '{"p": {"p": {"p": {"p": {"p": "x"}}}}}') AS invalid;
+invalid
+0
+SET @steps = 40;
+SET @chain = (
+WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < @steps)
+SELECT CONCAT('{"definitions": {',
+GROUP_CONCAT(CONCAT('"d', n, '": {"properties": {"p": {"$ref": "#/definitions/d', n + 1, '"}}}')
+ORDER BY n),
+', "d', @steps + 1, '": {"type": "integer"}}, "$ref": "#/definitions/d1"}')
+FROM seq);
+SELECT JSON_SCHEMA_VALID(@chain, '{}');
+ERROR 22032: The JSON document exceeds the maximum depth.
+SET SESSION group_concat_max_len = @saved_group_concat_max_len;

@@ -1,0 +1,63 @@
+--echo #
+--echo # Bug#39000847: Cap JSON Schema \$ref expansion depth
+--echo # Bug#39489024: Reject cyclic JSON schema references
+--echo #
+--echo # Preparing a schema whose local \$ref references form a cycle, or
+--echo # whose \$ref expansion is too deep, must be rejected with an error
+--echo # instead of recursing until the thread stack is exhausted.
+--echo #
+
+--echo # Cyclic references through each keyword that compiles a subschema.
+--error ER_JSON_DOCUMENT_TOO_DEEP
+SELECT JSON_SCHEMA_VALID('{"$ref": "#"}', '{}');
+--error ER_JSON_DOCUMENT_TOO_DEEP
+SELECT JSON_SCHEMA_VALID('{"allOf": [{"$ref": "#"}]}', '{}');
+--error ER_JSON_DOCUMENT_TOO_DEEP
+SELECT JSON_SCHEMA_VALID('{"anyOf": [{"$ref": "#"}]}', '{}');
+--error ER_JSON_DOCUMENT_TOO_DEEP
+SELECT JSON_SCHEMA_VALID('{"oneOf": [{"$ref": "#"}]}', '{}');
+--error ER_JSON_DOCUMENT_TOO_DEEP
+SELECT JSON_SCHEMA_VALID('{"items": {"$ref": "#"}}', '[]');
+
+--echo # A cycle between two definitions.
+SET @cycle = '{"definitions": {"a": {"allOf": [{"$ref": "#/definitions/b"}]},
+                               "b": {"allOf": [{"$ref": "#/definitions/a"}]}},
+               "$ref": "#/definitions/a"}';
+--error ER_JSON_DOCUMENT_TOO_DEEP
+SELECT JSON_SCHEMA_VALID(@cycle, '{}');
+--error ER_JSON_DOCUMENT_TOO_DEEP
+SELECT JSON_SCHEMA_VALIDATION_REPORT(@cycle, '{}');
+
+--echo # The same schema used in a CHECK constraint.
+--error ER_JSON_DOCUMENT_TOO_DEEP
+CREATE TABLE t1 (j JSON,
+  CHECK (JSON_SCHEMA_VALID('{"allOf": [{"$ref": "#"}]}', j)));
+
+--echo # A chain of references without a cycle: accepted while the
+--echo # expansion depth stays within the limit, rejected beyond it.
+SET @saved_group_concat_max_len = @@session.group_concat_max_len;
+SET SESSION group_concat_max_len = 1000000;
+
+SET @steps = 5;
+SET @chain = (
+  WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < @steps)
+  SELECT CONCAT('{"definitions": {',
+                GROUP_CONCAT(CONCAT('"d', n, '": {"properties": {"p": {"$ref": "#/definitions/d', n + 1, '"}}}')
+                             ORDER BY n),
+                ', "d', @steps + 1, '": {"type": "integer"}}, "$ref": "#/definitions/d1"}')
+  FROM seq);
+SELECT JSON_SCHEMA_VALID(@chain, '{"p": {"p": {"p": {"p": {"p": 1}}}}}') AS valid;
+SELECT JSON_SCHEMA_VALID(@chain, '{"p": {"p": {"p": {"p": {"p": "x"}}}}}') AS invalid;
+
+SET @steps = 40;
+SET @chain = (
+  WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < @steps)
+  SELECT CONCAT('{"definitions": {',
+                GROUP_CONCAT(CONCAT('"d', n, '": {"properties": {"p": {"$ref": "#/definitions/d', n + 1, '"}}}')
+                             ORDER BY n),
+                ', "d', @steps + 1, '": {"type": "integer"}}, "$ref": "#/definitions/d1"}')
+  FROM seq);
+--error ER_JSON_DOCUMENT_TOO_DEEP
+SELECT JSON_SCHEMA_VALID(@chain, '{}');
+
+SET SESSION group_concat_max_len = @saved_group_concat_max_len;
