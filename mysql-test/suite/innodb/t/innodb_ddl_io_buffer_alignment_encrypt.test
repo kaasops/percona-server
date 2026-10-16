@@ -1,0 +1,79 @@
+# DDL temp-file I/O buffer alignment under encryption: with
+# innodb_encrypt_online_alter_logs=ON, pwrite() writes crypt_buf (not the
+# caller's buffer) - the ut_ad() invariant in ddl::pwrite() checks
+# crypt_buf's address too, and this is the only test that puts a non-null
+# crypt_buf through it.
+--source include/have_debug.inc
+--source include/linux.inc
+--source include/have_component_keyring_file.inc
+--source suite/component_keyring_file/inc/setup_component.inc
+
+--disable_query_log
+CALL mtr.add_suppression("\\[Warning\\] .*MY-\\d+.* Failed to set O_DIRECT on file.*");
+--enable_query_log
+
+# No --innodb-sort-buffer-size here (unlike the row-log-encryption test this
+# was modeled on): that variable is srv_sort_buf_size, read only in
+# row0log.cc, and has no effect on the ddl0fts.cc/ddl0builder.cc DDL buffers
+# this test exercises.
+--let $restart_parameters=restart: --innodb_encrypt_online_alter_logs=ON --innodb_disable_sort_file_cache=ON
+--source include/restart_mysqld.inc
+
+--echo #
+--echo # Witness: the encryption path is actually in effect for the DDL below.
+--echo #
+SELECT @@innodb_encrypt_online_alter_logs;
+
+CREATE TABLE t1 (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  c1 VARCHAR(100),
+  c2 INT
+) ENGINE = InnoDB ENCRYPTION='y';
+
+# 'alignment' (9 chars, not in the default stopword list, fts0fts.cc) is
+# chosen deliberately: a token is only written to (and later read back from)
+# the FTS parser's temp files if fts_check_token() accepts it, which requires
+# 3 <= length <= innodb_ft_max_token_size (default 84, fts0fts.cc) and no
+# stopword match. REPEAT('a', 100) is one 100-character token, over the 84
+# limit, so it never reaches those temp files: the FULLTEXT ALTER below
+# would still succeed (it rebuilds for FTS_DOC_ID via the regular Builder
+# path), but ddl0fts.cc's own pwrite()/pread() calls - the ones with
+# crypt_buf this test is after - would be skipped, and MATCH() against it
+# would deterministically return 0.
+INSERT INTO t1 (c1, c2) VALUES ('alignment', 1);
+
+--disable_query_log
+# 1 row doubled 14 times is 16384 rows (the required >= 15000).
+let $i = 14;
+while ($i)
+{
+  INSERT INTO t1 (c1, c2) SELECT c1, c2 FROM t1;
+  dec $i;
+}
+--enable_query_log
+
+SELECT COUNT(*) FROM t1;
+
+ALTER TABLE t1 ADD INDEX idx_c2 (c2), ALGORITHM=INPLACE, LOCK=NONE;
+
+# Rebuild: every index (including the clustered one) is built fresh through
+# the same merge-sort buffers, all under encryption.
+ALTER TABLE t1 ENGINE=InnoDB, ALGORITHM=INPLACE, LOCK=NONE;
+
+# FULLTEXT index creation does not support LOCK=NONE (verified on devbuild:
+# ERROR 1846 "Fulltext index creation requires a lock. Try LOCK=SHARED.") -
+# LOCK=SHARED still resolves to ALGORITHM=INPLACE, which is what exercises
+# the ddl0fts.cc allocation path (crypt_buf included) this test is after.
+ALTER TABLE t1 ADD FULLTEXT INDEX idx_c1 (c1), ALGORITHM=INPLACE, LOCK=SHARED;
+
+# Every row's c1 is the same accepted token, so this is the row count: the
+# witness that the FTS parser's temp files (ddl0fts.cc, crypt_buf included)
+# were actually written to and read back from.
+SELECT COUNT(*) FROM t1 WHERE MATCH(c1) AGAINST('alignment');
+
+DROP TABLE t1;
+
+--source suite/component_keyring_file/inc/teardown_component.inc
+
+--let $restart_parameters=
+--source include/restart_mysqld.inc

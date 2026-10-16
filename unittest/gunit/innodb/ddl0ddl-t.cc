@@ -24,13 +24,12 @@
 
 namespace innodb_ddl0ddl_unittest {
 
-/* The alignment is not configurable: the single allocation point keeps the
-upstream UNIV_SECTOR_SIZE. Pinning the value here is what
-makes a regression ("helper silently starts returning IO_BLOCK_SIZE" or
-similar) visible as a one-line diff instead of only as address-check noise
-below. */
-TEST(ddl0ddl, io_buffer_alignment_is_unchanged_from_upstream) {
-  EXPECT_EQ(ddl::io_buffer_alignment(), UNIV_SECTOR_SIZE);
+/* The alignment is not configurable: the single allocation point aligns to
+IO_BLOCK_SIZE, which serves both 512-byte and 4096-byte logical-sector tmpdir
+devices under O_DIRECT. Pinning the value here makes a regression back to
+UNIV_SECTOR_SIZE a one-line diff, not only address-check noise below. */
+TEST(ddl0ddl, io_buffer_alignment_is_io_block_size) {
+  EXPECT_EQ(ddl::io_buffer_alignment(), ddl::IO_BLOCK_SIZE);
 }
 
 /* Sizes exercised below mirror the shapes the 8 real call sites pass:

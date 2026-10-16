@@ -31,6 +31,8 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #ifndef ddl0ddl_h
 #define ddl0ddl_h
 
+#include <cstddef>
+
 #include "fts0fts.h"
 #include "lock0types.h"
 #include "os0file.h"
@@ -64,8 +66,11 @@ extern ulong fts_parser_threads;
 /** Minimum IO buffer size. */
 constexpr size_t IO_BLOCK_SIZE = 4 * 1024;
 
-/** Alignment (bytes) of DDL temp-file I/O buffers. O_DIRECT requires the
-buffer address, offset and length to be multiples of the logical sector. */
+/** Alignment (bytes) of DDL temp-file I/O buffers: IO_BLOCK_SIZE. O_DIRECT
+requires the buffer address, offset and length to be multiples of the
+logical sector; offsets and lengths are multiples of IO_BLOCK_SIZE, so an
+IO_BLOCK_SIZE-aligned address satisfies both 512-byte and 4096-byte
+logical-sector tmpdir devices. */
 size_t io_buffer_alignment() noexcept;
 
 /** Allocate a DDL temp-file I/O buffer (mem_key_ddl, io_buffer_alignment()).
@@ -73,11 +78,13 @@ size_t io_buffer_alignment() noexcept;
 @return empty unique_ptr on OOM, as ut::make_unique_aligned. */
 ut::unique_ptr_aligned<byte[]> alloc_io_buffer(size_t size) noexcept;
 
-/* IO_BLOCK_SIZE is the unit of I/O offset/length, io_buffer_alignment() is
-the (possibly coarser) address alignment; a length that is a multiple of
-IO_BLOCK_SIZE must also satisfy the alignment, or O_DIRECT writes could
-straddle a boundary that the allocator does not guarantee. */
+/* io_buffer_alignment() returns IO_BLOCK_SIZE: it must be a multiple of the
+smallest logical sector O_DIRECT accepts, a power of two, and above
+alignof(std::max_align_t), which the extended-alignment path behind
+ut::make_unique_aligned() (detail::Aligned_alloc, aligned_alloc.h) requires. */
 static_assert(IO_BLOCK_SIZE % UNIV_SECTOR_SIZE == 0);
+static_assert((IO_BLOCK_SIZE & (IO_BLOCK_SIZE - 1)) == 0);
+static_assert(IO_BLOCK_SIZE > alignof(std::max_align_t));
 
 /** @brief Secondary buffer for I/O operations of merge records.
 

@@ -1,0 +1,82 @@
+# DDL temp-file I/O buffers are aligned to IO_BLOCK_SIZE (4096): the
+# address/offset/length invariants in ddl::pread()/pwrite(), with
+# innodb_disable_sort_file_cache=ON (O_DIRECT) as on a 4Kn tmpdir device.
+#
+# have_odirect.inc is deliberately NOT sourced here: this test checks the
+# addresses ut_ad() enforces, not that O_DIRECT itself engages - on a vardir
+# without O_DIRECT support that include would silently skip the whole test,
+# which is not the outcome we want (the invariant still has to hold when
+# O_DIRECT fails to engage and the server falls back to buffered I/O).
+--source include/have_debug.inc
+--source include/linux.inc
+
+--disable_query_log
+# innodb_disable_sort_file_cache=ON asks for O_DIRECT on the DDL temp files;
+# on a vardir device that does not support it, InnoDB warns and falls back
+# to buffered I/O (os0file.cc, ER_IB_MSG_824) instead of failing the ALTER -
+# harmless for this test, which only checks addresses, but would otherwise
+# fail check-warnings.
+CALL mtr.add_suppression("\\[Warning\\] .*MY-\\d+.* Failed to set O_DIRECT on file.*");
+--enable_query_log
+
+--echo #
+--echo # Drive real DDL through the ut_ad() invariants in
+--echo # ddl::pread()/ddl::pwrite(): a regular secondary index, a full table
+--echo # rebuild, and a FULLTEXT index (the ddl0fts.cc allocation path).
+--echo #
+
+CREATE TABLE t1 (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  c1 VARCHAR(100),
+  c2 INT
+) ENGINE = InnoDB;
+
+# 'alignment' (9 chars, not in the default stopword list, fts0fts.cc) is
+# chosen deliberately: a token is only written to (and later read back from)
+# the FTS parser's temp files if fts_check_token() accepts it, which requires
+# 3 <= length <= innodb_ft_max_token_size (default 84, fts0fts.cc) and no
+# stopword match. REPEAT('a', 100) - tried first - is one 100-character
+# token, over the 84 limit, so it never reaches those temp files at all: the
+# FULLTEXT ALTER below still succeeds (it rebuilds for FTS_DOC_ID via the
+# regular Builder path), but ddl0fts.cc's own pwrite()/pread() calls are
+# skipped, and MATCH() against it deterministically returns 0 - which looks
+# like a passing test while never exercising the FTS temp-file path.
+INSERT INTO t1 (c1, c2) VALUES ('alignment', 1);
+
+--disable_query_log
+# Doubling INSERT ... SELECT: 1 row doubled 18 times is 262144 rows (the
+# required >= 200k), and each doubling is a single bulk statement rather
+# than a per-row loop.
+let $i = 18;
+while ($i)
+{
+  INSERT INTO t1 (c1, c2) SELECT c1, c2 FROM t1;
+  dec $i;
+}
+--enable_query_log
+
+SELECT COUNT(*) FROM t1;
+
+# ha_innodb.cc:1194 - 65536 is the minimum innodb_ddl_buffer_size accepts.
+SET SESSION innodb_ddl_buffer_size = 65536;
+SET SESSION innodb_ddl_threads = 4;
+
+ALTER TABLE t1 ADD INDEX idx_c2 (c2), ALGORITHM=INPLACE, LOCK=NONE;
+
+# Rebuild: every index (including the clustered one) is built fresh through
+# the same merge-sort buffers.
+ALTER TABLE t1 ENGINE=InnoDB, ALGORITHM=INPLACE, LOCK=NONE;
+
+# FULLTEXT index creation does not support LOCK=NONE (verified on devbuild:
+# ERROR 1846 "Fulltext index creation requires a lock. Try LOCK=SHARED.") -
+# LOCK=SHARED still resolves to ALGORITHM=INPLACE, which is what exercises
+# the ddl0fts.cc allocation path this test is after.
+ALTER TABLE t1 ADD FULLTEXT INDEX idx_c1 (c1), ALGORITHM=INPLACE, LOCK=SHARED;
+
+# Every row's c1 is the same accepted token, so this is the row count: the
+# witness that the FTS parser's temp files (ddl0fts.cc) were actually
+# written to and read back from, not skipped like REPEAT('a', 100) would be.
+SELECT COUNT(*) FROM t1 WHERE MATCH(c1) AGAINST('alignment');
+
+DROP TABLE t1;
+

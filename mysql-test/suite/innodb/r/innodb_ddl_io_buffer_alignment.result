@@ -1,0 +1,25 @@
+#
+# Drive real DDL through the ut_ad() invariants in
+# ddl::pread()/ddl::pwrite(): a regular secondary index, a full table
+# rebuild, and a FULLTEXT index (the ddl0fts.cc allocation path).
+#
+CREATE TABLE t1 (
+id INT PRIMARY KEY AUTO_INCREMENT,
+c1 VARCHAR(100),
+c2 INT
+) ENGINE = InnoDB;
+INSERT INTO t1 (c1, c2) VALUES ('alignment', 1);
+SELECT COUNT(*) FROM t1;
+COUNT(*)
+262144
+SET SESSION innodb_ddl_buffer_size = 65536;
+SET SESSION innodb_ddl_threads = 4;
+ALTER TABLE t1 ADD INDEX idx_c2 (c2), ALGORITHM=INPLACE, LOCK=NONE;
+ALTER TABLE t1 ENGINE=InnoDB, ALGORITHM=INPLACE, LOCK=NONE;
+ALTER TABLE t1 ADD FULLTEXT INDEX idx_c1 (c1), ALGORITHM=INPLACE, LOCK=SHARED;
+Warnings:
+Warning	124	InnoDB rebuilding table to add column FTS_DOC_ID
+SELECT COUNT(*) FROM t1 WHERE MATCH(c1) AGAINST('alignment');
+COUNT(*)
+262144
+DROP TABLE t1;
