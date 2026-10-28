@@ -1,0 +1,107 @@
+#
+# Bug#35509371: a session switching between its own and a definer's security
+# context must not do so while INFORMATION_SCHEMA.PROCESSLIST or SHOW
+# PROCESSLIST is reading that context.
+#
+
+--source include/have_debug.inc
+--source include/have_debug_sync.inc
+--source include/have_perfschema.inc
+--source include/count_sessions.inc
+
+CREATE USER sctx_definer@localhost;
+CREATE DEFINER=sctx_definer@localhost PROCEDURE proc() SQL SECURITY DEFINER
+  SELECT 1 AS proc_result;
+GRANT EXECUTE ON PROCEDURE test.proc TO sctx_definer@localhost;
+
+let $instrument = 'wait/synch/mutex/sql/THD::LOCK_thd_security_ctx';
+let $saved_enabled = `SELECT ENABLED FROM performance_schema.setup_instruments
+                      WHERE NAME = $instrument`;
+let $saved_timed = `SELECT TIMED FROM performance_schema.setup_instruments
+                    WHERE NAME = $instrument`;
+let $saved_consumer = `SELECT ENABLED FROM performance_schema.setup_consumers
+                       WHERE NAME = 'events_waits_current'`;
+--disable_query_log
+eval UPDATE performance_schema.setup_instruments SET ENABLED = 'YES',
+  TIMED = 'YES' WHERE NAME = $instrument;
+UPDATE performance_schema.setup_consumers SET ENABLED = 'YES'
+  WHERE NAME = 'events_waits_current';
+--enable_query_log
+
+connect (con_proc, localhost, root,,);
+let $proc_id = `SELECT CONNECTION_ID()`;
+connect (con_reader, localhost, root,,);
+
+let $i = 2;
+while ($i)
+{
+  if ($i == 2)
+  {
+    --echo # Reader: INFORMATION_SCHEMA.PROCESSLIST
+    let $reader_query = SELECT USER FROM information_schema.processlist
+                        WHERE ID = $proc_id;
+  }
+  if ($i == 1)
+  {
+    --echo # Reader: SHOW PROCESSLIST
+    let $reader_query = SHOW PROCESSLIST;
+  }
+
+  connection con_proc;
+  SET DEBUG_SYNC = 'after_switching_security_context SIGNAL switched WAIT_FOR leave_proc';
+  send CALL proc();
+
+  connection default;
+  SET DEBUG_SYNC = 'now WAIT_FOR switched';
+
+  connection con_reader;
+  SET SESSION debug = '+d,enable_debug_sync_after_reading_sp_sctx';
+  SET DEBUG_SYNC = 'after_reading_security_context SIGNAL inspected WAIT_FOR finish_read';
+  --disable_query_log
+  send_eval $reader_query;
+  --enable_query_log
+
+  connection default;
+  SET DEBUG_SYNC = 'now WAIT_FOR inspected';
+  --echo # Leaving the procedure restores the invoker's security context,
+  --echo # which has to wait until the reader is done with the session.
+  SET DEBUG_SYNC = 'now SIGNAL leave_proc';
+  let $wait_condition =
+    SELECT COUNT(*) = 1
+      FROM performance_schema.events_waits_current w
+      JOIN performance_schema.threads t USING (THREAD_ID)
+     WHERE t.PROCESSLIST_ID = $proc_id
+       AND w.EVENT_NAME = $instrument
+       AND w.END_EVENT_ID IS NULL;
+  --source include/wait_condition.inc
+  SET DEBUG_SYNC = 'now SIGNAL finish_read';
+
+  connection con_reader;
+  if ($i == 1)
+  {
+    --disable_result_log
+  }
+  reap;
+  --enable_result_log
+  SET SESSION debug = '-d,enable_debug_sync_after_reading_sp_sctx';
+
+  connection con_proc;
+  reap;
+
+  dec $i;
+}
+
+disconnect con_proc;
+disconnect con_reader;
+connection default;
+SET DEBUG_SYNC = 'RESET';
+--disable_query_log
+eval UPDATE performance_schema.setup_instruments
+  SET ENABLED = '$saved_enabled', TIMED = '$saved_timed'
+  WHERE NAME = $instrument;
+eval UPDATE performance_schema.setup_consumers SET ENABLED = '$saved_consumer'
+  WHERE NAME = 'events_waits_current';
+--enable_query_log
+DROP PROCEDURE proc;
+DROP USER sctx_definer@localhost;
+--source include/wait_until_count_sessions.inc

@@ -1,0 +1,39 @@
+CREATE USER sctx_definer@localhost;
+CREATE DEFINER=sctx_definer@localhost PROCEDURE proc() SQL SECURITY DEFINER
+SELECT 1 AS proc_result;
+GRANT EXECUTE ON PROCEDURE test.proc TO sctx_definer@localhost;
+# Reader: INFORMATION_SCHEMA.PROCESSLIST
+SET DEBUG_SYNC = 'after_switching_security_context SIGNAL switched WAIT_FOR leave_proc';
+CALL proc();
+SET DEBUG_SYNC = 'now WAIT_FOR switched';
+SET SESSION debug = '+d,enable_debug_sync_after_reading_sp_sctx';
+SET DEBUG_SYNC = 'after_reading_security_context SIGNAL inspected WAIT_FOR finish_read';
+SET DEBUG_SYNC = 'now WAIT_FOR inspected';
+# Leaving the procedure restores the invoker's security context,
+# which has to wait until the reader is done with the session.
+SET DEBUG_SYNC = 'now SIGNAL leave_proc';
+SET DEBUG_SYNC = 'now SIGNAL finish_read';
+USER
+sctx_definer
+Warnings:
+Warning	1287	'INFORMATION_SCHEMA.PROCESSLIST' is deprecated and will be removed in a future release. Please use performance_schema.processlist instead
+SET SESSION debug = '-d,enable_debug_sync_after_reading_sp_sctx';
+proc_result
+1
+# Reader: SHOW PROCESSLIST
+SET DEBUG_SYNC = 'after_switching_security_context SIGNAL switched WAIT_FOR leave_proc';
+CALL proc();
+SET DEBUG_SYNC = 'now WAIT_FOR switched';
+SET SESSION debug = '+d,enable_debug_sync_after_reading_sp_sctx';
+SET DEBUG_SYNC = 'after_reading_security_context SIGNAL inspected WAIT_FOR finish_read';
+SET DEBUG_SYNC = 'now WAIT_FOR inspected';
+# Leaving the procedure restores the invoker's security context,
+# which has to wait until the reader is done with the session.
+SET DEBUG_SYNC = 'now SIGNAL leave_proc';
+SET DEBUG_SYNC = 'now SIGNAL finish_read';
+SET SESSION debug = '-d,enable_debug_sync_after_reading_sp_sctx';
+proc_result
+1
+SET DEBUG_SYNC = 'RESET';
+DROP PROCEDURE proc;
+DROP USER sctx_definer@localhost;
