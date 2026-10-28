@@ -1,5 +1,5 @@
-# Coverage for the opt-in GLOBAL option reset_connection_keep_sp_cache
-# (default OFF) and for the Sp_cache_insert / Sp_routine_count /
+# Coverage for the GLOBAL option reset_connection_keep_sp_cache
+# (default ON) and for the Sp_cache_insert / Sp_routine_count /
 # Sp_cache_resets_skipped status counters that expose its effect.
 #
 # THD::cleanup_connection() -- the shared implementation behind both
@@ -29,13 +29,14 @@ CREATE PROCEDURE p1() SELECT 1;
 # cache and make (1)'s "first CALL inserts" check read 0; verified
 # empirically while writing this test.
 CREATE USER other_sp_cache_user IDENTIFIED BY 'pw12345';
+let $saved_keep_sp_cache = `SELECT @@global.reset_connection_keep_sp_cache`;
 
 --echo #
---echo # 1. Default (OFF): COM_RESET_CONNECTION still forces a cache reload
---echo #    on next call -- regression check for existing behaviour,
---echo #    unaffected by the new option.
+--echo # 1. OFF: COM_RESET_CONNECTION still forces a cache reload on next
+--echo #    call -- regression check for the behaviour without the option.
 --echo #
 SELECT @@global.reset_connection_keep_sp_cache;
+SET GLOBAL reset_connection_keep_sp_cache = OFF;
 CALL p1();
 SHOW SESSION STATUS LIKE 'Sp_cache_insert';
 --reset_connection
@@ -99,7 +100,9 @@ SHOW SESSION STATUS LIKE 'Sp_cache_insert';
 --echo # Cleanup
 --echo #
 --change_user root,,test
-SET GLOBAL reset_connection_keep_sp_cache = OFF;
+--disable_query_log
+eval SET GLOBAL reset_connection_keep_sp_cache = $saved_keep_sp_cache;
+--enable_query_log
 DROP USER other_sp_cache_user;
 DROP PROCEDURE p1;
 --enable_ps_protocol

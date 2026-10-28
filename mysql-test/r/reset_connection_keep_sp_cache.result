@@ -5,13 +5,13 @@ USE test;
 CREATE PROCEDURE p1() SELECT 1;
 CREATE USER other_sp_cache_user IDENTIFIED BY 'pw12345';
 #
-# 1. Default (OFF): COM_RESET_CONNECTION still forces a cache reload
-#    on next call -- regression check for existing behaviour,
-#    unaffected by the new option.
+# 1. OFF: COM_RESET_CONNECTION still forces a cache reload on next
+#    call -- regression check for the behaviour without the option.
 #
 SELECT @@global.reset_connection_keep_sp_cache;
 @@global.reset_connection_keep_sp_cache
-0
+1
+SET GLOBAL reset_connection_keep_sp_cache = OFF;
 CALL p1();
 1
 1
@@ -92,6 +92,5 @@ ERROR 28000: Access denied for user 'other_sp_cache_user'@'localhost' (using pas
 #
 # Cleanup
 #
-SET GLOBAL reset_connection_keep_sp_cache = OFF;
 DROP USER other_sp_cache_user;
 DROP PROCEDURE p1;
