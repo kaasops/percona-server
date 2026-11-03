@@ -1,0 +1,41 @@
+--source include/have_debug.inc
+# Bug scenario:
+# A table rebuild keeps the primary key order, so the clustered index of the
+# new table is loaded directly during the scan (Builder::insert_direct), while
+# the secondary index is sorted through a temporary file. Between batches the
+# clustered index loader keeps its pages buffer fixed (Page_load::release).
+# When the write of the secondary index temporary file fails (for example, the
+# disk is full), the DDL must also clean up the clustered index builder that
+# did not hit the error, otherwise its pages stay buffer fixed after the DDL
+# is rolled back.
+
+--echo # Rows of the clustered index are wide, so its key buffer overflows and
+--echo # Builder::insert_direct runs before the secondary index key buffer is
+--echo # written to the temporary file for the first time.
+CREATE TABLE t1 (id INT PRIMARY KEY, k INT, pad CHAR(200), KEY k (k));
+
+SET SESSION cte_max_recursion_depth = 100000;
+INSERT INTO t1
+  WITH RECURSIVE seq (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq
+                             WHERE n < 100000)
+  SELECT n, n, REPEAT('a', 200) FROM seq;
+SET SESSION cte_max_recursion_depth = DEFAULT;
+
+SELECT COUNT(*) FROM t1;
+
+--echo # ddl::pwrite of the secondary index temporary file fails
+SET DEBUG = "+d,builder_bulk_add_row_trigger_error_4";
+--error ER_TEMP_FILE_WRITE_FAILURE
+ALTER TABLE t1 ADD COLUMN c2 INT DEFAULT 20, ALGORITHM=INPLACE;
+SET DEBUG = "-d,builder_bulk_add_row_trigger_error_4";
+
+--echo # The table is intact after the rollback
+CHECK TABLE t1;
+SELECT COUNT(*) FROM t1;
+
+--echo # Pages still buffer fixed should assert during shutdown
+--source include/shutdown_mysqld.inc
+--source include/start_mysqld.inc
+
+--echo # Cleanup
+DROP TABLE t1;
