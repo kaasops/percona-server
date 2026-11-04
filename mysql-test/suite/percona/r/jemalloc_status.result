@@ -1,0 +1,18 @@
+SHOW GLOBAL STATUS LIKE 'Jemalloc_%';
+Variable_name	Value
+Jemalloc_arenas_narenas	#
+Jemalloc_stats_active	#
+Jemalloc_stats_allocated	#
+Jemalloc_stats_mapped	#
+Jemalloc_stats_metadata	#
+Jemalloc_stats_resident	#
+Jemalloc_stats_retained	#
+Jemalloc_tcache_bytes	#
+SELECT COUNT(*) FROM performance_schema.global_status
+WHERE VARIABLE_NAME LIKE 'Jemalloc_%';
+COUNT(*)
+8
+SELECT VARIABLE_VALUE > 0 AS allocated_seen FROM performance_schema.global_status
+WHERE VARIABLE_NAME = 'Jemalloc_stats_allocated';
+allocated_seen
+0

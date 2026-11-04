@@ -1,0 +1,13 @@
+#
+# Jemalloc_* status variables: the jemalloc statistics read through
+# mallctl() at run time. They exist whether or not jemalloc is loaded; the
+# values are 0 without it (mtr runs mysqld without LD_PRELOAD). With
+# jemalloc preloaded (--mysqld-env=LD_PRELOAD=libjemalloc.so.2) the last
+# query gives 1 instead of 0.
+#
+--replace_column 2 #
+SHOW GLOBAL STATUS LIKE 'Jemalloc_%';
+SELECT COUNT(*) FROM performance_schema.global_status
+  WHERE VARIABLE_NAME LIKE 'Jemalloc_%';
+SELECT VARIABLE_VALUE > 0 AS allocated_seen FROM performance_schema.global_status
+  WHERE VARIABLE_NAME = 'Jemalloc_stats_allocated';

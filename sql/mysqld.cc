@@ -10277,6 +10277,68 @@ static int show_deprecated_use_i_s_processlist_last_timestamp(THD *,
 /*
   Variables shown by SHOW STATUS in alphabetical order
 */
+/*
+  jemalloc statistics as status variables, read through the mallctl()
+  resolved at run time by sql_profile.cc (jemalloc is loaded with
+  LD_PRELOAD, not linked); 0 when jemalloc is not loaded or the key does
+  not exist. jemalloc caches the stats until "epoch" is advanced; one
+  advance serves one SHOW STATUS, so it is done at most once per 100 ms.
+*/
+static void jemalloc_stats_refresh() {
+  static std::atomic<ulonglong> last_refresh{0};
+  const ulonglong now = my_micro_time();
+  ulonglong last = last_refresh.load(std::memory_order_relaxed);
+  if (now - last < 100000) return;
+  if (!last_refresh.compare_exchange_strong(last, now)) return;
+  uint64_t epoch = 1;
+  size_t len = sizeof(epoch);
+  (void)jemalloc_mallctl("epoch", &epoch, &len, &epoch, sizeof(epoch));
+}
+
+static int show_jemalloc_size(SHOW_VAR *var, char *buff, const char *name) {
+  jemalloc_stats_refresh();
+  size_t val = 0;
+  size_t len = sizeof(val);
+  if (jemalloc_mallctl(name, &val, &len, nullptr, 0) != 0) val = 0;
+  var->type = SHOW_LONGLONG;
+  var->value = buff;
+  *reinterpret_cast<ulonglong *>(buff) = val;
+  return 0;
+}
+
+static int show_jemalloc_allocated(THD *, SHOW_VAR *var, char *buff) {
+  return show_jemalloc_size(var, buff, "stats.allocated");
+}
+static int show_jemalloc_active(THD *, SHOW_VAR *var, char *buff) {
+  return show_jemalloc_size(var, buff, "stats.active");
+}
+static int show_jemalloc_metadata(THD *, SHOW_VAR *var, char *buff) {
+  return show_jemalloc_size(var, buff, "stats.metadata");
+}
+static int show_jemalloc_resident(THD *, SHOW_VAR *var, char *buff) {
+  return show_jemalloc_size(var, buff, "stats.resident");
+}
+static int show_jemalloc_mapped(THD *, SHOW_VAR *var, char *buff) {
+  return show_jemalloc_size(var, buff, "stats.mapped");
+}
+static int show_jemalloc_retained(THD *, SHOW_VAR *var, char *buff) {
+  return show_jemalloc_size(var, buff, "stats.retained");
+}
+/* MALLCTL_ARENAS_ALL of jemalloc 5 is 4096: the merged arena statistics. */
+static int show_jemalloc_tcache_bytes(THD *, SHOW_VAR *var, char *buff) {
+  return show_jemalloc_size(var, buff, "stats.arenas.4096.tcache_bytes");
+}
+static int show_jemalloc_narenas(THD *, SHOW_VAR *var, char *buff) {
+  jemalloc_stats_refresh();
+  unsigned val = 0;
+  size_t len = sizeof(val);
+  if (jemalloc_mallctl("arenas.narenas", &val, &len, nullptr, 0) != 0) val = 0;
+  var->type = SHOW_LONGLONG;
+  var->value = buff;
+  *reinterpret_cast<ulonglong *>(buff) = val;
+  return 0;
+}
+
 SHOW_VAR status_vars[] = {
     {"Aborted_clients", (char *)&aborted_threads, SHOW_LONG, SHOW_SCOPE_GLOBAL},
     {"Aborted_connects", (char *)&show_aborted_connects, SHOW_FUNC,
@@ -10404,6 +10466,22 @@ SHOW_VAR status_vars[] = {
      SHOW_LONGLONG_STATUS, SHOW_SCOPE_ALL},
     {"Handler_write", (char *)offsetof(System_status_var, ha_write_count),
      SHOW_LONGLONG_STATUS, SHOW_SCOPE_ALL},
+    {"Jemalloc_arenas_narenas", (char *)&show_jemalloc_narenas, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Jemalloc_stats_active", (char *)&show_jemalloc_active, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Jemalloc_stats_allocated", (char *)&show_jemalloc_allocated, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Jemalloc_stats_mapped", (char *)&show_jemalloc_mapped, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Jemalloc_stats_metadata", (char *)&show_jemalloc_metadata, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Jemalloc_stats_resident", (char *)&show_jemalloc_resident, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Jemalloc_stats_retained", (char *)&show_jemalloc_retained, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Jemalloc_tcache_bytes", (char *)&show_jemalloc_tcache_bytes, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
     {"Key_blocks_not_flushed",
      (char *)offsetof(KEY_CACHE, global_blocks_changed), SHOW_KEY_CACHE_LONG,
      SHOW_SCOPE_GLOBAL},
