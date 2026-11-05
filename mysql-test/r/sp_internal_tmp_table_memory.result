@@ -1,0 +1,79 @@
+CREATE TABLE t1 (id INT PRIMARY KEY, a INT, b VARCHAR(100), KEY (a)) ENGINE=InnoDB;
+INSERT INTO t1
+WITH RECURSIVE s(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM s WHERE i < 1000)
+SELECT i, i MOD 97, REPEAT(CHAR(65 + i MOD 26), 1 + i MOD 90) FROM s;
+CREATE TABLE snap (sc VARCHAR(16), phase INT, bytes BIGINT, tmp BIGINT,
+disk BIGINT, PRIMARY KEY (sc, phase));
+CREATE PROCEDURE p_cursor(IN k INT)
+BEGIN
+DECLARE done INT DEFAULT 0;
+DECLARE v INT;
+DECLARE w VARCHAR(100);
+DECLARE c CURSOR FOR
+SELECT a, b FROM t1 WHERE id BETWEEN MOD(k, 990) + 1 AND MOD(k, 990) + 10;
+DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = 1;
+OPEN c;
+l: LOOP
+FETCH c INTO v, w;
+IF done THEN LEAVE l; END IF;
+END LOOP;
+CLOSE c;
+END|
+CREATE PROCEDURE p_derived(IN k INT)
+BEGIN
+SELECT COUNT(*) INTO @c FROM
+(SELECT a, b FROM t1 WHERE id BETWEEN MOD(k, 990) + 1 AND MOD(k, 990) + 10) d;
+END|
+CREATE PROCEDURE p_union(IN k INT)
+BEGIN
+SELECT COUNT(*) INTO @c FROM
+(SELECT a FROM t1 WHERE id < MOD(k, 50) + 5
+UNION SELECT a FROM t1 WHERE id > 990) u;
+END|
+CREATE PROCEDURE p_rs_union(IN k INT)
+BEGIN
+SELECT a FROM t1 WHERE id = MOD(k, 1000) + 1
+UNION SELECT a FROM t1 WHERE id = MOD(k, 999) + 2;
+END|
+CREATE PROCEDURE p_cte2(IN k INT)
+BEGIN
+WITH c AS (SELECT id, a FROM t1 WHERE id BETWEEN MOD(k, 990) + 1 AND MOD(k, 990) + 10)
+SELECT COUNT(*) INTO @c FROM c AS x JOIN c AS y ON y.id = x.id + 1;
+END|
+CREATE PROCEDURE p_cte_rec(IN k INT)
+BEGIN
+WITH RECURSIVE r(i) AS
+(SELECT MOD(k, 10) UNION ALL SELECT i + 1 FROM r WHERE i < MOD(k, 10) + 20)
+SELECT COUNT(*) INTO @c FROM r;
+END|
+CREATE PROCEDURE p_overflow(IN k INT)
+BEGIN
+SELECT COUNT(*) INTO @c FROM (SELECT a, b FROM t1 WHERE id > MOD(k, 10) + 900) d;
+END|
+# Growth of memory/sql/% over the last N executions stays below the
+# limit, and every execution instantiated an internal temporary table
+# (and converted it to InnoDB in the overflow scenario).
+SELECT s2.sc,
+s3.bytes - s2.bytes < 16384 AS no_growth,
+s3.tmp - s2.tmp >= 1000 AS tmp_table_per_execution,
+IF(s2.sc = 'overflow', s3.disk - s2.disk >= 1000, s3.disk = s2.disk) AS disk_tables_as_expected
+FROM snap s2 JOIN snap s3 ON s3.sc = s2.sc AND s3.phase = 3
+WHERE s2.phase = 2
+ORDER BY s2.sc;
+sc	no_growth	tmp_table_per_execution	disk_tables_as_expected
+cte_rec	1	1	1
+cte2	1	1	1
+cursor	1	1	1
+derived	1	1	1
+overflow	1	1	1
+ps	1	1	1
+rs_union	1	1	1
+union	1	1	1
+DROP PROCEDURE p_cursor;
+DROP PROCEDURE p_derived;
+DROP PROCEDURE p_union;
+DROP PROCEDURE p_rs_union;
+DROP PROCEDURE p_cte2;
+DROP PROCEDURE p_cte_rec;
+DROP PROCEDURE p_overflow;
+DROP TABLE t1, snap;

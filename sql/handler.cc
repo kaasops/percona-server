@@ -2990,9 +2990,23 @@ int handler::ha_open(TABLE *table_arg, const char *name, int mode,
   assert(table->s == table_share);
   assert(m_lock_type == F_UNLCK);
   DBUG_PRINT("info", ("old m_lock_type: %d F_UNLCK %d", m_lock_type, F_UNLCK));
-  MEM_ROOT *mem_root = (test_if_locked & HA_OPEN_TMP_TABLE)
-                           ? &table->s->mem_root
-                           : &table->mem_root;
+  /*
+    An internal temporary table's handler is destroyed on every close, while
+    its share may live as long as a stored program or a prepared statement.
+    Allocate ref on the arena its handlers are created on, which outlives
+    every handler opened on the share, so that re-opening the table does not
+    grow the share.
+  */
+  assert(!(test_if_locked & HA_OPEN_INTERNAL_TABLE) ||
+         table->s->alloc_for_tmp_file_handler != nullptr);
+  MEM_ROOT *mem_root;
+  if (!(test_if_locked & HA_OPEN_TMP_TABLE))
+    mem_root = &table->mem_root;
+  else if ((test_if_locked & HA_OPEN_INTERNAL_TABLE) &&
+           table->s->alloc_for_tmp_file_handler != nullptr)
+    mem_root = table->s->alloc_for_tmp_file_handler;
+  else
+    mem_root = &table->s->mem_root;
   assert(alloc_root_inited(mem_root));
 
   if (cloned) {

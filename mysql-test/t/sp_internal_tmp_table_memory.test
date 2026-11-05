@@ -1,0 +1,166 @@
+# Repeated execution of a statement that materializes an internal temporary
+# table must not grow memory that lives longer than one execution.
+#
+# Each scenario runs on its own long-lived connection: a stored procedure
+# statement with a materialized cursor, a derived table, a UNION (inside a
+# derived table and as a result set), a CTE with two references, a recursive
+# CTE, a derived table that overflows from the in-memory engine to InnoDB,
+# and a prepared statement with a derived table. After a warm-up the
+# statement is executed N times twice; the global memory/sql/% total must not
+# grow over the second N executions (memory/sql/TABLE is accounted globally
+# only), while every execution instantiates an internal temporary table. A
+# single table cache instance (-master.opt) keeps a connection from opening
+# extra TABLE objects for t1 in other instances, which would count as growth.
+
+--source include/have_perfschema.inc
+--disable_ps_protocol
+--disable_warnings
+
+let $warmup = 100;
+let $n = 1000;
+# The defect adds at least ~21 bytes per temporary table per execution even
+# without cache-line alignment of handler::ref, i.e. > 20 KiB over N.
+let $limit = 16384;
+
+CREATE TABLE t1 (id INT PRIMARY KEY, a INT, b VARCHAR(100), KEY (a)) ENGINE=InnoDB;
+INSERT INTO t1
+  WITH RECURSIVE s(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM s WHERE i < 1000)
+  SELECT i, i MOD 97, REPEAT(CHAR(65 + i MOD 26), 1 + i MOD 90) FROM s;
+CREATE TABLE snap (sc VARCHAR(16), phase INT, bytes BIGINT, tmp BIGINT,
+                   disk BIGINT, PRIMARY KEY (sc, phase));
+
+DELIMITER |;
+CREATE PROCEDURE p_cursor(IN k INT)
+BEGIN
+  DECLARE done INT DEFAULT 0;
+  DECLARE v INT;
+  DECLARE w VARCHAR(100);
+  DECLARE c CURSOR FOR
+    SELECT a, b FROM t1 WHERE id BETWEEN MOD(k, 990) + 1 AND MOD(k, 990) + 10;
+  DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = 1;
+  OPEN c;
+  l: LOOP
+    FETCH c INTO v, w;
+    IF done THEN LEAVE l; END IF;
+  END LOOP;
+  CLOSE c;
+END|
+CREATE PROCEDURE p_derived(IN k INT)
+BEGIN
+  SELECT COUNT(*) INTO @c FROM
+    (SELECT a, b FROM t1 WHERE id BETWEEN MOD(k, 990) + 1 AND MOD(k, 990) + 10) d;
+END|
+CREATE PROCEDURE p_union(IN k INT)
+BEGIN
+  SELECT COUNT(*) INTO @c FROM
+    (SELECT a FROM t1 WHERE id < MOD(k, 50) + 5
+     UNION SELECT a FROM t1 WHERE id > 990) u;
+END|
+CREATE PROCEDURE p_rs_union(IN k INT)
+BEGIN
+  SELECT a FROM t1 WHERE id = MOD(k, 1000) + 1
+  UNION SELECT a FROM t1 WHERE id = MOD(k, 999) + 2;
+END|
+CREATE PROCEDURE p_cte2(IN k INT)
+BEGIN
+  WITH c AS (SELECT id, a FROM t1 WHERE id BETWEEN MOD(k, 990) + 1 AND MOD(k, 990) + 10)
+  SELECT COUNT(*) INTO @c FROM c AS x JOIN c AS y ON y.id = x.id + 1;
+END|
+CREATE PROCEDURE p_cte_rec(IN k INT)
+BEGIN
+  WITH RECURSIVE r(i) AS
+    (SELECT MOD(k, 10) UNION ALL SELECT i + 1 FROM r WHERE i < MOD(k, 10) + 20)
+  SELECT COUNT(*) INTO @c FROM r;
+END|
+CREATE PROCEDURE p_overflow(IN k INT)
+BEGIN
+  SELECT COUNT(*) INTO @c FROM (SELECT a, b FROM t1 WHERE id > MOD(k, 10) + 900) d;
+END|
+DELIMITER ;|
+
+connect (mon, localhost, root,,test);
+let $sc = 0;
+while ($sc < 8) {
+  let $is_ps = 0;
+  if ($sc == 0) { let $p = cursor; }
+  if ($sc == 1) { let $p = derived; }
+  if ($sc == 2) { let $p = union; }
+  if ($sc == 3) { let $p = rs_union; }
+  if ($sc == 4) { let $p = cte2; }
+  if ($sc == 5) { let $p = cte_rec; }
+  if ($sc == 6) { let $p = overflow; }
+  if ($sc == 7) { let $p = ps; let $is_ps = 1; }
+  connect (w_$p, localhost, root,,test);
+  --disable_query_log
+  let $tid = `SELECT THREAD_ID FROM performance_schema.threads WHERE PROCESSLIST_ID = CONNECTION_ID()`;
+  SET SESSION optimizer_switch = 'derived_merge=off';
+  if ($sc == 6) {
+    # About 40 KB of rows: the MEMORY table is converted on every execution.
+    SET SESSION internal_tmp_mem_storage_engine = MEMORY;
+    SET SESSION max_heap_table_size = 16384;
+    SET SESSION tmp_table_size = 16384;
+  }
+  if ($is_ps) {
+    PREPARE s FROM 'SELECT COUNT(*) INTO @c FROM (SELECT a, b FROM t1 WHERE id BETWEEN MOD(?, 990) + 1 AND MOD(?, 990) + 10) d';
+  }
+  let $phase = 1;
+  while ($phase <= 3) {
+    let $iters = $n;
+    if ($phase == 1) { let $iters = $warmup; }
+    --connection w_$p
+    --disable_result_log
+    let $i = 0;
+    while ($i < $iters) {
+      if ($is_ps) {
+        eval SET @k = $i;
+        EXECUTE s USING @k, @k;
+      }
+      if (!$is_ps) {
+        eval CALL p_$p($i);
+      }
+      inc $i;
+    }
+    --enable_result_log
+    --connection mon
+    # Debug builds allocate memory/sql/plugin_ref for every plugin lock, and
+    # the lock taken when a table is converted to InnoDB stays on the
+    # statement's LEX; release builds do not lock built-in engines at all.
+    eval INSERT INTO snap SELECT '$p', $phase,
+      (SELECT SUM(CURRENT_NUMBER_OF_BYTES_USED)
+         FROM performance_schema.memory_summary_global_by_event_name
+        WHERE EVENT_NAME LIKE 'memory/sql/%'
+          AND EVENT_NAME <> 'memory/sql/plugin_ref'),
+      (SELECT VARIABLE_VALUE FROM performance_schema.status_by_thread
+        WHERE THREAD_ID = $tid AND VARIABLE_NAME = 'Created_tmp_tables'),
+      (SELECT VARIABLE_VALUE FROM performance_schema.status_by_thread
+        WHERE THREAD_ID = $tid AND VARIABLE_NAME = 'Created_tmp_disk_tables');
+    inc $phase;
+  }
+  --enable_query_log
+  --disconnect w_$p
+  --connection mon
+  inc $sc;
+}
+
+--echo # Growth of memory/sql/% over the last N executions stays below the
+--echo # limit, and every execution instantiated an internal temporary table
+--echo # (and converted it to InnoDB in the overflow scenario).
+eval SELECT s2.sc,
+       s3.bytes - s2.bytes < $limit AS no_growth,
+       s3.tmp - s2.tmp >= $n AS tmp_table_per_execution,
+       IF(s2.sc = 'overflow', s3.disk - s2.disk >= $n, s3.disk = s2.disk) AS disk_tables_as_expected
+  FROM snap s2 JOIN snap s3 ON s3.sc = s2.sc AND s3.phase = 3
+ WHERE s2.phase = 2
+ ORDER BY s2.sc;
+
+--disconnect mon
+--connection default
+DROP PROCEDURE p_cursor;
+DROP PROCEDURE p_derived;
+DROP PROCEDURE p_union;
+DROP PROCEDURE p_rs_union;
+DROP PROCEDURE p_cte2;
+DROP PROCEDURE p_cte_rec;
+DROP PROCEDURE p_overflow;
+DROP TABLE t1, snap;
+--enable_warnings
