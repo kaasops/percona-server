@@ -1177,6 +1177,11 @@ The following options may be given as the first argument:
  both client and server support it; otherwise it picks
  zstd if both support it; otherwise it picks uncompressed
  if both support it; otherwise it fails.
+ --protocol-zlib-compression-level=# 
+ The zlib compression level the server uses for a
+ connection compressed with zlib (the client sends no
+ level for zlib). Applies to connections made after the
+ change; 1 is the fastest, 9 the smallest output.
  --proxy-protocol-networks=name 
  Enable proxy protocol for these source networks. The
  syntax is a comma separated list of IPv4 and IPv6
@@ -2136,6 +2141,7 @@ preload-buffer-size 32768
 print-identified-with-as-hex FALSE
 profiling-history-size 15
 protocol-compression-algorithms zlib,zstd,uncompressed
+protocol-zlib-compression-level 6
 proxy-protocol-networks 
 query-alloc-block-size 8192
 query-prealloc-size 8192

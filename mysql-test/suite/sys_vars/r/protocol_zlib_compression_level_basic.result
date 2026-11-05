@@ -1,0 +1,33 @@
+SELECT @@global.protocol_zlib_compression_level;
+@@global.protocol_zlib_compression_level
+6
+SELECT @@session.protocol_zlib_compression_level;
+ERROR HY000: Variable 'protocol_zlib_compression_level' is a GLOBAL variable
+SET GLOBAL protocol_zlib_compression_level = 1;
+SELECT @@global.protocol_zlib_compression_level;
+@@global.protocol_zlib_compression_level
+1
+SET GLOBAL protocol_zlib_compression_level = 9;
+SELECT @@global.protocol_zlib_compression_level;
+@@global.protocol_zlib_compression_level
+9
+SET GLOBAL protocol_zlib_compression_level = 0;
+Warnings:
+Warning	1292	Truncated incorrect protocol_zlib_compression_level value: '0'
+SELECT @@global.protocol_zlib_compression_level;
+@@global.protocol_zlib_compression_level
+1
+SET GLOBAL protocol_zlib_compression_level = 10;
+Warnings:
+Warning	1292	Truncated incorrect protocol_zlib_compression_level value: '10'
+SELECT @@global.protocol_zlib_compression_level;
+@@global.protocol_zlib_compression_level
+9
+SET GLOBAL protocol_zlib_compression_level = 'foo';
+ERROR 42000: Incorrect argument type to variable 'protocol_zlib_compression_level'
+SET GLOBAL protocol_zlib_compression_level = 1.5;
+ERROR 42000: Incorrect argument type to variable 'protocol_zlib_compression_level'
+SET GLOBAL protocol_zlib_compression_level = default;
+SELECT @@global.protocol_zlib_compression_level;
+@@global.protocol_zlib_compression_level
+6

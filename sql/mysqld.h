@@ -431,6 +431,7 @@ extern char *opt_log_error_services;
 extern bool encrypt_tmp_files;
 extern ulonglong tf_sequence_table_max_upper_bound;
 extern char *opt_protocol_compression_algorithms;
+extern uint opt_protocol_zlib_compression_level;
 /** The size of the host_cache. */
 extern uint host_cache_size;
 extern ulong log_error_verbosity;

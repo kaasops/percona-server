@@ -1,0 +1,35 @@
+--echo #
+--echo # protocol_zlib_compression_level: the zlib level the server uses for a
+--echo # connection compressed with zlib (the client sends no level for zlib,
+--echo # upstream uses 6 unconditionally).
+--echo #
+
+--let $status_query = SELECT VARIABLE_NAME, VARIABLE_VALUE FROM performance_schema.session_status WHERE VARIABLE_NAME IN ('Compression_algorithm', 'Compression_level') ORDER BY 1
+
+--echo # The default level
+SELECT @@global.protocol_zlib_compression_level;
+--exec $MYSQL --compression-algorithms=zlib -e "$status_query"
+
+--echo # A new zlib connection takes the level set
+SET GLOBAL protocol_zlib_compression_level = 1;
+--exec $MYSQL --compression-algorithms=zlib -e "$status_query"
+
+SET GLOBAL protocol_zlib_compression_level = 9;
+--exec $MYSQL --compression-algorithms=zlib -e "$status_query"
+
+--echo # zstd keeps the level the client sends
+--exec $MYSQL --compression-algorithms=zstd --zstd-compression-level=5 -e "$status_query"
+
+--echo # An uncompressed connection is not affected
+--exec $MYSQL --compression-algorithms=uncompressed -e "$status_query"
+
+--echo # The level is taken at connect: an open connection keeps its level
+SET GLOBAL protocol_zlib_compression_level = 1;
+connect (con1,localhost,root,,test,,,COMPRESS);
+SET GLOBAL protocol_zlib_compression_level = 9;
+--eval $status_query
+disconnect con1;
+connection default;
+
+SET GLOBAL protocol_zlib_compression_level = default;
+SELECT @@global.protocol_zlib_compression_level;

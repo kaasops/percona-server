@@ -1534,6 +1534,7 @@ Time_zone *default_tz;
 char *mysql_data_home = const_cast<char *>(".");
 const char *mysql_real_data_home_ptr = mysql_real_data_home;
 char *opt_protocol_compression_algorithms;
+uint opt_protocol_zlib_compression_level = 6;
 char server_version[SERVER_VERSION_LENGTH];
 char server_version_suffix[SERVER_VERSION_LENGTH];
 const char *mysqld_unix_port;

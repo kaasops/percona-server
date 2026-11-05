@@ -1,0 +1,40 @@
+#
+# protocol_zlib_compression_level: the zlib level the server uses for a
+# connection compressed with zlib (the client sends no level for zlib,
+# upstream uses 6 unconditionally).
+#
+# The default level
+SELECT @@global.protocol_zlib_compression_level;
+@@global.protocol_zlib_compression_level
+6
+VARIABLE_NAME	VARIABLE_VALUE
+Compression_algorithm	zlib
+Compression_level	6
+# A new zlib connection takes the level set
+SET GLOBAL protocol_zlib_compression_level = 1;
+VARIABLE_NAME	VARIABLE_VALUE
+Compression_algorithm	zlib
+Compression_level	1
+SET GLOBAL protocol_zlib_compression_level = 9;
+VARIABLE_NAME	VARIABLE_VALUE
+Compression_algorithm	zlib
+Compression_level	9
+# zstd keeps the level the client sends
+VARIABLE_NAME	VARIABLE_VALUE
+Compression_algorithm	zstd
+Compression_level	5
+# An uncompressed connection is not affected
+VARIABLE_NAME	VARIABLE_VALUE
+Compression_algorithm	
+Compression_level	0
+# The level is taken at connect: an open connection keeps its level
+SET GLOBAL protocol_zlib_compression_level = 1;
+SET GLOBAL protocol_zlib_compression_level = 9;
+SELECT VARIABLE_NAME, VARIABLE_VALUE FROM performance_schema.session_status WHERE VARIABLE_NAME IN ('Compression_algorithm', 'Compression_level') ORDER BY 1;
+VARIABLE_NAME	VARIABLE_VALUE
+Compression_algorithm	zlib
+Compression_level	1
+SET GLOBAL protocol_zlib_compression_level = default;
+SELECT @@global.protocol_zlib_compression_level;
+@@global.protocol_zlib_compression_level
+6

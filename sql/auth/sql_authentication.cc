@@ -3093,9 +3093,9 @@ skip_to_ssl:
     strcpy(compression->compress_algorithm, COMPRESSION_ALGORITHM_ZLIB);
     /*
       for zlib compression method client does not send any compression level,
-      set default compression level
+      use the level the server is configured with
     */
-    compression->compress_level = 6;
+    compression->compress_level = opt_protocol_zlib_compression_level;
   } else if (is_client_supports_zstd && is_server_supports_zstd) {
     strcpy(compression->compress_algorithm, COMPRESSION_ALGORITHM_ZSTD);
     compression->compress_level = (uint) * (end);

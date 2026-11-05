@@ -1,0 +1,35 @@
+#
+# protocol_zlib_compression_level
+#
+
+# show the default value
+SELECT @@global.protocol_zlib_compression_level;
+
+# global only
+--error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SELECT @@session.protocol_zlib_compression_level;
+
+# check that it is writeable within the range
+SET GLOBAL protocol_zlib_compression_level = 1;
+SELECT @@global.protocol_zlib_compression_level;
+
+SET GLOBAL protocol_zlib_compression_level = 9;
+SELECT @@global.protocol_zlib_compression_level;
+
+# out of range values are clamped to the range
+SET GLOBAL protocol_zlib_compression_level = 0;
+SELECT @@global.protocol_zlib_compression_level;
+
+SET GLOBAL protocol_zlib_compression_level = 10;
+SELECT @@global.protocol_zlib_compression_level;
+
+# should be an integer
+--error ER_WRONG_TYPE_FOR_VAR
+SET GLOBAL protocol_zlib_compression_level = 'foo';
+
+--error ER_WRONG_TYPE_FOR_VAR
+SET GLOBAL protocol_zlib_compression_level = 1.5;
+
+# restore the environment
+SET GLOBAL protocol_zlib_compression_level = default;
+SELECT @@global.protocol_zlib_compression_level;
