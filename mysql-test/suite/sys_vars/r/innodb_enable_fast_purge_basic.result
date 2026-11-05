@@ -1,0 +1,33 @@
+SELECT @@global.innodb_enable_fast_purge;
+@@global.innodb_enable_fast_purge
+0
+SELECT @@session.innodb_enable_fast_purge;
+ERROR HY000: Variable 'innodb_enable_fast_purge' is a GLOBAL variable
+SET SESSION innodb_enable_fast_purge = ON;
+ERROR HY000: Variable 'innodb_enable_fast_purge' is a GLOBAL variable and should be set with SET GLOBAL
+SET GLOBAL innodb_enable_fast_purge = ON;
+SELECT @@global.innodb_enable_fast_purge;
+@@global.innodb_enable_fast_purge
+1
+SET GLOBAL innodb_enable_fast_purge = OFF;
+SELECT @@global.innodb_enable_fast_purge;
+@@global.innodb_enable_fast_purge
+0
+SET GLOBAL innodb_enable_fast_purge = 1;
+SELECT @@global.innodb_enable_fast_purge;
+@@global.innodb_enable_fast_purge
+1
+SET GLOBAL innodb_enable_fast_purge = 0;
+SELECT @@global.innodb_enable_fast_purge;
+@@global.innodb_enable_fast_purge
+0
+SET GLOBAL innodb_enable_fast_purge = 2;
+ERROR 42000: Variable 'innodb_enable_fast_purge' can't be set to the value of '2'
+SET GLOBAL innodb_enable_fast_purge = 'foo';
+ERROR 42000: Variable 'innodb_enable_fast_purge' can't be set to the value of 'foo'
+SET GLOBAL innodb_enable_fast_purge = 1.5;
+ERROR 42000: Incorrect argument type to variable 'innodb_enable_fast_purge'
+SET GLOBAL innodb_enable_fast_purge = default;
+SELECT @@global.innodb_enable_fast_purge;
+@@global.innodb_enable_fast_purge
+0

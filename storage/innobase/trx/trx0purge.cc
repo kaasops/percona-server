@@ -76,6 +76,10 @@ ulong srv_max_purge_lag = 0;
 /** Max DML user threads delay in micro-seconds. */
 ulong srv_max_purge_lag_delay = 0;
 
+/** Distribute the undo records of every purge batch across all purge
+threads, regardless of the history list length. */
+bool srv_enable_fast_purge = false;
+
 /** The global data structure coordinating a purge */
 trx_purge_t *purge_sys = nullptr;
 
@@ -2217,9 +2221,11 @@ void Purge_groups_t::distribute() {
 void Purge_groups_t::distribute_if_needed() {
   const uint64_t rseg_history_len = trx_sys->rseg_history_len.load();
 
-  /* If the history list length is greater than maximum allowed purge lag,
-  then distribute the workload across all purge threads. */
-  if (srv_max_purge_lag > 0 && rseg_history_len > srv_max_purge_lag) {
+  /* With innodb_enable_fast_purge, or if the history list length is greater
+  than maximum allowed purge lag, distribute the workload across all purge
+  threads. */
+  if (srv_enable_fast_purge ||
+      (srv_max_purge_lag > 0 && rseg_history_len > srv_max_purge_lag)) {
     distribute();
   }
 }

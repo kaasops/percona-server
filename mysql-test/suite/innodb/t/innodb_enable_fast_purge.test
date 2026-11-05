@@ -1,0 +1,66 @@
+--source include/have_debug.inc
+
+--echo #
+--echo # innodb_enable_fast_purge: the undo records of a purge batch are
+--echo # spread over all purge threads. Without it they are grouped by table,
+--echo # so the records of one table are purged by one thread (unless the
+--echo # history list exceeds innodb_max_purge_lag, which is 0 here). Observed
+--echo # through the index lock events of the purge threads.
+--echo #
+
+SELECT @@global.innodb_purge_threads, @@global.innodb_max_purge_lag;
+SELECT @@global.innodb_enable_fast_purge;
+
+# Only the index lock instrument, into the long history; the settings are
+# restored at the end.
+CREATE TEMPORARY TABLE saved_instruments AS
+  SELECT name, enabled, timed FROM performance_schema.setup_instruments
+  WHERE name LIKE 'wait/%';
+CREATE TEMPORARY TABLE saved_consumers AS
+  SELECT name, enabled FROM performance_schema.setup_consumers
+  WHERE name LIKE 'events_waits%';
+UPDATE performance_schema.setup_instruments SET enabled = 'NO'
+  WHERE name LIKE 'wait/%';
+UPDATE performance_schema.setup_instruments SET enabled = 'YES', timed = 'YES'
+  WHERE name = 'wait/synch/sxlock/innodb/index_tree_rw_lock';
+UPDATE performance_schema.setup_consumers SET enabled = 'YES'
+  WHERE name LIKE 'events_waits%';
+
+# No persistent statistics: their updates would bring the undo records of a
+# second table into the purge.
+CREATE TABLE t1 (
+  a INT NOT NULL PRIMARY KEY,
+  b INT NOT NULL,
+  pad CHAR(200) NOT NULL DEFAULT 'x',
+  KEY k_b (b)
+) ENGINE=InnoDB STATS_PERSISTENT=0;
+--let $n_rows = 400
+--eval INSERT INTO t1 (a, b) WITH RECURSIVE n (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < $n_rows) SELECT i, i FROM n
+
+--echo # Warm-up round, not counted: on its first task after the start each
+--echo # purge worker takes a few index locks of its own (shared, in the B-tree
+--echo # search), which the count below would take for purge of t1.
+--disable_result_log
+--source suite/innodb/include/innodb_enable_fast_purge.inc
+--enable_result_log
+
+--echo # OFF: one table, one purge thread
+SET GLOBAL innodb_enable_fast_purge = OFF;
+--source suite/innodb/include/innodb_enable_fast_purge.inc
+
+--echo # ON: the records of the table go to several purge threads
+SET GLOBAL innodb_enable_fast_purge = ON;
+--source suite/innodb/include/innodb_enable_fast_purge.inc
+
+--echo # OFF again
+SET GLOBAL innodb_enable_fast_purge = OFF;
+--source suite/innodb/include/innodb_enable_fast_purge.inc
+
+DROP TABLE t1;
+SET GLOBAL innodb_enable_fast_purge = default;
+UPDATE performance_schema.setup_instruments i JOIN saved_instruments s USING (name)
+  SET i.enabled = s.enabled, i.timed = s.timed;
+UPDATE performance_schema.setup_consumers c JOIN saved_consumers s USING (name)
+  SET c.enabled = s.enabled;
+TRUNCATE TABLE performance_schema.events_waits_history_long;
+SET GLOBAL innodb_purge_run_now = ON;

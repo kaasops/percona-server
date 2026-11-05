@@ -23209,6 +23209,15 @@ static MYSQL_SYSVAR_ULONG(max_purge_lag_delay, srv_max_purge_lag_delay,
                           0L,                   /* Minimum value */
                           10000000UL, 0);       /* Maximum value */
 
+static MYSQL_SYSVAR_BOOL(
+    enable_fast_purge, srv_enable_fast_purge, PLUGIN_VAR_OPCMDARG,
+    "Distribute the undo records of every purge batch across all purge "
+    "threads, so that the records of one table are purged in parallel. "
+    "OFF keeps the upstream behaviour: the records are grouped by table, one "
+    "table to one thread, and spread over all threads only when the history "
+    "list length exceeds innodb_max_purge_lag (if that is not 0).",
+    nullptr, nullptr, false);
+
 static MYSQL_SYSVAR_BOOL(rollback_on_timeout, innobase_rollback_on_timeout,
                          PLUGIN_VAR_OPCMDARG | PLUGIN_VAR_READONLY,
                          "Roll back the complete transaction on lock wait "
@@ -24478,6 +24487,7 @@ static SYS_VAR *innobase_system_variables[] = {
     MYSQL_SYSVAR(flushing_avg_loops),
     MYSQL_SYSVAR(max_purge_lag),
     MYSQL_SYSVAR(max_purge_lag_delay),
+    MYSQL_SYSVAR(enable_fast_purge),
     MYSQL_SYSVAR(old_blocks_pct),
     MYSQL_SYSVAR(old_blocks_time),
     MYSQL_SYSVAR(open_files),

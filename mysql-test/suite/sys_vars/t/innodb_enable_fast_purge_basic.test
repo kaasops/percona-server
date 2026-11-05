@@ -1,0 +1,40 @@
+#
+# innodb_enable_fast_purge
+#
+
+# show the default value
+SELECT @@global.innodb_enable_fast_purge;
+
+# global only
+--error ER_INCORRECT_GLOBAL_LOCAL_VAR
+SELECT @@session.innodb_enable_fast_purge;
+
+--error ER_GLOBAL_VARIABLE
+SET SESSION innodb_enable_fast_purge = ON;
+
+# check that it is writeable
+SET GLOBAL innodb_enable_fast_purge = ON;
+SELECT @@global.innodb_enable_fast_purge;
+
+SET GLOBAL innodb_enable_fast_purge = OFF;
+SELECT @@global.innodb_enable_fast_purge;
+
+SET GLOBAL innodb_enable_fast_purge = 1;
+SELECT @@global.innodb_enable_fast_purge;
+
+SET GLOBAL innodb_enable_fast_purge = 0;
+SELECT @@global.innodb_enable_fast_purge;
+
+# a boolean only
+--error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL innodb_enable_fast_purge = 2;
+
+--error ER_WRONG_VALUE_FOR_VAR
+SET GLOBAL innodb_enable_fast_purge = 'foo';
+
+--error ER_WRONG_TYPE_FOR_VAR
+SET GLOBAL innodb_enable_fast_purge = 1.5;
+
+# restore the environment
+SET GLOBAL innodb_enable_fast_purge = default;
+SELECT @@global.innodb_enable_fast_purge;
