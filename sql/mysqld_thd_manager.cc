@@ -148,17 +148,14 @@ static PSI_cond_info all_thd_manager_conds[] = {
 
 const my_thread_id Global_THD_manager::reserved_thread_id = 0;
 
+template <std::size_t... I>
+std::array<Global_THD_manager::THD_array, sizeof...(I)>
+Global_THD_manager::make_thd_lists(std::index_sequence<I...>) {
+  return {{((void)I, THD_array(PSI_INSTRUMENT_ME))...}};
+}
+
 Global_THD_manager::Global_THD_manager()
-  : thd_list {
-      THD_array(PSI_INSTRUMENT_ME),
-      THD_array(PSI_INSTRUMENT_ME),
-      THD_array(PSI_INSTRUMENT_ME),
-      THD_array(PSI_INSTRUMENT_ME),
-      THD_array(PSI_INSTRUMENT_ME),
-      THD_array(PSI_INSTRUMENT_ME),
-      THD_array(PSI_INSTRUMENT_ME),
-      THD_array(PSI_INSTRUMENT_ME),
-    },
+  : thd_list(make_thd_lists(std::make_index_sequence<NUM_PARTITIONS>{})),
     thread_ids(PSI_INSTRUMENT_ME),
     atomic_num_thread_running(0),
     atomic_thread_created(0),

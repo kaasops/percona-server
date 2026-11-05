@@ -27,7 +27,9 @@
 #include <assert.h>
 #include <stddef.h>
 #include <sys/types.h>
+#include <array>
 #include <atomic>
+#include <utility>
 
 #include "my_inttypes.h"
 #include "my_thread_local.h"  // my_thread_id
@@ -349,8 +351,9 @@ class Global_THD_manager {
   // Declared static as it is referenced in handle_fatal_signal()
   static std::atomic<uint> atomic_global_thd_count;
 
-  // Number of THD list partitions.
-  static const int NUM_PARTITIONS = 8;
+  // Number of THD list partitions. A connection or a lookup by id takes the
+  // mutex of one partition (thread id modulo this number).
+  static const int NUM_PARTITIONS = 256;
 
  private:
   Global_THD_manager();
@@ -361,7 +364,11 @@ class Global_THD_manager {
 
   // Array of current THDs. Protected by LOCK_thd_list.
   typedef Prealloced_array<THD *, 60> THD_array;
-  THD_array thd_list[NUM_PARTITIONS];
+  std::array<THD_array, NUM_PARTITIONS> thd_list;
+  // One empty THD_array per index (THD_array has no default constructor).
+  template <std::size_t... I>
+  static std::array<THD_array, sizeof...(I)> make_thd_lists(
+      std::index_sequence<I...>);
 
   // Array of thread ID in current use. Protected by LOCK_thread_ids.
   typedef Prealloced_array<my_thread_id, 1000> Thread_id_array;
