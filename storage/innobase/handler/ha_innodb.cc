@@ -23357,7 +23357,7 @@ static MYSQL_SYSVAR_ULONG(page_hash_locks, srv_n_page_hash_locks,
                           PLUGIN_VAR_OPCMDARG | PLUGIN_VAR_READONLY,
                           "Number of rw_locks protecting buffer pool "
                           "page_hash. Rounded up to the next power of 2",
-                          nullptr, nullptr, 16, 1, MAX_PAGE_HASH_LOCKS, 0);
+                          nullptr, nullptr, 256, 1, MAX_PAGE_HASH_LOCKS, 0);
 
 #ifdef UNIV_LINUX
 
