@@ -1,6 +1,6 @@
 SELECT @@global.protocol_zlib_compression_level;
 @@global.protocol_zlib_compression_level
-6
+1
 SELECT @@session.protocol_zlib_compression_level;
 ERROR HY000: Variable 'protocol_zlib_compression_level' is a GLOBAL variable
 SET GLOBAL protocol_zlib_compression_level = 1;
@@ -30,4 +30,4 @@ ERROR 42000: Incorrect argument type to variable 'protocol_zlib_compression_leve
 SET GLOBAL protocol_zlib_compression_level = default;
 SELECT @@global.protocol_zlib_compression_level;
 @@global.protocol_zlib_compression_level
-6
+1

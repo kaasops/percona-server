@@ -8289,7 +8289,7 @@ static Sys_var_uint Sys_protocol_zlib_compression_level(
     "with zlib (the client sends no level for zlib). Applies to connections "
     "made after the change; 1 is the fastest, 9 the smallest output.",
     GLOBAL_VAR(opt_protocol_zlib_compression_level), CMD_LINE(REQUIRED_ARG),
-    VALID_RANGE(1, 9), DEFAULT(6), BLOCK_SIZE(1));
+    VALID_RANGE(1, 9), DEFAULT(1), BLOCK_SIZE(1));
 
 static bool check_set_require_row_format(sys_var *, THD *thd, set_var *var) {
   /*

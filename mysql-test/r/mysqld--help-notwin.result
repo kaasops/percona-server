@@ -2141,7 +2141,7 @@ preload-buffer-size 32768
 print-identified-with-as-hex FALSE
 profiling-history-size 15
 protocol-compression-algorithms zlib,zstd,uncompressed
-protocol-zlib-compression-level 6
+protocol-zlib-compression-level 1
 proxy-protocol-networks 
 query-alloc-block-size 8192
 query-prealloc-size 8192

@@ -6,10 +6,10 @@
 # The default level
 SELECT @@global.protocol_zlib_compression_level;
 @@global.protocol_zlib_compression_level
-6
+1
 VARIABLE_NAME	VARIABLE_VALUE
 Compression_algorithm	zlib
-Compression_level	6
+Compression_level	1
 # A new zlib connection takes the level set
 SET GLOBAL protocol_zlib_compression_level = 1;
 VARIABLE_NAME	VARIABLE_VALUE
@@ -37,4 +37,4 @@ Compression_level	1
 SET GLOBAL protocol_zlib_compression_level = default;
 SELECT @@global.protocol_zlib_compression_level;
 @@global.protocol_zlib_compression_level
-6
+1
