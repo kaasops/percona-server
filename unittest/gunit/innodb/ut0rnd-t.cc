@@ -103,7 +103,6 @@ static inline ulint ut_fold_ull(uint64_t d) {
 }  // namespace old_impl
 
 static void init() {
-  ut::detail::random_seed = 0;
   old_impl::ut_rnd_ulint_counter = 0;
 }
 
@@ -375,7 +374,6 @@ static void test_interval_fast_distribution(uint64_t n) {
         target[1]++;
       }
     }
-    ut_delay(ut::random_from_interval_fast(0, 6));
   }
 
   for (auto target : target_score) {
@@ -561,5 +559,24 @@ static void BM_HASH_BINARY_CRC32(const size_t num_iterations) {
   });
 }
 BENCHMARK_HASHES(BINARY_CRC32)
+
+/* The fast generator must not follow the time. A generator built on the
+cycle counter gives a non-decreasing sequence to one thread; in a random
+sequence about half of the consecutive pairs decrease. */
+TEST(ut0rnd, random_64_fast_is_not_ordered) {
+  constexpr int n = 10000;
+  int decreases = 0;
+  uint64_t prev = ut::random_64_fast();
+  for (int i = 0; i < n; ++i) {
+    const uint64_t cur = ut::random_64_fast();
+    if (cur < prev) {
+      ++decreases;
+    }
+    prev = cur;
+  }
+  /* Binomial(n, 1/2): mean 5000, standard deviation 50. */
+  EXPECT_GT(decreases, 4500);
+  EXPECT_LT(decreases, 5500);
+}
 
 }  // namespace innodb_ut0rnd_unittest
