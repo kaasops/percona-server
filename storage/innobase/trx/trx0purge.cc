@@ -78,7 +78,7 @@ ulong srv_max_purge_lag_delay = 0;
 
 /** Distribute the undo records of every purge batch across all purge
 threads, regardless of the history list length. */
-bool srv_enable_fast_purge = false;
+bool srv_enable_fast_purge = true;
 
 /** The global data structure coordinating a purge */
 trx_purge_t *purge_sys = nullptr;

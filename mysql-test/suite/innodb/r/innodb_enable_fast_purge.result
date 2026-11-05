@@ -10,7 +10,7 @@ SELECT @@global.innodb_purge_threads, @@global.innodb_max_purge_lag;
 4	0
 SELECT @@global.innodb_enable_fast_purge;
 @@global.innodb_enable_fast_purge
-0
+1
 CREATE TEMPORARY TABLE saved_instruments AS
 SELECT name, enabled, timed FROM performance_schema.setup_instruments
 WHERE name LIKE 'wait/%';

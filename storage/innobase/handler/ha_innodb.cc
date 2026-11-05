@@ -23215,8 +23215,9 @@ static MYSQL_SYSVAR_BOOL(
     "threads, so that the records of one table are purged in parallel. "
     "OFF keeps the upstream behaviour: the records are grouped by table, one "
     "table to one thread, and spread over all threads only when the history "
-    "list length exceeds innodb_max_purge_lag (if that is not 0).",
-    nullptr, nullptr, false);
+    "list length exceeds innodb_max_purge_lag (if that is not 0). ON by "
+    "default.",
+    nullptr, nullptr, true);
 
 static MYSQL_SYSVAR_BOOL(rollback_on_timeout, innobase_rollback_on_timeout,
                          PLUGIN_VAR_OPCMDARG | PLUGIN_VAR_READONLY,
