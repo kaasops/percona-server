@@ -1,0 +1,53 @@
+# A stored program that commits to the binary log many times within one
+# statement must not grow THD::main_mem_root with every commit.
+#
+# THD::set_trans_pos() keeps the binary log file name of the transaction in a
+# buffer on THD::main_mem_root, which lives until the top-level statement (a
+# CALL, an event body) ends; within a stored program the buffer is reused.
+# Resetting the position on a commit that writes nothing to the binary log
+# dropped the buffer, so every following logged commit allocated a new one.
+
+--source include/have_log_bin.inc
+--source include/have_binlog_format_row.inc
+--source include/have_perfschema.inc
+
+CREATE TABLE t1 (id INT PRIMARY KEY, v INT) ENGINE = InnoDB;
+INSERT INTO t1 VALUES (1, 0);
+CREATE TABLE snap (i INT PRIMARY KEY, bytes BIGINT) ENGINE = InnoDB;
+
+DELIMITER |;
+CREATE PROCEDURE p(n INT)
+BEGIN
+  DECLARE i INT DEFAULT 0;
+  DECLARE c INT;
+  WHILE i < n DO
+    # A commit that writes nothing to the binary log, then one that does.
+    SELECT v INTO c FROM t1 WHERE id = 1;
+    UPDATE t1 SET v = v + 1 WHERE id = 1;
+    SET i = i + 1;
+    IF i = 500 OR i = n THEN
+      INSERT INTO snap
+        SELECT i, CURRENT_NUMBER_OF_BYTES_USED
+          FROM performance_schema.memory_summary_by_thread_by_event_name
+         WHERE THREAD_ID = PS_CURRENT_THREAD_ID()
+           AND EVENT_NAME = 'memory/sql/THD::main_mem_root';
+    END IF;
+  END WHILE;
+END|
+DELIMITER ;|
+
+--let $n = 4500
+--let $pos_before = query_get_value(SHOW BINARY LOG STATUS, Position, 1)
+--eval CALL p($n)
+--let $pos_after = query_get_value(SHOW BINARY LOG STATUS, Position, 1)
+
+# A new file name buffer for each of the last 4000 logged commits would grow
+# the arena by about 2 MB.
+SELECT COUNT(*) AS snapshots, MAX(bytes) - MIN(bytes) < 65536 AS no_growth
+  FROM snap;
+--disable_query_log
+--eval SELECT v = $n AS all_updates_applied, $pos_after - $pos_before > $n * 100 AS each_update_logged FROM t1
+--enable_query_log
+
+DROP PROCEDURE p;
+DROP TABLE t1, snap;
