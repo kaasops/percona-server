@@ -1,3 +1,12 @@
+percona-server (8.4.8-8~int03) unstable; urgency=medium
+
+  * [INT03] Restore the upstream block-based mem_root_deque
+  * [INT03] Allocate handler::ref of an internal temporary table with its handler
+  * [INT03] Drop the binlog position reset on commits that log nothing
+  * [INT03] Release values of prepared statement parameters that are not on the item list
+
+ -- Alexey Bychko <abychko@gmail.com>  Tue, 10 Nov 2026 11:38:43 +0200
+
 percona-server (8.4.8-8~int02) unstable; urgency=medium
 
   * Packaging for custom 8.4.8 version
