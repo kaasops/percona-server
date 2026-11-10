@@ -1,0 +1,22 @@
+CREATE TABLE snap (sc VARCHAR(16), phase INT, cnt BIGINT, PRIMARY KEY (sc, phase));
+# Every scenario must report no growth.
+SELECT a.sc, IF(b.cnt - a.cnt < 100, 'no growth',
+CONCAT('grows by ', b.cnt - a.cnt, ' allocations')) AS result
+FROM snap a JOIN snap b ON b.sc = a.sc AND a.phase = 1 AND b.phase = 2
+ORDER BY a.sc;
+sc	result
+datetime	no growth
+dealloc	no growth
+disconnect	no growth
+reprepare	no growth
+# A statement that references the expression returns the value.
+PREPARE s FROM 'WITH x(x) AS (SELECT ?) SELECT x FROM x';
+SET @v = 'abc';
+EXECUTE s USING @v;
+x
+abc
+EXECUTE s USING @v;
+x
+abc
+DEALLOCATE PREPARE s;
+DROP TABLE snap;

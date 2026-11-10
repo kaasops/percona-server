@@ -5010,6 +5010,15 @@ class Item_param final : public Item, private Settable_routine_parameter {
   bool set_from_user_var(THD *thd, const user_var_entry *entry);
   void copy_param_actual_type(Item_param *from);
   void reset();
+  /**
+    Releases the buffer that holds the string value of the parameter.
+
+    A parameter marker in a part of the statement that is parsed but never
+    contextualized is not on the item list of the statement, so its
+    destructor does not run and the owner of the parameter array has to
+    release the buffer.
+  */
+  void free_value_buffer() { str_value.mem_free(); }
 
   const String *query_val_str(const THD *thd, String *str) const;
 

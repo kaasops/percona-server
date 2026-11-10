@@ -2245,6 +2245,20 @@ Prepared_statement::~Prepared_statement() {
   m_regular_result = nullptr;
   m_aux_result = nullptr;
   /*
+    A parameter marker inside a common table expression that the statement
+    never references is in LEX::param_list, and therefore gets a value on
+    every execution, but the definition of such an expression is never
+    contextualized: the marker is not on the item list and free_items() below
+    does not destroy it. Release the value buffers of all parameters here;
+    for a parameter that is on the item list this only anticipates its
+    destructor.
+  */
+  if (m_param_array != nullptr) {
+    for (Item_param **it = m_param_array; it < m_param_array + m_param_count;
+         ++it)
+      (*it)->free_value_buffer();
+  }
+  /*
     We have to call free on the items even if cleanup is called as some items,
     like Item_param, don't free everything until free_items()
   */

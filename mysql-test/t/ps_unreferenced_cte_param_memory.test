@@ -1,0 +1,86 @@
+# A prepared statement must release the value of a parameter whose marker is
+# inside a common table expression that the statement never references.
+#
+# The definition of such an expression is parsed but never contextualized, so
+# the parameter is not on the item list of the statement, while EXECUTE still
+# assigns a value to it. The buffer of a string value of up to 255 bytes
+# stayed allocated after DEALLOCATE PREPARE and after the end of the
+# connection (Bug#111310).
+#
+# A connection prepares, executes and drops such a statement N times; the
+# number of live memory/sql/String::value allocations in the server must not
+# grow with N. The parameter values are a short string and a DATETIME value,
+# which a user variable also stores as a string.
+
+--source include/have_perfschema.inc
+--disable_ps_protocol
+
+let $warmup = 20;
+let $n = 500;
+# The defect leaves one allocation per PREPARE, i.e. N per scenario.
+let $limit = 100;
+
+CREATE TABLE snap (sc VARCHAR(16), phase INT, cnt BIGINT, PRIMARY KEY (sc, phase));
+
+connect (mon, localhost, root,,test);
+--source include/count_sessions.inc
+let $sc = 0;
+while ($sc < 4) {
+  # dealloc: DEALLOCATE PREPARE after every execution
+  # reprepare: PREPARE under the same name replaces the statement
+  # datetime: a temporal value
+  # disconnect: the statements are dropped by the end of the connection
+  if ($sc == 0) { let $name = dealloc; }
+  if ($sc == 1) { let $name = reprepare; }
+  if ($sc == 2) { let $name = datetime; }
+  if ($sc == 3) { let $name = disconnect; }
+  let $phase = 1;
+  while ($phase <= 2) {
+    let $iters = $n;
+    if ($phase == 1) { let $iters = $warmup; }
+    connect (w, localhost, root,,test);
+    --disable_query_log
+    --disable_result_log
+    SET @v = 'abc';
+    if ($sc == 2) { SET @v = CAST('2000-01-01 00:00:00' AS DATETIME); }
+    let $i = 0;
+    while ($i < $iters) {
+      let $stmt = s;
+      if ($sc == 3) { let $stmt = s$i; }
+      eval PREPARE $stmt FROM 'WITH x(x) AS (SELECT ?) SELECT 1';
+      eval EXECUTE $stmt USING @v;
+      if ($sc == 0) { DEALLOCATE PREPARE s; }
+      if ($sc == 2) { DEALLOCATE PREPARE s; }
+      inc $i;
+    }
+    --enable_result_log
+    --enable_query_log
+    --connection mon
+    --disconnect w
+    --source include/wait_until_count_sessions.inc
+    --disable_query_log
+    eval INSERT INTO snap SELECT '$name', $phase, CURRENT_COUNT_USED
+      FROM performance_schema.memory_summary_global_by_event_name
+      WHERE EVENT_NAME = 'memory/sql/String::value';
+    --enable_query_log
+    inc $phase;
+  }
+  inc $sc;
+}
+
+--echo # Every scenario must report no growth.
+eval SELECT a.sc, IF(b.cnt - a.cnt < $limit, 'no growth',
+                     CONCAT('grows by ', b.cnt - a.cnt, ' allocations')) AS result
+  FROM snap a JOIN snap b ON b.sc = a.sc AND a.phase = 1 AND b.phase = 2
+  ORDER BY a.sc;
+
+--echo # A statement that references the expression returns the value.
+PREPARE s FROM 'WITH x(x) AS (SELECT ?) SELECT x FROM x';
+SET @v = 'abc';
+EXECUTE s USING @v;
+EXECUTE s USING @v;
+DEALLOCATE PREPARE s;
+
+--disconnect mon
+--connection default
+DROP TABLE snap;
