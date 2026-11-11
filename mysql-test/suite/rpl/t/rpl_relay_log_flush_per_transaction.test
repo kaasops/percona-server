@@ -1,0 +1,165 @@
+# The receiver writes a transaction to the relay log file and publishes it
+# to the applier at once, with its last event, as the binary log does with a
+# commit group. Until then the events wait in the cache of the file, unless
+# the receiver has to wait for the source: then it flushes what it has. The
+# debug point takes that flush away, so that the test does not depend on how
+# the events arrive.
+#
+# 1. A transaction of many events takes a few writes to the file, not one
+#    per event.
+# 2. A transaction larger than the cache of the file is applied in full.
+# 3. The receiver that stops in the middle of a transaction leaves its
+#    events in the file, where the applier and SHOW RELAYLOG EVENTS see
+#    them. The server is killed, and after the restart nothing is missed.
+# 4. The server is killed while events of a transaction wait in the cache
+#    and the connection metadata is saved on every event
+#    (sync_source_info = 1): after the restart nothing is missed.
+#
+# This line of the server has no relay log sanitization at startup, so the
+# killed replica is restarted with relay_log_recovery = ON, which takes the
+# receiver back to the position of the applier.
+--source include/have_debug.inc
+--source include/have_debug_sync.inc
+--source include/have_binlog_format_row.inc
+--source include/have_perfschema.inc
+--source include/not_group_replication_plugin.inc
+--source include/master-slave.inc
+
+--source include/rpl_connection_slave.inc
+CALL mtr.add_suppression("Recovery from source pos");
+--source include/rpl_connection_master.inc
+
+CREATE TABLE t1 (id INT PRIMARY KEY, c VARCHAR(2000) NOT NULL) ENGINE=InnoDB;
+--source include/sync_slave_sql_with_master.inc
+
+--let $debug_point = relay_log_flush_at_transaction_end_only
+--source include/add_debug_point.inc
+
+--echo #
+--echo # 1. One transaction, many events
+--echo #
+--let $writes_before = `SELECT COUNT_WRITE FROM performance_schema.file_summary_by_event_name WHERE EVENT_NAME = 'wait/io/file/sql/relaylog'`
+
+--source include/rpl_connection_master.inc
+BEGIN;
+--disable_query_log
+--let $i = 1
+while ($i <= 100)
+{
+  --eval INSERT INTO t1 VALUES ($i, 'a')
+  --inc $i
+}
+--enable_query_log
+COMMIT;
+--source include/sync_slave_sql_with_master.inc
+
+--let $writes = `SELECT COUNT_WRITE - $writes_before FROM performance_schema.file_summary_by_event_name WHERE EVENT_NAME = 'wait/io/file/sql/relaylog'`
+--let $assert_text = A transaction of 200 row events took less than 10 writes to the relay log
+--let $assert_cond = $writes < 10
+--source include/assert.inc
+
+--echo #
+--echo # 2. A transaction larger than the cache of the relay log file
+--echo #
+--source include/rpl_connection_master.inc
+BEGIN;
+--disable_query_log
+while ($i <= 300)
+{
+  --eval INSERT INTO t1 VALUES ($i, REPEAT('b', 2000))
+  --inc $i
+}
+--enable_query_log
+COMMIT;
+--source include/sync_slave_sql_with_master.inc
+--let $assert_text = All the rows of the large transaction were applied
+--let $assert_cond = [SELECT COUNT(*) FROM t1] = 300
+--source include/assert.inc
+
+--echo #
+--echo # 3. The receiver stops in the middle of a transaction
+--echo #
+--let $debug_point = stop_io_after_reading_query_log_event
+--source include/add_debug_point.inc
+--let $relay_log_file = query_get_value(SHOW REPLICA STATUS, Relay_Log_File, 1)
+--let $statement = SHOW RELAYLOG EVENTS IN '$relay_log_file'
+--let $column = Log_name
+--source include/get_row_count.inc
+--let $events_before = $row_count
+
+--source include/rpl_connection_master.inc
+INSERT INTO t1 VALUES (301, 'c');
+
+--source include/rpl_connection_slave.inc
+--source include/wait_for_slave_io_to_stop.inc
+--let $statement = SHOW RELAYLOG EVENTS IN '$relay_log_file'
+--let $column = Log_name
+--source include/get_row_count.inc
+--let $assert_text = The GTID and the BEGIN the receiver stopped after are in the relay log file
+--let $assert_cond = $row_count = $events_before + 2
+--source include/assert.inc
+--let $debug_point = stop_io_after_reading_query_log_event
+--source include/remove_debug_point.inc
+--let $debug_point = relay_log_flush_at_transaction_end_only
+--source include/remove_debug_point.inc
+
+# The cache of the relay log file does not outlive the process.
+--let $rpl_server_number = 2
+--let $restart_parameters = restart: --skip-replica-start --relay-log-recovery=ON
+--source include/kill_and_restart_mysqld.inc
+--let $restart_parameters =
+--source include/rpl_reconnect.inc
+
+--source include/rpl_connection_slave.inc
+--source include/start_slave.inc
+
+--source include/rpl_connection_master.inc
+INSERT INTO t1 VALUES (302, 'd');
+--source include/sync_slave_sql_with_master.inc
+
+--let $rpl_diff_statement = SELECT id, c FROM t1 ORDER BY id
+--source include/rpl_diff.inc
+
+--echo #
+--echo # 4. The server is killed while events wait in the cache
+--echo #
+--source include/rpl_connection_slave.inc
+SET GLOBAL sync_source_info = 1;
+--let $debug_point = relay_log_flush_at_transaction_end_only
+--source include/add_debug_point.inc
+--let $debug_point = pause_on_queue_event_after_write_buffer
+--source include/add_debug_point.inc
+
+--source include/rpl_connection_master.inc
+INSERT INTO t1 VALUES (303, 'e');
+
+# The receiver stops after it has written the fourth event of the
+# transaction, the rows event; the metadata was saved after the third.
+--source include/rpl_connection_slave.inc
+SET DEBUG_SYNC = 'now WAIT_FOR receiver_reached_pause_on_queue_event';
+--let $i = 1
+while ($i <= 3)
+{
+  SET DEBUG_SYNC = 'now SIGNAL receiver_continue_queuing_event';
+  SET DEBUG_SYNC = 'now WAIT_FOR receiver_reached_pause_on_queue_event';
+  --inc $i
+}
+
+--let $rpl_server_number = 2
+--let $restart_parameters = restart: --skip-replica-start --relay-log-recovery=ON
+--source include/kill_and_restart_mysqld.inc
+--let $restart_parameters =
+--source include/rpl_reconnect.inc
+
+--source include/rpl_connection_slave.inc
+--source include/start_slave.inc
+
+--source include/rpl_connection_master.inc
+--source include/sync_slave_sql_with_master.inc
+
+--let $rpl_diff_statement = SELECT id, c FROM t1 ORDER BY id
+--source include/rpl_diff.inc
+
+--source include/rpl_connection_master.inc
+DROP TABLE t1;
+--source include/rpl_end.inc

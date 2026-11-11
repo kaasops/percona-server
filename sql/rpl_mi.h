@@ -350,6 +350,33 @@ class Master_info : public Rpl_info {
   int mi_init_info();
   void end_info();
   int flush_info(bool force = false);
+
+  /**
+    Remembers the receiver as it was before the event that has just passed
+    the transaction parser: the first of the events that wait in the cache
+    of the relay log file.
+  */
+  void save_relay_log_pending_start() {
+    m_pending_source_log_pos = master_log_pos;
+    m_pending_transaction_parser = transaction_parser;
+    m_pending_transaction_parser.rollback();
+  }
+
+  /**
+    Takes the receiver back to where save_relay_log_pending_start() left it.
+  */
+  void restore_relay_log_pending_start() {
+    mysql_mutex_assert_owner(&data_lock);
+    master_log_pos = m_pending_source_log_pos;
+    transaction_parser = m_pending_transaction_parser;
+    if (!transaction_parser.is_inside_transaction()) clear_queueing_trx();
+  }
+
+  /**
+    @return true if flush_info() with this argument writes the repository
+            now rather than only counting towards sync_source_info.
+  */
+  bool is_flush_info_due(bool force);
   void set_relay_log_info(Relay_log_info *info);
 
   bool shall_ignore_server_id(ulong s_id);
@@ -656,6 +683,15 @@ class Master_info : public Rpl_info {
     based logging.
   */
   Replication_transaction_boundary_parser transaction_parser;
+
+ private:
+  /// The source position saved by save_relay_log_pending_start().
+  ulonglong m_pending_source_log_pos{0};
+  /// The transaction parser saved by save_relay_log_pending_start().
+  Replication_transaction_boundary_parser m_pending_transaction_parser{
+      Transaction_boundary_parser::TRX_BOUNDARY_PARSER_RECEIVER};
+
+ public:
 
  private:
   /*

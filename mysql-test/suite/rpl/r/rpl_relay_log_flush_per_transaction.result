@@ -1,0 +1,73 @@
+include/master-slave.inc
+Warnings:
+Note	####	Sending passwords in plain text without SSL/TLS is extremely insecure.
+Note	####	Storing MySQL user name or password information in the connection metadata repository is not secure and is therefore not recommended. Please consider using the USER and PASSWORD connection options for START REPLICA; see the 'START REPLICA Syntax' in the MySQL Manual for more information.
+[connection master]
+[connection slave]
+CALL mtr.add_suppression("Recovery from source pos");
+[connection master]
+CREATE TABLE t1 (id INT PRIMARY KEY, c VARCHAR(2000) NOT NULL) ENGINE=InnoDB;
+include/sync_slave_sql_with_master.inc
+# Adding debug point 'relay_log_flush_at_transaction_end_only' to @@GLOBAL.debug
+#
+# 1. One transaction, many events
+#
+[connection master]
+BEGIN;
+COMMIT;
+include/sync_slave_sql_with_master.inc
+include/assert.inc [A transaction of 200 row events took less than 10 writes to the relay log]
+#
+# 2. A transaction larger than the cache of the relay log file
+#
+[connection master]
+BEGIN;
+COMMIT;
+include/sync_slave_sql_with_master.inc
+include/assert.inc [All the rows of the large transaction were applied]
+#
+# 3. The receiver stops in the middle of a transaction
+#
+# Adding debug point 'stop_io_after_reading_query_log_event' to @@GLOBAL.debug
+[connection master]
+INSERT INTO t1 VALUES (301, 'c');
+[connection slave]
+include/wait_for_slave_io_to_stop.inc
+include/assert.inc [The GTID and the BEGIN the receiver stopped after are in the relay log file]
+# Removing debug point 'stop_io_after_reading_query_log_event' from @@GLOBAL.debug
+# Removing debug point 'relay_log_flush_at_transaction_end_only' from @@GLOBAL.debug
+# Kill and restart: --skip-replica-start --relay-log-recovery=ON
+include/rpl_reconnect.inc
+[connection slave]
+include/start_slave.inc
+[connection master]
+INSERT INTO t1 VALUES (302, 'd');
+include/sync_slave_sql_with_master.inc
+include/rpl_diff.inc
+#
+# 4. The server is killed while events wait in the cache
+#
+[connection slave]
+SET GLOBAL sync_source_info = 1;
+# Adding debug point 'relay_log_flush_at_transaction_end_only' to @@GLOBAL.debug
+# Adding debug point 'pause_on_queue_event_after_write_buffer' to @@GLOBAL.debug
+[connection master]
+INSERT INTO t1 VALUES (303, 'e');
+[connection slave]
+SET DEBUG_SYNC = 'now WAIT_FOR receiver_reached_pause_on_queue_event';
+SET DEBUG_SYNC = 'now SIGNAL receiver_continue_queuing_event';
+SET DEBUG_SYNC = 'now WAIT_FOR receiver_reached_pause_on_queue_event';
+SET DEBUG_SYNC = 'now SIGNAL receiver_continue_queuing_event';
+SET DEBUG_SYNC = 'now WAIT_FOR receiver_reached_pause_on_queue_event';
+SET DEBUG_SYNC = 'now SIGNAL receiver_continue_queuing_event';
+SET DEBUG_SYNC = 'now WAIT_FOR receiver_reached_pause_on_queue_event';
+# Kill and restart: --skip-replica-start --relay-log-recovery=ON
+include/rpl_reconnect.inc
+[connection slave]
+include/start_slave.inc
+[connection master]
+include/sync_slave_sql_with_master.inc
+include/rpl_diff.inc
+[connection master]
+DROP TABLE t1;
+include/rpl_end.inc

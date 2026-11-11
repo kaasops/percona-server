@@ -51,6 +51,10 @@ class Rpl_info_table : public Rpl_info_handler {
  public:
   ~Rpl_info_table() override;
 
+  bool is_flush_info_due(bool force) const override {
+    return force || (sync_period && sync_counter + 1 >= sync_period);
+  }
+
  private:
   /**
     This property identifies the name of the schema where a

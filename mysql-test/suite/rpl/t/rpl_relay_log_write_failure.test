@@ -1,0 +1,497 @@
+# The events of a transaction wait in the cache of the relay log file until
+# its last event. A write or a flush that fails cuts them all off: the file
+# is truncated to its published end. The receiver has to go back to where it
+# was before the first of them, the source position and the transaction
+# boundary parser alike, and stop. After START REPLICA IO_THREAD nothing is
+# missed and nothing comes twice.
+#
+# The server is not restarted here: at the start the relay log sanitizer
+# takes the source position from the relay log on its own.
+#
+# 1. A write fails in the middle of a transaction whose earlier events are
+#    in the cache, with SOURCE_AUTO_POSITION = 1 and 0.
+# 2. The same when the cache starts in the middle of a transaction: the
+#    receiver goes back into the transaction, not to its start.
+# 3. FLUSH RELAY LOGS in the middle of a transaction fails to flush the
+#    cache: the file is not rotated, and the receiver stops on the next
+#    event.
+# 4. The flush on the last event of a transaction fails. The transaction is
+#    larger than the cache: most of it is in the file, past its published
+#    end, and is cut off there.
+# 5. The flush of the receiver that waits for the source fails.
+--source include/have_debug.inc
+--source include/have_debug_sync.inc
+--source include/have_binlog_format_row.inc
+--source include/not_binlog_transaction_compression_on.inc
+--source include/not_group_replication_plugin.inc
+--source include/master-slave.inc
+
+CREATE TABLE t1 (id INT PRIMARY KEY, c VARCHAR(2000) NOT NULL DEFAULT '')
+  ENGINE=InnoDB;
+--source include/sync_slave_sql_with_master.inc
+
+SET sql_log_bin = 0;
+CALL mtr.add_suppression("Relay log write failure");
+SET sql_log_bin = 1;
+
+--let $write_failure = convert_error(ER_REPLICA_RELAY_LOG_WRITE_FAILURE)
+--let RELAY_LOG_DIR = `SELECT @@GLOBAL.datadir`
+--let RELAY_LOG_SPACE = query_get_value(SHOW REPLICA STATUS, Relay_Log_Space, 1)
+--perl
+  my $size = 0;
+  $size += -s $_ for glob("$ENV{RELAY_LOG_DIR}/slave-relay-bin.0*");
+  print $size == $ENV{RELAY_LOG_SPACE}
+      ? "The relay log space is the size of the relay log files\n"
+      : "The relay log space is $ENV{RELAY_LOG_SPACE}, the files take $size\n";
+EOF
+
+--let $auto_position = 1
+while ($auto_position >= 0)
+{
+  --echo #
+  --echo # 1. A write fails in the middle of a transaction,
+  --echo #    SOURCE_AUTO_POSITION = $auto_position
+  --echo #
+  if (!$auto_position)
+  {
+    --source include/stop_slave.inc
+    CHANGE REPLICATION SOURCE TO SOURCE_AUTO_POSITION = 0;
+    --source include/start_slave.inc
+    # The receiver first writes the Rotate and the Format_description of the
+    # source. The relay log space is taken after them: once a transaction
+    # that follows them has been applied.
+    --source include/rpl_connection_master.inc
+    INSERT INTO t1 (id) VALUES (1000);
+    --source include/sync_slave_sql_with_master.inc
+  }
+  --let $source_pos = query_get_value(SHOW REPLICA STATUS, Read_Source_Log_Pos, 1)
+  --let $retrieved = query_get_value(SHOW REPLICA STATUS, Retrieved_Gtid_Set, 1)
+  --let $space = query_get_value(SHOW REPLICA STATUS, Relay_Log_Space, 1)
+  --let $relay_log_file = query_get_value(SHOW REPLICA STATUS, Relay_Log_File, 1)
+  --let $statement = SHOW RELAYLOG EVENTS IN '$relay_log_file'
+  --let $column = Log_name
+  --source include/get_row_count.inc
+  --let $events_before = $row_count
+
+  --let $debug_point = relay_log_flush_at_transaction_end_only
+  --source include/add_debug_point.inc
+  --let $debug_point = pause_on_queue_event_after_write_buffer
+  --source include/add_debug_point.inc
+
+  --source include/rpl_connection_master.inc
+  BEGIN;
+  --eval INSERT INTO t1 (id) VALUES (10 + $auto_position)
+  --eval INSERT INTO t1 (id) VALUES (20 + $auto_position)
+  COMMIT;
+
+  # The GTID, the BEGIN and the table map are in the cache; the write of
+  # the rows event fails.
+  --source include/rpl_connection_slave.inc
+  SET DEBUG_SYNC = 'now WAIT_FOR receiver_reached_pause_on_queue_event';
+  SET DEBUG_SYNC = 'now SIGNAL receiver_continue_queuing_event';
+  SET DEBUG_SYNC = 'now WAIT_FOR receiver_reached_pause_on_queue_event';
+  SET DEBUG_SYNC = 'now SIGNAL receiver_continue_queuing_event';
+  SET DEBUG_SYNC = 'now WAIT_FOR receiver_reached_pause_on_queue_event';
+  --let $debug_point = simulate_relay_log_write_failure
+  --source include/add_debug_point.inc
+  SET DEBUG_SYNC = 'now SIGNAL receiver_continue_queuing_event';
+
+  --let $slave_param = Slave_IO_Running
+  --let $slave_param_value = No
+  --source include/wait_for_slave_param.inc
+
+  --let $assert_text = The receiver stopped with ER_REPLICA_RELAY_LOG_WRITE_FAILURE
+  --let $assert_cond = [SHOW REPLICA STATUS, Last_IO_Errno, 1] = $write_failure
+  --source include/assert.inc
+  --let $assert_text = The receiver is back at the end of the last complete transaction
+  --let $assert_cond = [SHOW REPLICA STATUS, Read_Source_Log_Pos, 1] = $source_pos
+  --source include/assert.inc
+  --let $assert_text = The received set has not changed
+  --let $assert_cond = "[SHOW REPLICA STATUS, Retrieved_Gtid_Set, 1]" = "$retrieved"
+  --source include/assert.inc
+  --let $statement = SHOW RELAYLOG EVENTS IN '$relay_log_file'
+  --let $column = Log_name
+  --source include/get_row_count.inc
+  --let $assert_text = No event of the transaction is in the relay log file
+  --let $assert_cond = $row_count = $events_before
+  --source include/assert.inc
+  --let $assert_text = The relay log space does not count the events that were cut off
+  --let $assert_cond = [SHOW REPLICA STATUS, Relay_Log_Space, 1] = $space
+  --source include/assert.inc
+
+  --let $debug_point = simulate_relay_log_write_failure
+  --source include/remove_debug_point.inc
+  --let $debug_point = pause_on_queue_event_after_write_buffer
+  --source include/remove_debug_point.inc
+  --let $debug_point = relay_log_flush_at_transaction_end_only
+  --source include/remove_debug_point.inc
+  SET DEBUG_SYNC = 'RESET';
+
+  --source include/start_slave_io.inc
+  --source include/rpl_connection_master.inc
+  --source include/sync_slave_sql_with_master.inc
+  --let $rpl_diff_statement = SELECT id, c FROM t1 ORDER BY id
+  --source include/rpl_diff.inc
+  --source include/rpl_connection_slave.inc
+  --let RELAY_LOG_SPACE = query_get_value(SHOW REPLICA STATUS, Relay_Log_Space, 1)
+  --perl
+    my $size = 0;
+    $size += -s $_ for glob("$ENV{RELAY_LOG_DIR}/slave-relay-bin.0*");
+    print $size == $ENV{RELAY_LOG_SPACE}
+        ? "The relay log space is the size of the relay log files\n"
+        : "The relay log space is $ENV{RELAY_LOG_SPACE}, the files take $size\n";
+EOF
+
+  --source include/rpl_connection_slave.inc
+  --dec $auto_position
+}
+
+--echo #
+--echo # 2. The cache starts in the middle of a transaction
+--echo #
+--let $source_pos = query_get_value(SHOW REPLICA STATUS, Read_Source_Log_Pos, 1)
+--let $space = query_get_value(SHOW REPLICA STATUS, Relay_Log_Space, 1)
+--let $relay_log_file = query_get_value(SHOW REPLICA STATUS, Relay_Log_File, 1)
+--let $statement = SHOW RELAYLOG EVENTS IN '$relay_log_file'
+--let $column = Log_name
+--source include/get_row_count.inc
+--let $events_before = $row_count
+
+--let $debug_point = relay_log_flush_at_transaction_end_only
+--source include/add_debug_point.inc
+--let $debug_point = pause_on_queue_event_after_write_buffer
+--source include/add_debug_point.inc
+
+--source include/rpl_connection_master.inc
+--let $gtid_executed_before = `SELECT @@GLOBAL.gtid_executed`
+BEGIN;
+INSERT INTO t1 (id) VALUES (30);
+INSERT INTO t1 (id) VALUES (31);
+INSERT INTO t1 (id) VALUES (32);
+COMMIT;
+--let $transaction_gtid = `SELECT GTID_SUBTRACT(@@GLOBAL.gtid_executed, '$gtid_executed_before')`
+
+# The GTID, the BEGIN, the first table map and the first rows event are in
+# the cache.
+--source include/rpl_connection_slave.inc
+SET DEBUG_SYNC = 'now WAIT_FOR receiver_reached_pause_on_queue_event';
+--let $i = 1
+while ($i <= 3)
+{
+  SET DEBUG_SYNC = 'now SIGNAL receiver_continue_queuing_event';
+  SET DEBUG_SYNC = 'now WAIT_FOR receiver_reached_pause_on_queue_event';
+  --inc $i
+}
+
+# The receiver that is stopped after every event flushes them.
+--let $debug_point = pause_after_queue_event
+--source include/add_debug_point.inc
+SET DEBUG_SYNC = 'now SIGNAL receiver_continue_queuing_event';
+SET DEBUG_SYNC = 'now WAIT_FOR reached_after_queue_event';
+--let $debug_point = pause_after_queue_event
+--source include/remove_debug_point.inc
+--let $source_pos_flushed = query_get_value(SHOW REPLICA STATUS, Read_Source_Log_Pos, 1)
+--let $assert_text = The first four events of the transaction went to the file
+--let $assert_cond = $source_pos_flushed > $source_pos
+--source include/assert.inc
+
+# The second table map and the second rows event are in the cache; the write
+# of the third table map fails.
+SET DEBUG_SYNC = 'now SIGNAL continue_after_queue_event';
+SET DEBUG_SYNC = 'now WAIT_FOR receiver_reached_pause_on_queue_event';
+SET DEBUG_SYNC = 'now SIGNAL receiver_continue_queuing_event';
+SET DEBUG_SYNC = 'now WAIT_FOR receiver_reached_pause_on_queue_event';
+--let $debug_point = simulate_relay_log_write_failure
+--source include/add_debug_point.inc
+SET DEBUG_SYNC = 'now SIGNAL receiver_continue_queuing_event';
+
+--let $slave_param = Slave_IO_Running
+--let $slave_param_value = No
+--source include/wait_for_slave_param.inc
+
+--let $assert_text = The receiver stopped with ER_REPLICA_RELAY_LOG_WRITE_FAILURE
+--let $assert_cond = [SHOW REPLICA STATUS, Last_IO_Errno, 1] = $write_failure
+--source include/assert.inc
+--let $assert_text = The receiver is back at the first event of the cache
+--let $assert_cond = [SHOW REPLICA STATUS, Read_Source_Log_Pos, 1] = $source_pos_flushed
+--source include/assert.inc
+--let $statement = SHOW RELAYLOG EVENTS IN '$relay_log_file'
+--let $column = Log_name
+--source include/get_row_count.inc
+--let $assert_text = The first four events of the transaction are in the relay log file
+--let $assert_cond = $row_count = $events_before + 4
+--source include/assert.inc
+--let $assert_text = The relay log space counts the events in the file only
+--let $assert_cond = [SHOW REPLICA STATUS, Relay_Log_Space, 1] = $space + $source_pos_flushed - $source_pos
+--source include/assert.inc
+
+--let $debug_point = simulate_relay_log_write_failure
+--source include/remove_debug_point.inc
+--let $debug_point = pause_on_queue_event_after_write_buffer
+--source include/remove_debug_point.inc
+--let $debug_point = relay_log_flush_at_transaction_end_only
+--source include/remove_debug_point.inc
+SET DEBUG_SYNC = 'RESET';
+
+--source include/start_slave_io.inc
+--source include/rpl_connection_master.inc
+--source include/sync_slave_sql_with_master.inc
+--let $rpl_diff_statement = SELECT id, c FROM t1 ORDER BY id
+--source include/rpl_diff.inc
+--source include/rpl_connection_slave.inc
+--let RELAY_LOG_SPACE = query_get_value(SHOW REPLICA STATUS, Relay_Log_Space, 1)
+--perl
+  my $size = 0;
+  $size += -s $_ for glob("$ENV{RELAY_LOG_DIR}/slave-relay-bin.0*");
+  print $size == $ENV{RELAY_LOG_SPACE}
+      ? "The relay log space is the size of the relay log files\n"
+      : "The relay log space is $ENV{RELAY_LOG_SPACE}, the files take $size\n";
+EOF
+
+# The receiver went on inside the transaction: its parser took the rest of
+# the events and the last of them completed the transaction.
+--source include/rpl_connection_slave.inc
+--let $assert_text = The transaction is in the received set
+--let $assert_cond = GTID_SUBSET("$transaction_gtid", "[SHOW REPLICA STATUS, Retrieved_Gtid_Set, 1]")
+--source include/assert.inc
+--let $assert_file = $MYSQLTEST_VARDIR/log/mysqld.2.err
+--let $assert_only_after = CURRENT_TEST: rpl.rpl_relay_log_write_failure
+--let $assert_select = An unexpected event sequence was detected by the IO thread
+--let $assert_count = 0
+--let $assert_text = The receiver met no event out of its place
+--source include/assert_grep.inc
+
+--echo #
+--echo # 3. FLUSH RELAY LOGS fails to flush the cache
+--echo #
+--let $source_pos = query_get_value(SHOW REPLICA STATUS, Read_Source_Log_Pos, 1)
+--let $space = query_get_value(SHOW REPLICA STATUS, Relay_Log_Space, 1)
+--let $relay_log_file = query_get_value(SHOW REPLICA STATUS, Relay_Log_File, 1)
+--let $statement = SHOW RELAYLOG EVENTS IN '$relay_log_file'
+--let $column = Log_name
+--source include/get_row_count.inc
+--let $events_before = $row_count
+--let $debug_point = relay_log_flush_at_transaction_end_only
+--source include/add_debug_point.inc
+
+# The source stops before the last event of the transaction.
+--source include/rpl_connection_master.inc
+--let $debug_point = dump_thread_wait_before_send_xid
+--source include/add_debug_point.inc
+--let $binlog_file = query_get_value(SHOW MASTER STATUS, File, 1)
+--let $binlog_pos = query_get_value(SHOW MASTER STATUS, Position, 1)
+INSERT INTO t1 (id) VALUES (40);
+--let $xid_pos = query_get_value(SHOW BINLOG EVENTS IN '$binlog_file' FROM $binlog_pos, Pos, 5)
+
+--source include/rpl_connection_slave.inc
+--let $slave_param = Read_Master_Log_Pos
+--let $slave_param_value = $xid_pos
+--source include/wait_for_slave_param.inc
+
+--let $debug_point = simulate_relay_log_flush_failure
+--source include/add_debug_point.inc
+--replace_regex /Error writing file .*/Error writing file <relay log> (errno: #)/
+--error ER_ERROR_ON_WRITE
+FLUSH RELAY LOGS;
+--let $debug_point = simulate_relay_log_flush_failure
+--source include/remove_debug_point.inc
+
+--let $assert_text = The relay log was not rotated and has no event of the transaction
+--let $assert_cond = [SHOW REPLICA STATUS, Relay_Log_Space, 1] = $space
+--source include/assert.inc
+--let $assert_text = The receiver waits for the next event
+--let $assert_cond = "[SHOW REPLICA STATUS, Replica_IO_Running, 1]" = "Yes"
+--source include/assert.inc
+
+--source include/rpl_connection_master.inc
+--let $debug_point = dump_thread_wait_before_send_xid
+--source include/remove_debug_point.inc
+SET DEBUG_SYNC = 'now SIGNAL signal.continue';
+
+--source include/rpl_connection_slave.inc
+--let $slave_param = Slave_IO_Running
+--let $slave_param_value = No
+--source include/wait_for_slave_param.inc
+
+--let $assert_text = The receiver stopped with ER_REPLICA_RELAY_LOG_WRITE_FAILURE
+--let $assert_cond = [SHOW REPLICA STATUS, Last_IO_Errno, 1] = $write_failure
+--source include/assert.inc
+--let $assert_text = The receiver is back at the end of the last complete transaction
+--let $assert_cond = [SHOW REPLICA STATUS, Read_Source_Log_Pos, 1] = $source_pos
+--source include/assert.inc
+--let $statement = SHOW RELAYLOG EVENTS IN '$relay_log_file'
+--let $column = Log_name
+--source include/get_row_count.inc
+--let $assert_text = No event of the transaction is in the relay log file
+--let $assert_cond = $row_count = $events_before
+--source include/assert.inc
+--let $assert_text = The relay log space does not count the events that were cut off
+--let $assert_cond = [SHOW REPLICA STATUS, Relay_Log_Space, 1] = $space
+--source include/assert.inc
+
+--let $debug_point = relay_log_flush_at_transaction_end_only
+--source include/remove_debug_point.inc
+--source include/rpl_connection_master.inc
+SET DEBUG_SYNC = 'RESET';
+--source include/rpl_connection_slave.inc
+
+--source include/start_slave_io.inc
+--source include/rpl_connection_master.inc
+--source include/sync_slave_sql_with_master.inc
+--let $rpl_diff_statement = SELECT id, c FROM t1 ORDER BY id
+--source include/rpl_diff.inc
+--source include/rpl_connection_slave.inc
+--let RELAY_LOG_SPACE = query_get_value(SHOW REPLICA STATUS, Relay_Log_Space, 1)
+--perl
+  my $size = 0;
+  $size += -s $_ for glob("$ENV{RELAY_LOG_DIR}/slave-relay-bin.0*");
+  print $size == $ENV{RELAY_LOG_SPACE}
+      ? "The relay log space is the size of the relay log files\n"
+      : "The relay log space is $ENV{RELAY_LOG_SPACE}, the files take $size\n";
+EOF
+
+--echo #
+--echo # 4. The flush on the last event of a large transaction fails
+--echo #
+--source include/rpl_connection_slave.inc
+--let $source_pos = query_get_value(SHOW REPLICA STATUS, Read_Source_Log_Pos, 1)
+--let $space = query_get_value(SHOW REPLICA STATUS, Relay_Log_Space, 1)
+--let $relay_log_file = query_get_value(SHOW REPLICA STATUS, Relay_Log_File, 1)
+--let $statement = SHOW RELAYLOG EVENTS IN '$relay_log_file'
+--let $column = Log_name
+--source include/get_row_count.inc
+--let $events_before = $row_count
+--let $debug_point = relay_log_flush_at_transaction_end_only
+--source include/add_debug_point.inc
+--let $debug_point = simulate_relay_log_flush_failure
+--source include/add_debug_point.inc
+
+--source include/rpl_connection_master.inc
+BEGIN;
+--disable_query_log
+--let $i = 1
+while ($i <= 50)
+{
+  --eval INSERT INTO t1 VALUES (500 + $i, REPEAT('a', 2000))
+  --inc $i
+}
+--enable_query_log
+COMMIT;
+
+--source include/rpl_connection_slave.inc
+--let $slave_param = Slave_IO_Running
+--let $slave_param_value = No
+--source include/wait_for_slave_param.inc
+
+--let $assert_text = The receiver stopped with ER_REPLICA_RELAY_LOG_WRITE_FAILURE
+--let $assert_cond = [SHOW REPLICA STATUS, Last_IO_Errno, 1] = $write_failure
+--source include/assert.inc
+--let $assert_text = The receiver is back at the end of the last complete transaction
+--let $assert_cond = [SHOW REPLICA STATUS, Read_Source_Log_Pos, 1] = $source_pos
+--source include/assert.inc
+--let $statement = SHOW RELAYLOG EVENTS IN '$relay_log_file'
+--let $column = Log_name
+--source include/get_row_count.inc
+--let $assert_text = No event of the transaction is in the relay log file
+--let $assert_cond = $row_count = $events_before
+--source include/assert.inc
+--let $assert_text = The relay log space does not count the events that were cut off
+--let $assert_cond = [SHOW REPLICA STATUS, Relay_Log_Space, 1] = $space
+--source include/assert.inc
+
+--let RELAY_LOG_SPACE = query_get_value(SHOW REPLICA STATUS, Relay_Log_Space, 1)
+--perl
+  my $size = 0;
+  $size += -s $_ for glob("$ENV{RELAY_LOG_DIR}/slave-relay-bin.0*");
+  print $size == $ENV{RELAY_LOG_SPACE}
+      ? "The relay log space is the size of the relay log files\n"
+      : "The relay log space is $ENV{RELAY_LOG_SPACE}, the files take $size\n";
+EOF
+--let $debug_point = simulate_relay_log_flush_failure
+--source include/remove_debug_point.inc
+--let $debug_point = relay_log_flush_at_transaction_end_only
+--source include/remove_debug_point.inc
+
+--source include/start_slave_io.inc
+--source include/rpl_connection_master.inc
+--source include/sync_slave_sql_with_master.inc
+--let $rpl_diff_statement = SELECT id, c FROM t1 ORDER BY id
+--source include/rpl_diff.inc
+--source include/rpl_connection_slave.inc
+--let RELAY_LOG_SPACE = query_get_value(SHOW REPLICA STATUS, Relay_Log_Space, 1)
+--perl
+  my $size = 0;
+  $size += -s $_ for glob("$ENV{RELAY_LOG_DIR}/slave-relay-bin.0*");
+  print $size == $ENV{RELAY_LOG_SPACE}
+      ? "The relay log space is the size of the relay log files\n"
+      : "The relay log space is $ENV{RELAY_LOG_SPACE}, the files take $size\n";
+EOF
+
+--echo #
+--echo # 5. The flush of the receiver that waits for the source fails
+--echo #
+--source include/rpl_connection_slave.inc
+--let $source_pos = query_get_value(SHOW REPLICA STATUS, Read_Source_Log_Pos, 1)
+--let $space = query_get_value(SHOW REPLICA STATUS, Relay_Log_Space, 1)
+--let $relay_log_file = query_get_value(SHOW REPLICA STATUS, Relay_Log_File, 1)
+--let $statement = SHOW RELAYLOG EVENTS IN '$relay_log_file'
+--let $column = Log_name
+--source include/get_row_count.inc
+--let $events_before = $row_count
+--let $debug_point = simulate_relay_log_flush_failure
+--source include/add_debug_point.inc
+
+# The source stops before the last event of the transaction.
+--source include/rpl_connection_master.inc
+--let $debug_point = dump_thread_wait_before_send_xid
+--source include/add_debug_point.inc
+INSERT INTO t1 (id) VALUES (60);
+
+--source include/rpl_connection_slave.inc
+--let $slave_param = Slave_IO_Running
+--let $slave_param_value = No
+--source include/wait_for_slave_param.inc
+
+--let $assert_text = The receiver stopped with ER_REPLICA_RELAY_LOG_WRITE_FAILURE
+--let $assert_cond = [SHOW REPLICA STATUS, Last_IO_Errno, 1] = $write_failure
+--source include/assert.inc
+--let $assert_text = The receiver is back at the end of the last complete transaction
+--let $assert_cond = [SHOW REPLICA STATUS, Read_Source_Log_Pos, 1] = $source_pos
+--source include/assert.inc
+--let $statement = SHOW RELAYLOG EVENTS IN '$relay_log_file'
+--let $column = Log_name
+--source include/get_row_count.inc
+--let $assert_text = No event of the transaction is in the relay log file
+--let $assert_cond = $row_count = $events_before
+--source include/assert.inc
+--let $assert_text = The relay log space does not count the events that were cut off
+--let $assert_cond = [SHOW REPLICA STATUS, Relay_Log_Space, 1] = $space
+--source include/assert.inc
+
+--let $debug_point = simulate_relay_log_flush_failure
+--source include/remove_debug_point.inc
+--source include/rpl_connection_master.inc
+--let $debug_point = dump_thread_wait_before_send_xid
+--source include/remove_debug_point.inc
+SET DEBUG_SYNC = 'now SIGNAL signal.continue';
+
+--source include/rpl_connection_slave.inc
+--source include/start_slave_io.inc
+--source include/rpl_connection_master.inc
+--source include/sync_slave_sql_with_master.inc
+--let $rpl_diff_statement = SELECT id, c FROM t1 ORDER BY id
+--source include/rpl_diff.inc
+--source include/rpl_connection_slave.inc
+--let RELAY_LOG_SPACE = query_get_value(SHOW REPLICA STATUS, Relay_Log_Space, 1)
+--perl
+  my $size = 0;
+  $size += -s $_ for glob("$ENV{RELAY_LOG_DIR}/slave-relay-bin.0*");
+  print $size == $ENV{RELAY_LOG_SPACE}
+      ? "The relay log space is the size of the relay log files\n"
+      : "The relay log space is $ENV{RELAY_LOG_SPACE}, the files take $size\n";
+EOF
+
+--source include/rpl_connection_master.inc
+SET DEBUG_SYNC = 'RESET';
+DROP TABLE t1;
+--source include/rpl_end.inc

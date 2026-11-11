@@ -7152,24 +7152,74 @@ end:
 
 /**
   Called after an event has been written to the relay log by the IO
-  thread.  This flushes and possibly syncs the file (according to the
-  sync options), rotates the file if it has grown over the limit, and
-  finally calls signal_update().
+  thread. As the binary log does with a commit group, a transaction goes to
+  the file and becomes visible to the applier at once, with its last event:
+  until then its events wait in the cache of the file.
 
   @note The caller must hold LOCK_log before invoking this function.
 
   @param mi Master_info for the IO thread.
+  @param may_defer the event came from the source and may wait for the end
+                   of its transaction.
 
   @retval false success
   @retval true error
 */
-bool MYSQL_BIN_LOG::after_write_to_relay_log(Master_info *mi) {
+bool MYSQL_BIN_LOG::after_write_to_relay_log(Master_info *mi, bool may_defer) {
   DBUG_TRACE;
-  DBUG_PRINT("info", ("max_size: %lu", max_size));
 
   // Check pre-conditions
   mysql_mutex_assert_owner(&LOCK_log);
   assert(is_relay_log);
+
+  // Only this thread and the holders of LOCK_log change the counter.
+  const uint pending = m_relay_pending_events.load(std::memory_order_relaxed);
+  if (may_defer && mi->transaction_parser.is_inside_transaction()) {
+    if (pending == 0) mi->save_relay_log_pending_start();
+    m_relay_pending_events.store(pending + 1, std::memory_order_relaxed);
+    return false;
+  }
+  return flush_relay_log(mi, pending);
+}
+
+bool MYSQL_BIN_LOG::flush_relay_log_pending(Master_info *mi) {
+  mysql_mutex_assert_owner(&LOCK_log);
+  const uint pending = m_relay_pending_events.load(std::memory_order_relaxed);
+  if (pending == 0) return false;
+  // The flush itself counts one event for sync_relay_log.
+  return flush_relay_log(mi, pending - 1);
+}
+
+void MYSQL_BIN_LOG::discard_relay_log_tail(Master_info *mi) {
+  const my_off_t end = is_open() ? m_binlog_file->position() : 0;
+  if (!truncate_relaylog_file(mi, atomic_binlog_end_pos) && is_open()) {
+    // The relay log space does not count what is no longer in the file.
+    const my_off_t cut = end - m_binlog_file->position();
+    bytes_written -= std::min<ulonglong>(cut, bytes_written);
+  }
+  if (m_relay_pending_events.load(std::memory_order_relaxed) != 0) {
+    m_relay_pending_events.store(0, std::memory_order_relaxed);
+    m_relay_discarded = true;
+  }
+}
+
+/**
+  Flushes the cache of the relay log file and possibly syncs the file
+  (according to the sync options), rotates the file if it has grown over the
+  limit, and publishes the new end of the log.
+
+  @note The caller must hold LOCK_log before invoking this function.
+
+  @param mi Master_info for the IO thread.
+  @param events events in the cache that sync_relay_log has not counted yet,
+                the one counted by this flush excluded.
+
+  @retval false success
+  @retval true error
+*/
+bool MYSQL_BIN_LOG::flush_relay_log(Master_info *mi, uint events) {
+  DBUG_TRACE;
+  DBUG_PRINT("info", ("max_size: %lu", max_size));
 
   /*
     We allow the relay log rotation by relay log size
@@ -7186,14 +7236,18 @@ bool MYSQL_BIN_LOG::after_write_to_relay_log(Master_info *mi) {
   }
 #endif
 
-  // Flush and sync
-  bool error = flush_and_sync(false);
+  // Flush and sync; sync_relay_log counts events, not flushes.
+  if (get_sync_period() != 0) sync_counter += events;
+  bool error = DBUG_EVALUATE_IF("simulate_relay_log_flush_failure", true,
+                                false) ||
+               flush_and_sync(false);
   if (error) {
     mi->report(ERROR_LEVEL, ER_REPLICA_RELAY_LOG_WRITE_FAILURE,
                ER_THD(current_thd, ER_REPLICA_RELAY_LOG_WRITE_FAILURE),
                "failed to flush event to relay log file");
-    truncate_relaylog_file(mi, atomic_binlog_end_pos);
+    discard_relay_log_tail(mi);
   } else {
+    m_relay_pending_events.store(0, std::memory_order_relaxed);
     if (can_rotate) {
       mysql_mutex_lock(&mi->data_lock);
       /*
@@ -7302,16 +7356,20 @@ bool MYSQL_BIN_LOG::write_event(Log_event *ev, Master_info *mi) {
 
   mysql_mutex_assert_owner(&LOCK_log);
 
+  // The receiver has to learn that its earlier events are gone.
+  if (m_relay_discarded) return true;
+
   // write data
   bool error = false;
   if (!binary_event_serialize(ev, m_binlog_file)) {
     bytes_written += ev->common_header->data_written;
-    error = after_write_to_relay_log(mi);
+    // An event of the receiver itself is not a part of a source transaction.
+    error = after_write_to_relay_log(mi, false);
   } else {
     mi->report(ERROR_LEVEL, ER_REPLICA_RELAY_LOG_WRITE_FAILURE,
                ER_THD(current_thd, ER_REPLICA_RELAY_LOG_WRITE_FAILURE),
                "failed to write event to the relay log file");
-    truncate_relaylog_file(mi, atomic_binlog_end_pos);
+    discard_relay_log_tail(mi);
     error = true;
   }
 
@@ -7325,16 +7383,20 @@ bool MYSQL_BIN_LOG::write_buffer(uchar *buf, uint len, Master_info *mi) {
   assert(is_relay_log);
   mysql_mutex_assert_owner(&LOCK_log);
 
+  // The receiver has to learn that its earlier events are gone.
+  if (m_relay_discarded) return true;
+
   // write data
   bool error = false;
-  if (m_binlog_file->write(pointer_cast<const uchar *>(buf), len) == 0) {
+  if (!DBUG_EVALUATE_IF("simulate_relay_log_write_failure", true, false) &&
+      m_binlog_file->write(pointer_cast<const uchar *>(buf), len) == 0) {
     bytes_written += len;
-    error = after_write_to_relay_log(mi);
+    error = after_write_to_relay_log(mi, true);
   } else {
     mi->report(ERROR_LEVEL, ER_REPLICA_RELAY_LOG_WRITE_FAILURE,
                ER_THD(current_thd, ER_REPLICA_RELAY_LOG_WRITE_FAILURE),
                "failed to write event to the relay log file");
-    truncate_relaylog_file(mi, atomic_binlog_end_pos);
+    discard_relay_log_tail(mi);
     error = true;
   }
 

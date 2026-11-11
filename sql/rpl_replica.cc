@@ -1523,10 +1523,13 @@ int flush_master_info(Master_info *mi, bool force, bool need_lock,
 
   int err = 0;
   /*
-    We can skip flushing the relay log when this function is called from
-    queue_event(), as after_write_to_relay_log() will already flush it.
+    The repository must not get ahead of the file: what waits in the cache
+    of the relay log goes to the file first.
   */
-  if (do_flush_relay_log) err |= mi->rli->flush_current_log();
+  if (do_flush_relay_log ||
+      (!skip_repo_persistence && mi->rli->relay_log.relay_log_has_pending() &&
+       mi->is_flush_info_due(force)))
+    err |= mi->rli->flush_current_log();
 
   if (!skip_repo_persistence) err |= mi->flush_info(force);
 
@@ -5374,6 +5377,35 @@ static int try_to_reconnect(THD *thd, MYSQL *mysql, Master_info *mi,
 }
 
 /**
+  Takes the receiver back to where it was before the first of the events
+  that a failed write to the relay log cut off.
+
+  @param mi the receiver; LOCK_log held, data_lock not held.
+*/
+static void restore_source_pos_after_relay_log_discard(Master_info *mi) {
+  if (!mi->rli->relay_log.take_relay_log_discarded()) return;
+  mysql_mutex_lock(&mi->data_lock);
+  mi->restore_relay_log_pending_start();
+  mysql_mutex_unlock(&mi->data_lock);
+}
+
+/**
+  Flushes and publishes the events the receiver left in the cache of the
+  relay log file.
+
+  @retval false Success, or nothing to flush
+  @retval true Failure
+*/
+static bool flush_relay_log_pending(Master_info *mi) {
+  mysql_mutex_t *log_lock = mi->rli->relay_log.get_log_lock();
+  mysql_mutex_lock(log_lock);
+  const bool error = mi->rli->relay_log.flush_relay_log_pending(mi);
+  restore_source_pos_after_relay_log_discard(mi);
+  mysql_mutex_unlock(log_lock);
+  return error;
+}
+
+/**
   Slave IO thread entry point.
 
   @param arg Pointer to Master_info struct that holds information for
@@ -5470,6 +5502,8 @@ extern "C" void *handle_slave_io(void *arg) {
     }
 
   connected:
+
+    flush_relay_log_pending(mi);
 
     /*
       When using auto positioning, the slave IO thread will always start reading
@@ -5748,6 +5782,24 @@ extern "C" void *handle_slave_io(void *arg) {
                           { rpl_replica_debug_point(DBUG_RPL_S_PS_TABLES); };);
         }
 #endif
+        /*
+          The receiver is about to wait for the source: the applier gets
+          what is queued by now.
+        */
+        if (rli->relay_log.relay_log_has_pending() &&
+            (DBUG_EVALUATE_IF("pause_after_queue_event", true, false) ||
+             DBUG_EVALUATE_IF("pause_on_queuing_event", true, false) ||
+             (!DBUG_EVALUATE_IF("relay_log_flush_at_transaction_end_only",
+                                true, false) &&
+              mysql->net.remain_in_buf == 0 &&
+              !mysql->net.vio->has_data(mysql->net.vio))) &&
+            flush_relay_log_pending(mi)) {
+          mi->report(ERROR_LEVEL, ER_REPLICA_RELAY_LOG_WRITE_FAILURE,
+                     ER_THD(thd, ER_REPLICA_RELAY_LOG_WRITE_FAILURE),
+                     "could not queue event from source");
+          goto err;
+        }
+
         if (RUN_HOOK(binlog_relay_io, after_queue_event,
                      (thd, mi, event_buf, event_len, synced))) {
           mi->report(ERROR_LEVEL, ER_REPLICA_FATAL_ERROR,
@@ -5944,6 +5996,7 @@ extern "C" void *handle_slave_io(void *arg) {
       mysql = nullptr;
     }
     write_ignored_events_info_to_relay_log(thd, mi);
+    flush_relay_log_pending(mi);
     THD_STAGE_INFO(thd, stage_waiting_for_replica_mutex_on_exit);
     mysql_mutex_lock(&mi->run_lock);
     /*
@@ -8360,6 +8413,7 @@ QUEUE_EVENT_RESULT queue_event(Master_info *mi, const char *buf,
         would assume the failed event as queued.
       */
       mi->transaction_parser.rollback();
+      restore_source_pos_after_relay_log_discard(mi);
       is_error = true;
     }
 
@@ -8739,6 +8793,14 @@ int rotate_relay_log(Master_info *mi, bool log_master_fd, bool need_lock,
     goto end;
   }
 
+  /*
+    What waits in the cache of the file belongs to this file.
+  */
+  if (rli->relay_log.flush_relay_log_pending(mi)) {
+    error = 1;
+    goto end;
+  }
+
   if (log_master_fd)
     error =
         rli->relay_log.new_file_without_locking(mi->get_mi_description_event());
@@ -8794,7 +8856,19 @@ int flush_relay_logs(Master_info *mi, THD *thd) {
                            !channel_map.is_group_replication_channel_name(
                                mi->get_channel(), true),
                            true)) {
-        if (rotate_relay_log(mi)) error = 1;
+        if (rotate_relay_log(mi)) {
+          error = 1;
+          /*
+            The flush of the cached events may fail before the new file
+            is opened: the statement needs an error too.
+          */
+          if (thd != nullptr && !thd->is_error()) {
+            char errbuf[MYSYS_STRERROR_SIZE];
+            my_error(ER_ERROR_ON_WRITE, MYF(0), rli->relay_log.get_log_fname(),
+                     my_errno(),
+                     my_strerror(errbuf, sizeof(errbuf), my_errno()));
+          }
+        }
       }
       // Postpone the rotate action, delegating it to the I/O thread
       else {

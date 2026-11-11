@@ -1,0 +1,225 @@
+include/master-slave.inc
+Warnings:
+Note	####	Sending passwords in plain text without SSL/TLS is extremely insecure.
+Note	####	Storing MySQL user name or password information in the connection metadata repository is not secure and is therefore not recommended. Please consider using the USER and PASSWORD connection options for START REPLICA; see the 'START REPLICA Syntax' in the MySQL Manual for more information.
+[connection master]
+CREATE TABLE t1 (id INT PRIMARY KEY, c VARCHAR(2000) NOT NULL DEFAULT '')
+ENGINE=InnoDB;
+include/sync_slave_sql_with_master.inc
+SET sql_log_bin = 0;
+CALL mtr.add_suppression("Relay log write failure");
+SET sql_log_bin = 1;
+The relay log space is the size of the relay log files
+#
+# 1. A write fails in the middle of a transaction,
+#    SOURCE_AUTO_POSITION = 1
+#
+# Adding debug point 'relay_log_flush_at_transaction_end_only' to @@GLOBAL.debug
+# Adding debug point 'pause_on_queue_event_after_write_buffer' to @@GLOBAL.debug
+[connection master]
+BEGIN;
+INSERT INTO t1 (id) VALUES (10 + 1);
+INSERT INTO t1 (id) VALUES (20 + 1);
+COMMIT;
+[connection slave]
+SET DEBUG_SYNC = 'now WAIT_FOR receiver_reached_pause_on_queue_event';
+SET DEBUG_SYNC = 'now SIGNAL receiver_continue_queuing_event';
+SET DEBUG_SYNC = 'now WAIT_FOR receiver_reached_pause_on_queue_event';
+SET DEBUG_SYNC = 'now SIGNAL receiver_continue_queuing_event';
+SET DEBUG_SYNC = 'now WAIT_FOR receiver_reached_pause_on_queue_event';
+# Adding debug point 'simulate_relay_log_write_failure' to @@GLOBAL.debug
+SET DEBUG_SYNC = 'now SIGNAL receiver_continue_queuing_event';
+include/wait_for_slave_param.inc [Slave_IO_Running]
+include/assert.inc [The receiver stopped with ER_REPLICA_RELAY_LOG_WRITE_FAILURE]
+include/assert.inc [The receiver is back at the end of the last complete transaction]
+include/assert.inc [The received set has not changed]
+include/assert.inc [No event of the transaction is in the relay log file]
+include/assert.inc [The relay log space does not count the events that were cut off]
+# Removing debug point 'simulate_relay_log_write_failure' from @@GLOBAL.debug
+# Removing debug point 'pause_on_queue_event_after_write_buffer' from @@GLOBAL.debug
+# Removing debug point 'relay_log_flush_at_transaction_end_only' from @@GLOBAL.debug
+SET DEBUG_SYNC = 'RESET';
+include/start_slave_io.inc
+[connection master]
+include/sync_slave_sql_with_master.inc
+include/rpl_diff.inc
+[connection slave]
+The relay log space is the size of the relay log files
+[connection slave]
+#
+# 1. A write fails in the middle of a transaction,
+#    SOURCE_AUTO_POSITION = 0
+#
+include/stop_slave.inc
+CHANGE REPLICATION SOURCE TO SOURCE_AUTO_POSITION = 0;
+include/start_slave.inc
+[connection master]
+INSERT INTO t1 (id) VALUES (1000);
+include/sync_slave_sql_with_master.inc
+# Adding debug point 'relay_log_flush_at_transaction_end_only' to @@GLOBAL.debug
+# Adding debug point 'pause_on_queue_event_after_write_buffer' to @@GLOBAL.debug
+[connection master]
+BEGIN;
+INSERT INTO t1 (id) VALUES (10 + 0);
+INSERT INTO t1 (id) VALUES (20 + 0);
+COMMIT;
+[connection slave]
+SET DEBUG_SYNC = 'now WAIT_FOR receiver_reached_pause_on_queue_event';
+SET DEBUG_SYNC = 'now SIGNAL receiver_continue_queuing_event';
+SET DEBUG_SYNC = 'now WAIT_FOR receiver_reached_pause_on_queue_event';
+SET DEBUG_SYNC = 'now SIGNAL receiver_continue_queuing_event';
+SET DEBUG_SYNC = 'now WAIT_FOR receiver_reached_pause_on_queue_event';
+# Adding debug point 'simulate_relay_log_write_failure' to @@GLOBAL.debug
+SET DEBUG_SYNC = 'now SIGNAL receiver_continue_queuing_event';
+include/wait_for_slave_param.inc [Slave_IO_Running]
+include/assert.inc [The receiver stopped with ER_REPLICA_RELAY_LOG_WRITE_FAILURE]
+include/assert.inc [The receiver is back at the end of the last complete transaction]
+include/assert.inc [The received set has not changed]
+include/assert.inc [No event of the transaction is in the relay log file]
+include/assert.inc [The relay log space does not count the events that were cut off]
+# Removing debug point 'simulate_relay_log_write_failure' from @@GLOBAL.debug
+# Removing debug point 'pause_on_queue_event_after_write_buffer' from @@GLOBAL.debug
+# Removing debug point 'relay_log_flush_at_transaction_end_only' from @@GLOBAL.debug
+SET DEBUG_SYNC = 'RESET';
+include/start_slave_io.inc
+[connection master]
+include/sync_slave_sql_with_master.inc
+include/rpl_diff.inc
+[connection slave]
+The relay log space is the size of the relay log files
+[connection slave]
+#
+# 2. The cache starts in the middle of a transaction
+#
+# Adding debug point 'relay_log_flush_at_transaction_end_only' to @@GLOBAL.debug
+# Adding debug point 'pause_on_queue_event_after_write_buffer' to @@GLOBAL.debug
+[connection master]
+BEGIN;
+INSERT INTO t1 (id) VALUES (30);
+INSERT INTO t1 (id) VALUES (31);
+INSERT INTO t1 (id) VALUES (32);
+COMMIT;
+[connection slave]
+SET DEBUG_SYNC = 'now WAIT_FOR receiver_reached_pause_on_queue_event';
+SET DEBUG_SYNC = 'now SIGNAL receiver_continue_queuing_event';
+SET DEBUG_SYNC = 'now WAIT_FOR receiver_reached_pause_on_queue_event';
+SET DEBUG_SYNC = 'now SIGNAL receiver_continue_queuing_event';
+SET DEBUG_SYNC = 'now WAIT_FOR receiver_reached_pause_on_queue_event';
+SET DEBUG_SYNC = 'now SIGNAL receiver_continue_queuing_event';
+SET DEBUG_SYNC = 'now WAIT_FOR receiver_reached_pause_on_queue_event';
+# Adding debug point 'pause_after_queue_event' to @@GLOBAL.debug
+SET DEBUG_SYNC = 'now SIGNAL receiver_continue_queuing_event';
+SET DEBUG_SYNC = 'now WAIT_FOR reached_after_queue_event';
+# Removing debug point 'pause_after_queue_event' from @@GLOBAL.debug
+include/assert.inc [The first four events of the transaction went to the file]
+SET DEBUG_SYNC = 'now SIGNAL continue_after_queue_event';
+SET DEBUG_SYNC = 'now WAIT_FOR receiver_reached_pause_on_queue_event';
+SET DEBUG_SYNC = 'now SIGNAL receiver_continue_queuing_event';
+SET DEBUG_SYNC = 'now WAIT_FOR receiver_reached_pause_on_queue_event';
+# Adding debug point 'simulate_relay_log_write_failure' to @@GLOBAL.debug
+SET DEBUG_SYNC = 'now SIGNAL receiver_continue_queuing_event';
+include/wait_for_slave_param.inc [Slave_IO_Running]
+include/assert.inc [The receiver stopped with ER_REPLICA_RELAY_LOG_WRITE_FAILURE]
+include/assert.inc [The receiver is back at the first event of the cache]
+include/assert.inc [The first four events of the transaction are in the relay log file]
+include/assert.inc [The relay log space counts the events in the file only]
+# Removing debug point 'simulate_relay_log_write_failure' from @@GLOBAL.debug
+# Removing debug point 'pause_on_queue_event_after_write_buffer' from @@GLOBAL.debug
+# Removing debug point 'relay_log_flush_at_transaction_end_only' from @@GLOBAL.debug
+SET DEBUG_SYNC = 'RESET';
+include/start_slave_io.inc
+[connection master]
+include/sync_slave_sql_with_master.inc
+include/rpl_diff.inc
+[connection slave]
+The relay log space is the size of the relay log files
+[connection slave]
+include/assert.inc [The transaction is in the received set]
+include/assert_grep.inc [The receiver met no event out of its place]
+#
+# 3. FLUSH RELAY LOGS fails to flush the cache
+#
+# Adding debug point 'relay_log_flush_at_transaction_end_only' to @@GLOBAL.debug
+[connection master]
+# Adding debug point 'dump_thread_wait_before_send_xid' to @@GLOBAL.debug
+INSERT INTO t1 (id) VALUES (40);
+[connection slave]
+include/wait_for_slave_param.inc [Read_Master_Log_Pos]
+# Adding debug point 'simulate_relay_log_flush_failure' to @@GLOBAL.debug
+FLUSH RELAY LOGS;
+ERROR HY000: Error writing file <relay log> (errno: #)
+# Removing debug point 'simulate_relay_log_flush_failure' from @@GLOBAL.debug
+include/assert.inc [The relay log was not rotated and has no event of the transaction]
+include/assert.inc [The receiver waits for the next event]
+[connection master]
+# Removing debug point 'dump_thread_wait_before_send_xid' from @@GLOBAL.debug
+SET DEBUG_SYNC = 'now SIGNAL signal.continue';
+[connection slave]
+include/wait_for_slave_param.inc [Slave_IO_Running]
+include/assert.inc [The receiver stopped with ER_REPLICA_RELAY_LOG_WRITE_FAILURE]
+include/assert.inc [The receiver is back at the end of the last complete transaction]
+include/assert.inc [No event of the transaction is in the relay log file]
+include/assert.inc [The relay log space does not count the events that were cut off]
+# Removing debug point 'relay_log_flush_at_transaction_end_only' from @@GLOBAL.debug
+[connection master]
+SET DEBUG_SYNC = 'RESET';
+[connection slave]
+include/start_slave_io.inc
+[connection master]
+include/sync_slave_sql_with_master.inc
+include/rpl_diff.inc
+[connection slave]
+The relay log space is the size of the relay log files
+#
+# 4. The flush on the last event of a large transaction fails
+#
+[connection slave]
+# Adding debug point 'relay_log_flush_at_transaction_end_only' to @@GLOBAL.debug
+# Adding debug point 'simulate_relay_log_flush_failure' to @@GLOBAL.debug
+[connection master]
+BEGIN;
+COMMIT;
+[connection slave]
+include/wait_for_slave_param.inc [Slave_IO_Running]
+include/assert.inc [The receiver stopped with ER_REPLICA_RELAY_LOG_WRITE_FAILURE]
+include/assert.inc [The receiver is back at the end of the last complete transaction]
+include/assert.inc [No event of the transaction is in the relay log file]
+include/assert.inc [The relay log space does not count the events that were cut off]
+The relay log space is the size of the relay log files
+# Removing debug point 'simulate_relay_log_flush_failure' from @@GLOBAL.debug
+# Removing debug point 'relay_log_flush_at_transaction_end_only' from @@GLOBAL.debug
+include/start_slave_io.inc
+[connection master]
+include/sync_slave_sql_with_master.inc
+include/rpl_diff.inc
+[connection slave]
+The relay log space is the size of the relay log files
+#
+# 5. The flush of the receiver that waits for the source fails
+#
+[connection slave]
+# Adding debug point 'simulate_relay_log_flush_failure' to @@GLOBAL.debug
+[connection master]
+# Adding debug point 'dump_thread_wait_before_send_xid' to @@GLOBAL.debug
+INSERT INTO t1 (id) VALUES (60);
+[connection slave]
+include/wait_for_slave_param.inc [Slave_IO_Running]
+include/assert.inc [The receiver stopped with ER_REPLICA_RELAY_LOG_WRITE_FAILURE]
+include/assert.inc [The receiver is back at the end of the last complete transaction]
+include/assert.inc [No event of the transaction is in the relay log file]
+include/assert.inc [The relay log space does not count the events that were cut off]
+# Removing debug point 'simulate_relay_log_flush_failure' from @@GLOBAL.debug
+[connection master]
+# Removing debug point 'dump_thread_wait_before_send_xid' from @@GLOBAL.debug
+SET DEBUG_SYNC = 'now SIGNAL signal.continue';
+[connection slave]
+include/start_slave_io.inc
+[connection master]
+include/sync_slave_sql_with_master.inc
+include/rpl_diff.inc
+[connection slave]
+The relay log space is the size of the relay log files
+[connection master]
+SET DEBUG_SYNC = 'RESET';
+DROP TABLE t1;
+include/rpl_end.inc

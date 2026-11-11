@@ -252,6 +252,17 @@ class MYSQL_BIN_LOG : public TC_LOG {
   uint *sync_period_ptr;
   uint sync_counter;
 
+  /**
+    Relay log only: events of the transaction being queued that are in the
+    cache of the file, neither flushed nor published. Protected by LOCK_log.
+  */
+  std::atomic<uint> m_relay_pending_events{0};
+  /**
+    A failed write cut such events off: the receiver queues nothing until
+    it has gone back to where it was before the first of them.
+  */
+  bool m_relay_discarded{false};
+
   mysql_cond_t m_prep_xids_cond;
   std::atomic<int32> m_atomic_prep_xids{0};
 
@@ -880,7 +891,35 @@ class MYSQL_BIN_LOG : public TC_LOG {
   bool write_incident_commit(THD *thd, std::string_view incident_message);
 
  private:
-  bool after_write_to_relay_log(Master_info *mi);
+  bool after_write_to_relay_log(Master_info *mi, bool may_defer);
+  bool flush_relay_log(Master_info *mi, uint events);
+  void discard_relay_log_tail(Master_info *mi);
+
+ public:
+  /**
+    @return true if events of the transaction being queued wait in the cache
+            of the relay log file.
+  */
+  bool relay_log_has_pending() const {
+    return m_relay_pending_events.load(std::memory_order_relaxed) != 0;
+  }
+  /**
+    Flushes and publishes the events that wait in the cache of the relay log
+    file. LOCK_log must be held.
+
+    @retval false Success, or nothing to flush
+    @retval true Failure
+  */
+  bool flush_relay_log_pending(Master_info *mi);
+  /**
+    Tells whether a failed write cut off events that waited in the cache of
+    the file, and clears the mark. LOCK_log must be held.
+  */
+  bool take_relay_log_discarded() {
+    const bool discarded = m_relay_discarded;
+    m_relay_discarded = false;
+    return discarded;
+  }
   /**
    * Truncte log file and clear LOG_EVENT_BINLOG_IN_USE_F when update is set.
    * @param[in] log_name name of the log file to be trunacted

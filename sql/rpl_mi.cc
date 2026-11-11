@@ -396,6 +396,12 @@ err:
   return 1;
 }
 
+bool Master_info::is_flush_info_due(bool force) {
+  // As flush_info() does: the option may have been set since.
+  if (inited) handler->set_sync_period(sync_masterinfo_period);
+  return handler->is_flush_info_due(force);
+}
+
 void Master_info::set_relay_log_info(Relay_log_info *info) { rli = info; }
 
 /**

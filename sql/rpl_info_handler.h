@@ -115,6 +115,12 @@ class Rpl_info_handler {
   int flush_info(const bool force) { return do_flush_info(force); }
 
   /**
+    Whether flush_info() with this argument writes the repository now rather
+    than only counting towards the sync period. Does not advance the counter.
+  */
+  virtual bool is_flush_info_due(bool) const { return true; }
+
+  /**
     Deletes any information in it and in some cases the repository.
     The decision to remove the repository is delegated to the
     developer.
